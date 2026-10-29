@@ -3004,13 +3004,20 @@ void CBattleEntity::OnMobSkillFinished(CMobSkillState& state, action_t& action)
         // reset the skill's message back to default
         PSkill->setMsg(defaultMessage);
         int32 damage = 0;
-        if (objtype == TYPE_PET && static_cast<CPetEntity*>(this)->getPetType() != PET_TYPE::JUG_PET)
+        if (objtype == TYPE_PET)
         {
-            PET_TYPE petType = static_cast<CPetEntity*>(this)->getPetType();
+            const auto petType = static_cast<CPetEntity*>(this)->getPetType();
 
             if (petType == PET_TYPE::AUTOMATON)
             {
                 damage = luautils::OnAutomatonAbility(PTargetFound, this, PSkill, PMaster, &action);
+            }
+            else if (petType == PET_TYPE::JUG_PET || petType == PET_TYPE::WYVERN)
+            {
+                // Jug pets and wyverns use the mob-skill scripts for their TP moves. Wyvern
+                // breaths are stored under mobskills (pet_flame_breath, healing_breath_iii,
+                // remove_poison, ...), not under the player pet-command ability scripts.
+                damage = luautils::OnMobWeaponSkill(this, PTargetFound, PSkill, &action);
             }
             else
             {

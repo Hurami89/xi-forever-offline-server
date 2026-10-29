@@ -256,6 +256,13 @@ void CPetEntity::Die()
     {
         petutils::DetachPet(PMaster);
     }
+    else if (PMaster && PMaster->PPet == this)
+    {
+        // The master is not a character (a squad mate), and DetachPet only handles characters. Without this,
+        // the master would keep a pointer to a pet that is about to be removed.
+        PMaster->PPet = nullptr;
+        PMaster       = nullptr;
+    }
 }
 
 void CPetEntity::Spawn()

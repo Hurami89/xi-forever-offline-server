@@ -60,7 +60,7 @@ tools/packetcap/packetcap.cpp
 custom/lua/garrison_placeholder_data.lua
 custom/lua/quest_workarounds.lua
 custom/lua/test_npcs_in_gm_home.lua
-custom/lua/claim_shield.lua
+# custom/lua/claim_shield.lua
 era/lua
 
 # Phoenix modules
@@ -73,3 +73,36 @@ phoenix_ac/sql
 
 # Dynamis
 phoenix/dynamis/lua/
+
+# Squad mates
+custom/cpp/squad.cpp
+custom/lua/squad.lua
+custom/sql/squad.sql
+
+# Fast travel
+# fast travel moved to custom/late (end of this file) so it loads after the era homepoint menu
+
+# Fields/Grounds of Valor without Field Support or prowess buffs
+custom/lua/fov_no_buffs.lua
+
+# Casket changes
+custom/lua/casket_tweaks.lua
+
+# Era experience tables
+custom/lua/era_exp.lua
+
+# Goblin Tailor: any race
+custom/lua/rse.lua
+
+# Artifact quests: a party mate's job counts
+custom/lua/af_party.lua
+custom/lua/no_voidwatch.lua
+
+# Crystal Boy: Gobbiebag quests give the Crystal Boy and cartridges (+ GM !cbfame)
+custom/lua/crystalboy_quests.lua
+
+# Crystal Boy items
+custom/sql/crystalboy_items.sql
+
+# Loaded LAST: overrides here win over the era/phoenix folders above (fast travel replaces the era "set home point only" menu)
+custom/late

@@ -20,6 +20,41 @@ local rseTable =
     [xi.race.GALKA   ] = { xi.item.ELDERS_SURCOAT,   xi.item.ELDERS_BRACERS,   xi.item.ELDERS_BRAGUETTE, xi.item.ELDERS_SANDALS    },
 }
 
+-----------------------------------
+-- FFXI Solo: do the quest for any race (choose with !rse). By default it is your own race.
+--   chosenRace : the race whose gear you are collecting
+--   anyDay     : (!rse day) the chests give the Magical Pattern on any day, in any of the three zones
+-- Each race keeps its own record of which pieces you already have.
+-----------------------------------
+local function chosenRace(player)
+    local chosen = player:getCharVar('[RSE]ChosenRace')
+    if chosen >= 1 and chosen <= 8 then
+        return chosen
+    end
+
+    return player:getRace()
+end
+
+local function gearVar(player)
+    if chosenRace(player) == player:getRace() then
+        return '[RSE]Gear'
+    end
+
+    return '[RSE]Gear' .. chosenRace(player)
+end
+
+local function chestGivesPattern(player, location)
+    if player:hasKeyItem(xi.keyItem.MAGICAL_PATTERN) then
+        return false
+    end
+
+    if player:getCharVar('[RSE]AnyDay') == 1 then
+        return true
+    end
+
+    return VanadielRSELocation() == location and VanadielRSERace() == chosenRace(player)
+end
+
 quest.reward =
 {
     title = xi.title.GOBLINS_EXCLUSIVE_FASHION_MANNEQUIN,
@@ -67,11 +102,7 @@ quest.sections =
             ['Treasure_Chest' ] =
             {
                 onTrade = function(player, npc, trade)
-                    if
-                        VanadielRSELocation() == 1 and
-                        VanadielRSERace() == player:getRace() and
-                        not player:hasKeyItem(xi.keyItem.MAGICAL_PATTERN)
-                    then
+                    if chestGivesPattern(player, 1) then
                         xi.treasure.onTrade(player, npc, trade, 2, xi.keyItem.MAGICAL_PATTERN)
 
                         return quest:noAction()
@@ -85,7 +116,7 @@ quest.sections =
             ['Guttrix'] =
             {
                 onTrigger = function(player, npc)
-                    local rseTracker = player:getCharVar('[RSE]Gear')
+                    local rseTracker = player:getCharVar(gearVar(player))
                     if rseTracker == 15 then
                         return quest:event(10019)
                     end
@@ -117,14 +148,14 @@ quest.sections =
                         return
                     end
 
-                    local rseTracker = player:getCharVar('[RSE]Gear')
+                    local rseTracker = player:getCharVar(gearVar(player))
                     if utils.mask.getBit(rseTracker, option - 1) then
                         return
                     end
 
-                    if npcUtil.giveItem(player, rseTable[player:getRace()][option]) then
+                    if npcUtil.giveItem(player, rseTable[chosenRace(player)][option]) then
                         player:delKeyItem(xi.keyItem.MAGICAL_PATTERN)
-                        player:incrementCharVar('[RSE]Gear', bit.lshift(1, option - 1))
+                        player:incrementCharVar(gearVar(player), bit.lshift(1, option - 1))
 
                         quest:complete(player)
                         player:addFame(xi.fameArea.SANDORIA, 5)
@@ -140,11 +171,7 @@ quest.sections =
             ['Treasure_Chest' ] =
             {
                 onTrade = function(player, npc, trade)
-                    if
-                        VanadielRSELocation() == 2 and
-                        VanadielRSERace() == player:getRace() and
-                        not player:hasKeyItem(xi.keyItem.MAGICAL_PATTERN)
-                    then
+                    if chestGivesPattern(player, 2) then
                         xi.treasure.onTrade(player, npc, trade, 2, xi.keyItem.MAGICAL_PATTERN)
 
                         return quest:noAction()
@@ -158,11 +185,7 @@ quest.sections =
             ['Treasure_Chest' ] =
             {
                 onTrade = function(player, npc, trade)
-                    if
-                        VanadielRSELocation() == 0 and
-                        VanadielRSERace() == player:getRace() and
-                        not player:hasKeyItem(xi.keyItem.MAGICAL_PATTERN)
-                    then
+                    if chestGivesPattern(player, 0) then
                         xi.treasure.onTrade(player, npc, trade, 2, xi.keyItem.MAGICAL_PATTERN)
 
                         return quest:noAction()

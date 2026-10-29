@@ -34,6 +34,7 @@
 #include "entities/char_entity.h"
 #include "enums/msg_basic.h"
 #include "lua/luautils.h"
+#include "mob_spell_list.h"
 #include "packets/entity_set_name.h"
 #include "packets/s2c/0x0df_group_attr.h"
 #include "recast_container.h"
@@ -70,6 +71,29 @@ CTrustEntity::CTrustEntity(CCharEntity* PChar, uint32 trustId, IsPassiveTrust is
 CTrustEntity::~CTrustEntity()
 {
     TracyZoneScoped;
+
+    // The squad mate's own spell list (see trustutils.cpp) belongs to this trust
+    if (squadSpellList_ != nullptr)
+    {
+        if (m_SpellListContainer == squadSpellList_)
+        {
+            m_SpellListContainer = nullptr;
+        }
+
+        delete squadSpellList_;
+        squadSpellList_ = nullptr;
+    }
+
+    // Never leave a pet pointing at a deleted master (it despawns itself on its next tick once it has no master)
+    if (PPet != nullptr)
+    {
+        if (PPet->PMaster == this)
+        {
+            PPet->PMaster = nullptr;
+        }
+
+        PPet = nullptr;
+    }
 }
 
 auto CTrustEntity::trustID() -> uint32
@@ -128,8 +152,35 @@ void CTrustEntity::FadeOut()
     loc.zone->UpdateEntityPacket(this, ENTITY_DESPAWN, UPDATE_NONE);
 }
 
+namespace
+{
+
+// Squad mates can have pets (a wyvern, an avatar). The pet goes when its master does.
+void ReleasePet(CBattleEntity* PMaster)
+{
+    CBattleEntity* PPet = PMaster->PPet;
+    if (PPet == nullptr)
+    {
+        return;
+    }
+
+    PMaster->PPet = nullptr;
+    if (!PPet->isDead())
+    {
+        PPet->Die();
+    }
+
+    if (PPet->PMaster == PMaster)
+    {
+        PPet->PMaster = nullptr;
+    }
+}
+
+} // namespace
+
 void CTrustEntity::Die()
 {
+    ReleasePet(this);
     luautils::OnMobDeath(this, nullptr);
     PEnmityContainer->Clear();
     PAI->ClearStateStack();
@@ -148,6 +199,13 @@ void CTrustEntity::Spawn()
     // TODO: Calling a grand-parent's impl. of an overridden function is bad
     // we need to skip CMobEntity's spawn because it calculates stats (and our stats are already calculated)
     CBattleEntity::Spawn();
+
+    // Squad mates: spawning clears local variables, so put the squad tag back before the spawn script runs
+    if (squadId_ != 0)
+    {
+        SetLocalVar("SQUAD_ID", squadId_);
+    }
+
     luautils::OnMobSpawn(this);
 
     // Recompute derived HP/MP after spawn-time modifiers (e.g. HPP/MPP)
@@ -201,6 +259,8 @@ bool CTrustEntity::ValidTarget(CBattleEntity* PInitiator, uint16 targetFlags)
 
 void CTrustEntity::OnDespawn(CDespawnState& /*unused*/)
 {
+    ReleasePet(this);
+
     if (GetHPP() > 0)
     {
         // Don't call this when despawning after being killed

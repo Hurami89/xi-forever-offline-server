@@ -340,8 +340,22 @@ auto CMobController::TryMobSkill(const uint16 skillId, CBattleEntity* PTarget) -
     }
 
     // Resolve the action target: enemy/self defaults, then let lua substitute.
+    // Pet support moves (wyvern breaths/removals, Carbuncle's Healing Ruby) are stored as
+    // party or self skills with no enemy target. A player pet's own autonomous path never
+    // needed this, but a squad mate's pet has no master command to supply the target, so
+    // point these moves at the master instead of at the pet or at nothing.
+    const auto& skillName  = PMobSkill->getName();
+    const bool  petSupport = PMob->objtype == TYPE_PET && PMob->PMaster != nullptr &&
+                            (skillName.starts_with("healing_breath") ||
+                             skillName.starts_with("healing_ruby") ||
+                             skillName.starts_with("remove_"));
+
     CBattleEntity* PActionTarget = nullptr;
-    if (PMobSkill->getValidTargets() & TARGET_ENEMY)
+    if (petSupport)
+    {
+        PActionTarget = PMob->PMaster;
+    }
+    else if (PMobSkill->getValidTargets() & TARGET_ENEMY)
     {
         PActionTarget = PTarget;
     }
@@ -349,6 +363,13 @@ auto CMobController::TryMobSkill(const uint16 skillId, CBattleEntity* PTarget) -
     {
         PActionTarget = PMob;
     }
+
+    if (PActionTarget == nullptr && PMob->objtype == TYPE_PET && PMob->PMaster != nullptr &&
+        (PMobSkill->getValidTargets() & TARGET_PLAYER_PARTY))
+    {
+        PActionTarget = PMob->PMaster;
+    }
+
     PActionTarget = luautils::OnMobSkillTarget(PActionTarget, PMob, PMobSkill);
 
     if (!PActionTarget)
