@@ -26,6 +26,7 @@
 #include <common/types/hash_map.h>
 
 #include <algorithm>
+#include <set>
 
 #include "battleutils.h"
 #include "data/loader.h"
@@ -501,84 +502,112 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
         PTrust->m_dualWield = true;
     }
 
-    if (auto* spellList = mobSpellList::GetMobSpellList(trustData->spellList); spellList != nullptr)
+    auto* spellList = trustData->spellList != 0 ? mobSpellList::GetMobSpellList(trustData->spellList) : nullptr;
+    if (spellList != nullptr)
     {
         mobutils::SetSpellList(PTrust, trustData->spellList);
+    }
 
-        // Squad mates also get their sub job's spells: every spell on the sub job's list that fits the sub level
-        if (spec != nullptr && spec->sJob != 0 && PTrust->SpellContainer != nullptr)
+    // Squad mates also get their sub job's spells: every spell on the sub job's list that fits the sub level.
+    // This runs even when the main job's template has no spell list of its own (WAR, MNK, THF, SAM, RNG and
+    // COR templates are like that), so a WAR/WHM still gets Cure and Protect from the sub job.
+    if (spec != nullptr && spec->sJob != 0 && PTrust->SpellContainer != nullptr)
+    {
+        const uint16 subListId = SquadSubJobSpellList(spec->sJob);
+        auto*        subList   = subListId != 0 ? mobSpellList::GetMobSpellList(subListId) : nullptr;
+        if (subList != nullptr)
         {
-            const uint16 subListId = SquadSubJobSpellList(spec->sJob);
-            auto*        subList   = subListId != 0 ? mobSpellList::GetMobSpellList(subListId) : nullptr;
-            if (subList != nullptr)
+            const uint8 subLevel  = PTrust->GetSLevel();
+            const uint8 mainLevel = PTrust->GetMLevel();
+            const auto* mainList  = PTrust->m_SpellListContainer;
+
+            for (const auto& subSpell : subList->m_spellList)
             {
-                const uint8 subLevel  = PTrust->GetSLevel();
-                const uint8 mainLevel = PTrust->GetMLevel();
-
-                for (const auto& subSpell : subList->m_spellList)
+                if (subLevel < subSpell.min_level || subLevel > subSpell.max_level)
                 {
-                    if (subLevel < subSpell.min_level || subLevel > subSpell.max_level)
-                    {
-                        continue;
-                    }
+                    continue;
+                }
 
-                    // Skip spells the main job's list already gives at the main level
-                    const bool alreadyHave = std::ranges::any_of(spellList->m_spellList, [&](const MobSpell_t& mainSpell)
-                                                                 { return mainSpell.spellId == subSpell.spellId && mainLevel >= mainSpell.min_level && mainLevel <= mainSpell.max_level; });
-                    if (!alreadyHave)
-                    {
-                        PTrust->SpellContainer->AddSpell(subSpell.spellId);
-                    }
+                // Skip spells the main job's list already gives at the main level
+                const bool alreadyHave = mainList != nullptr && std::ranges::any_of(mainList->m_spellList, [&](const MobSpell_t& mainSpell)
+                                                                                    { return mainSpell.spellId == subSpell.spellId && mainLevel >= mainSpell.min_level && mainLevel <= mainSpell.max_level; });
+                if (!alreadyHave)
+                {
+                    PTrust->SpellContainer->AddSpell(subSpell.spellId);
                 }
             }
         }
+    }
 
-        // Squad mates know every spell their jobs can learn at their levels, with no scrolls: the main job at the main
-        // level and the sub job at the sub level. This list is what the game checks when a spell is cast on request.
-        if (spec != nullptr && PTrust->m_SpellListContainer != nullptr)
+    // Squad mates know every spell their jobs can learn at their levels, with no scrolls: the main job at the main
+    // level and the sub job at the sub level. This list is what the game checks when a spell is cast on request.
+    if (spec != nullptr)
+    {
+        auto*       known     = new CMobSpellList(Maybe<uint16>{});
+        const uint8 mainLevel = PTrust->GetMLevel();
+        const uint8 subLevel  = PTrust->GetSLevel();
+        const auto  mainJob   = PTrust->GetMJob();
+        const auto  subJob    = PTrust->GetSJob();
+
+        if (PTrust->m_SpellListContainer != nullptr)
         {
-            auto*       known     = new CMobSpellList(Maybe<uint16>{});
-            const uint8 mainLevel = PTrust->GetMLevel();
-            const uint8 subLevel  = PTrust->GetSLevel();
-            const auto  mainJob   = PTrust->GetMJob();
-            const auto  subJob    = PTrust->GetSJob();
-
             for (const auto& entry : PTrust->m_SpellListContainer->m_spellList)
             {
                 known->AddSpell(entry.spellId, entry.min_level, entry.max_level);
             }
+        }
 
-            for (uint16 id = 1; id < MAX_SPELL_ID; ++id)
+        for (uint16 id = 1; id < MAX_SPELL_ID; ++id)
+        {
+            CSpell* PSpell = spell::GetSpell(static_cast<SpellID>(id));
+            if (PSpell == nullptr)
             {
-                CSpell* PSpell = spell::GetSpell(static_cast<SpellID>(id));
-                if (PSpell == nullptr)
-                {
-                    continue;
-                }
-
-                const auto group = PSpell->getSpellGroup();
-                if (group == SPELLGROUP_TRUST || group == SPELLGROUP_BLUE || group == SPELLGROUP_SUMMONING || group == SPELLGROUP_GEOMANCY)
-                {
-                    continue;
-                }
-
-                const bool learnedByMain = PSpell->getJob(mainJob) <= mainLevel;
-                const bool learnedBySub  = spec->sJob != 0 && PSpell->getJob(subJob) <= subLevel;
-                if (!learnedByMain && !learnedBySub)
-                {
-                    continue;
-                }
-
-                const bool alreadyListed = std::ranges::any_of(known->m_spellList, [&](const MobSpell_t& listed)
-                                                               { return listed.spellId == static_cast<SpellID>(id) && mainLevel >= listed.min_level && mainLevel <= listed.max_level; });
-                if (!alreadyListed)
-                {
-                    known->AddSpell(static_cast<SpellID>(id), 0, 255);
-                }
+                continue;
             }
 
-            PTrust->setSquadSpellList(known);
-            PTrust->m_SpellListContainer = known;
+            const auto group = PSpell->getSpellGroup();
+            if (group == SPELLGROUP_TRUST || group == SPELLGROUP_BLUE || group == SPELLGROUP_SUMMONING || group == SPELLGROUP_GEOMANCY)
+            {
+                continue;
+            }
+
+            const bool learnedByMain = PSpell->getJob(mainJob) <= mainLevel;
+            const bool learnedBySub  = spec->sJob != 0 && PSpell->getJob(subJob) <= subLevel;
+            if (!learnedByMain && !learnedBySub)
+            {
+                continue;
+            }
+
+            const bool alreadyListed = std::ranges::any_of(known->m_spellList, [&](const MobSpell_t& listed)
+                                                           { return listed.spellId == static_cast<SpellID>(id) && mainLevel >= listed.min_level && mainLevel <= listed.max_level; });
+            if (!alreadyListed)
+            {
+                known->AddSpell(static_cast<SpellID>(id), 0, 255);
+            }
+        }
+
+        PTrust->setSquadSpellList(known);
+        PTrust->m_SpellListContainer = known;
+
+        // Rebuild the castable container from the full known list. The template's own list is
+        // often only one slice of the job (Rainemard, the RDM template, has nukes but no Dia,
+        // Cure, Slow, Haste, Protect or Shell), so without this the gambits had nothing to cast.
+        if (PTrust->SpellContainer != nullptr)
+        {
+            PTrust->SpellContainer->ClearSpells();
+            std::set<SpellID> castable;
+            for (const auto& entry : known->m_spellList)
+            {
+                if (mainLevel < entry.min_level || mainLevel > entry.max_level)
+                {
+                    continue;
+                }
+
+                if (castable.insert(entry.spellId).second)
+                {
+                    PTrust->SpellContainer->AddSpell(entry.spellId);
+                }
+            }
         }
     }
 

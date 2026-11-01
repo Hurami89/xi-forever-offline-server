@@ -80,16 +80,20 @@ custom/lua/squad.lua
 custom/sql/squad.sql
 
 # Fast travel
-# fast travel moved to custom/late (end of this file) so it loads after the era homepoint menu
+# fast travel moved to custom/late (end of this file) so its Survival Guide override loads last
 
 # Fields/Grounds of Valor without Field Support or prowess buffs
 custom/lua/fov_no_buffs.lua
 
 # Casket changes
 custom/lua/casket_tweaks.lua
+custom/lua/extra_caskets.lua
 
 # Era experience tables
 custom/lua/era_exp.lua
+
+# Harvest Festival: re-apply costumes and announce the event
+custom/lua/halloween_festival.lua
 
 # Goblin Tailor: any race
 custom/lua/rse.lua
@@ -104,5 +108,5 @@ custom/lua/crystalboy_quests.lua
 # Crystal Boy items
 custom/sql/crystalboy_items.sql
 
-# Loaded LAST: overrides here win over the era/phoenix folders above (fast travel replaces the era "set home point only" menu)
+# Loaded LAST: overrides here win over the era/phoenix folders above (fast travel overrides the Survival Guide menu)
 custom/late

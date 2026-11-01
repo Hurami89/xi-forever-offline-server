@@ -63,25 +63,23 @@ local function halloweenItemsCheck(player)
     end
 
     -- Checks the possible item rewards to ensure player doesnt already have the item we are about to give them
-    local cnt = #rewardList
-
-    while cnt ~= 0 do
-        local picked = rewardList[math.randomInt(1, #rewardList)]
+    while #rewardList > 0 do
+        local index  = math.randomInt(1, #rewardList)
+        local picked = rewardList[index]
         if not player:hasItem(picked) then
             reward = picked
-            cnt = 0
-        else
-            table.remove(rewardList, picked)
-            cnt = cnt - 1
+            break
         end
+
+        table.remove(rewardList, index)
     end
 
     return reward
 end
 
 xi.events.harvestFestival.onHalloweenTrade = function(player, trade, npc)
-    local zone = player:getZoneName()
-    local ID = zones[player:getZoneID()]
+    local zoneId = player:getZoneID()
+    local ID     = zones[zoneId]
 
     local contentEnabled = xi.events.harvestFestival.isHalloweenEnabled()
     local item = trade:getItemId()
@@ -138,6 +136,8 @@ xi.events.harvestFestival.onHalloweenTrade = function(player, trade, npc)
             5577, -- Sutlac
             5627, -- Yogurt Cake
         }
+
+        local isTreat = false
 
         for itemInList = 1, #treatsTable do
             if item == treatsTable[itemInList] then
@@ -211,17 +211,14 @@ xi.events.harvestFestival.onHalloweenTrade = function(player, trade, npc)
 
                     for zi = 1, #pitchForkCostumeList, 3 do
                         if
-                            zone == pitchForkCostumeList[zi] and
+                            zoneId == pitchForkCostumeList[zi] and
                             (
                                 costumePicked == pitchForkCostumeList[zi + 1] or
-                                zone == pitchForkCostumeList[zi] and
                                 costumePicked == pitchForkCostumeList[zi + 2]
                             )
                         then -- Gives special hint for pitch fork costume
                             player:messageSpecial(ID.text.IF_YOU_WEAR_THIS)
-
-                        elseif zi == 16 then
-                            player:messageSpecial(ID.text.THANK_YOU_TREAT)
+                            break
                         end
                     end
                 else
@@ -234,10 +231,33 @@ xi.events.harvestFestival.onHalloweenTrade = function(player, trade, npc)
 
                 player:tradeComplete()
 
+                isTreat = true
                 break
             end
         end
+
+        if not isTreat then
+            player:printToPlayer('Not a very sweet treat, I am afraid. Bring me a cookie, a pie, or some chocolate and I will show you a trick...', xi.msg.channel.SAY, npc:getName())
+        end
     end
+end
+
+-- Called from the festival shopkeepers so the event announces itself where it is played.
+xi.events.harvestFestival.onHalloweenGreeting = function(player, npc)
+    if xi.events.harvestFestival.isHalloweenEnabled() == 0 then
+        return false
+    end
+
+    -- One greeting per real day per character, so shopping trips do not spam chat.
+    local today = tonumber(os.date('%Y%m%d')) or 0
+    if player:getCharVar('harvestFestGreeted') == today then
+        return false
+    end
+
+    player:setCharVar('harvestFestGreeted', today)
+    player:printToPlayer('Happy Harvest Festival! Trade me a sweet and I will show you a trick...', xi.msg.channel.SAY, npc:getName())
+
+    return true
 end
 
 xi.events.harvestFestival.applyHalloweenNpcCostumes = function(zoneid)

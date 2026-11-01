@@ -6221,6 +6221,13 @@ void CLuaBaseEntity::setModelId(uint16 modelId, const sol::object& slotObj)
     }
     else
     {
+        // A full model swap replaces the equipped look. Without this the client keeps drawing the
+        // NPC's normal equipment and the new model never shows (Harvest Festival skins rely on this).
+        if (m_PBaseEntity->objtype == TYPE_NPC)
+        {
+            m_PBaseEntity->look.size = MODEL_STANDARD;
+        }
+
         m_PBaseEntity->SetModelId(modelId);
     }
     m_PBaseEntity->updatemask |= UPDATE_LOOK;

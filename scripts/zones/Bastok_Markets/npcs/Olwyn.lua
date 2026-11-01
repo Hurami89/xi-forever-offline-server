@@ -11,6 +11,7 @@ entity.onTrade = function(player, npc, trade)
 end
 
 entity.onTrigger = function(player, npc)
+    xi.events.harvestFestival.onHalloweenGreeting(player, npc)
     local stock =
     {
         { xi.item.FLASK_OF_EYE_DROPS,  2595, 3 },

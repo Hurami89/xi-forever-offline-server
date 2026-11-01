@@ -1,4 +1,11 @@
 -- --------------------------------------------------------
+-- FFXI Solo local change: these INSERTs became INSERT IGNORE.
+-- dbtool's express update re-imports module SQL without rebuilding guild_item_points
+-- first, so a plain INSERT hit "Duplicate entry '1-17123-3' for key PRIMARY" on this
+-- server. IGNORE keeps the rows already in the table (same items) and still adds any
+-- that are missing. Revert to Phoenix's file if upstream makes this idempotent.
+-- --------------------------------------------------------
+-- --------------------------------------------------------
 -- Guild Point Rewards
 -- --------------------------------------------------------
 -- 
@@ -42,17 +49,17 @@ UPDATE `guild_item_points` SET `itemid`=4288, `points`=1200, `max_points`=5040 W
 UPDATE `guild_item_points` SET `itemid`=17049, `points`=13, `max_points`=1200 WHERE `guildid`=1 AND `itemid`=17868 AND `pattern`=1; -- Humus -> Maple Wand (13/1200)
 UPDATE `guild_item_points` SET `itemid`=17087, `points`=13, `max_points`=1200 WHERE `guildid`=1 AND `itemid`=17869 AND `pattern`=1; -- Rich Humus -> Maple Wand +1 (13/1200)
 UPDATE `guild_item_points` SET `itemid`=17088, `points`=16, `max_points`=1200 WHERE `guildid`=1 AND `itemid`=22 AND `pattern`=3; -- Workbench -> Ash Staff (16/1200)
-INSERT INTO `guild_item_points` VALUES (1,17123,0,24,1200,3); -- Ash Staff +1 - Amateur Pattern D
+INSERT IGNORE INTO `guild_item_points` VALUES (1,17123,0,24,1200,3); -- Ash Staff +1 - Amateur Pattern D
 UPDATE `guild_item_points` SET `itemid`=17024, `points`=18, `max_points`=1200 WHERE `guildid`=1 AND `itemid`=12289 AND `pattern`=4; -- Lauan Shield -> Ash Club (18/1200)
 UPDATE `guild_item_points` SET `itemid`=17137, `points`=26, `max_points`=1200 WHERE `guildid`=1 AND `itemid`=12333 AND `pattern`=4; -- Lauan Shield +1 -> Ash Club +1 (26/1200)
 UPDATE `guild_item_points` SET `itemid`=17345, `points`=12, `max_points`=1120 WHERE `guildid`=1 AND `itemid`=17868 AND `pattern`=7; -- Humus -> Flute (12/1120)
 UPDATE `guild_item_points` SET `itemid`=17372, `points`=14, `max_points`=1120 WHERE `guildid`=1 AND `itemid`=17869 AND `pattern`=7; -- Rich Humus -> Flute +1 (14/1120)
 -- Recruit (rank 1)
 UPDATE `guild_item_points` SET `itemid`=12984, `points`=31, `max_points`=1520 WHERE `guildid`=1 AND `itemid`=17389 AND `pattern`=2; -- Bamboo Fishing Rod -> Ash Clogs (31/1520)
-INSERT INTO `guild_item_points` VALUES (1,12983,1,39,1520,2); -- Ash Clogs +1 - Recruit Pattern C
+INSERT IGNORE INTO `guild_item_points` VALUES (1,12983,1,39,1520,2); -- Ash Clogs +1 - Recruit Pattern C
 -- Initiate (rank 2)
 UPDATE `guild_item_points` SET `itemid`=17353, `points`=12, `max_points`=1680 WHERE `guildid`=1 AND `itemid`=1179 AND `pattern`=1; -- Shihei -> Maple Harp (12/1680)
-INSERT INTO `guild_item_points` VALUES (1,17373,2,14,1680,1); -- Maple Harp +1 - Initiate Pattern B
+INSERT IGNORE INTO `guild_item_points` VALUES (1,17373,2,14,1680,1); -- Maple Harp +1 - Initiate Pattern B
 -- Journeyman (rank 5)
 UPDATE `guild_item_points` SET `itemid`=21, `points`=158, `max_points`=2880 WHERE `guildid`=1 AND `itemid`=17156 AND `pattern`=7; -- Kaman -> Desk (158/2880)
 DELETE FROM `guild_item_points` WHERE `guildid`=1 AND `itemid`=17182 AND `pattern`=7; -- Remove Kaman +1 (no HQ for Desk)
@@ -68,14 +75,14 @@ UPDATE `guild_item_points` SET `itemid`=17833, `points`=2700, `max_points`=6080 
 UPDATE `guild_item_points` SET `itemid`=17441, `points`=600, `max_points`=4320 WHERE `guildid`=1 AND `itemid`=17359 AND `pattern`=1; -- Mythic Harp -> Eremite's Wand (600/4320)
 UPDATE `guild_item_points` SET `itemid`=17442, `points`=690, `max_points`=4320 WHERE `guildid`=1 AND `itemid`=17834 AND `pattern`=1; -- Mythic Harp +1 -> Eremite's Wand +1 (690/4320)
 UPDATE `guild_item_points` SET `itemid`=17236, `points`=6235, `max_points`=7040 WHERE `guildid`=1 AND `itemid`=358 AND `pattern`=3; -- Credenza -> Leo Crossbow (6235/7040)
-INSERT INTO `guild_item_points` VALUES (1,17237,8,7040,7040,3); -- Leo Crossbow +1 - Adept Pattern D
+INSERT IGNORE INTO `guild_item_points` VALUES (1,17237,8,7040,7040,3); -- Leo Crossbow +1 - Adept Pattern D
 UPDATE `guild_item_points` SET `itemid`=16890, `points`=1200, `max_points`=5120 WHERE `guildid`=1 AND `itemid`=61 AND `pattern`=6; -- Armoire -> Obelisk Lance (1200/5120)
-INSERT INTO `guild_item_points` VALUES (1,16891,8,1300,5120,6); -- Obelisk Lance +1 - Adept Pattern G
+INSERT IGNORE INTO `guild_item_points` VALUES (1,16891,8,1300,5120,6); -- Obelisk Lance +1 - Adept Pattern G
 
 -- BLACKSMITHING (guildid=2)
 -- Amateur (rank 0)
 UPDATE `guild_item_points` SET `itemid`=16448, `points`=39, `max_points`=1280 WHERE `guildid`=2 AND `itemid`=1021 AND `pattern`=3; -- Hatchet -> Bronze Dagger (39/1280)
-INSERT INTO `guild_item_points` VALUES (2,16492,0,47,1280,3); -- Bronze Dagger +1 - Amateur Pattern D
+INSERT IGNORE INTO `guild_item_points` VALUES (2,16492,0,47,1280,3); -- Bronze Dagger +1 - Amateur Pattern D
 UPDATE `guild_item_points` SET `itemid`=16465, `points`=41, `max_points`=1360 WHERE `guildid`=2 AND `itemid`=12432 AND `pattern`=5; -- Faceguard -> Bronze Knife (41/1360)
 UPDATE `guild_item_points` SET `itemid`=16491, `points`=48, `max_points`=1360 WHERE `guildid`=2 AND `itemid`=12487 AND `pattern`=5; -- Faceguard +1 -> Bronze Knife +1 (48/1360)
 -- Recruit (rank 1)
@@ -121,7 +128,7 @@ DELETE FROM `guild_item_points` WHERE `guildid`=6 AND `itemid`=17847 AND `patter
 -- ALCHEMY (guildid=7)
 -- Amateur (rank 0)
 UPDATE `guild_item_points` SET `itemid`=16600, `points`=67, `max_points`=1440 WHERE `guildid`=7 AND `itemid`=1164 AND `pattern`=3; -- Tsurara -> Wax Sword (67/1440)
-INSERT INTO `guild_item_points` VALUES (7,16610,0,75,1440,3); -- Wax Sword +1 - Amateur Pattern D
+INSERT IGNORE INTO `guild_item_points` VALUES (7,16610,0,75,1440,3); -- Wax Sword +1 - Amateur Pattern D
 -- Recruit (rank 1)
 UPDATE `guild_item_points` SET `itemid`=4167, `points`=21, `max_points`=1520 WHERE `guildid`=7 AND `itemid`=2109 AND `pattern`=5; -- Bittern -> Cracker (21/1520)
 -- Initiate (rank 2)
@@ -133,9 +140,9 @@ UPDATE `guild_item_points` SET `itemid`=12380, `points`=805, `max_points`=4400 W
 -- COOKING (guildid=8)
 -- Amateur (rank 0)
 UPDATE `guild_item_points` SET `itemid`=4455, `points`=50, `max_points`=1360 WHERE `guildid`=8 AND `itemid`=4422 AND `pattern`=2; -- Orange Juice -> Pebble Soup (50/1360)
-INSERT INTO `guild_item_points` VALUES (8,4592,0,55,1360,2); -- Wisdom Soup - Amateur Pattern C
+INSERT IGNORE INTO `guild_item_points` VALUES (8,4592,0,55,1360,2); -- Wisdom Soup - Amateur Pattern C
 UPDATE `guild_item_points` SET `itemid`=4455, `points`=50, `max_points`=1360 WHERE `guildid`=8 AND `itemid`=4422 AND `pattern`=4; -- Orange Juice -> Pebble Soup (50/1360)
-INSERT INTO `guild_item_points` VALUES (8,4592,0,55,1360,4); -- Wisdom Soup - Amateur Pattern E
+INSERT IGNORE INTO `guild_item_points` VALUES (8,4592,0,55,1360,4); -- Wisdom Soup - Amateur Pattern E
 -- Initiate (rank 2)
 UPDATE `guild_item_points` SET `points`=85, `max_points`=2000 WHERE `guildid`=8 AND `itemid`=4282 AND `pattern`=7; -- Pipin' Hot Popoto: 127/2240 -> 85/2000
 -- Apprentice (rank 4)
@@ -146,14 +153,14 @@ UPDATE `guild_item_points` SET `itemid`=4494, `points`=198, `max_points`=3200 WH
 UPDATE `guild_item_points` SET `itemid`=4524, `points`=240, `max_points`=3200 WHERE `guildid`=8 AND `itemid`=5162 AND `pattern`=1; -- Squid Sushi +1 -> Royal Tea (240/3200)
 -- Artisan (rank 7)
 UPDATE `guild_item_points` SET `itemid`=4439, `points`=175, `max_points`=3280 WHERE `guildid`=8 AND `itemid`=4440 AND `pattern`=3; -- Whitefish Stew -> Navarin (175/3280)
-INSERT INTO `guild_item_points` VALUES (8,4284,7,525,3280,3); -- Tender Navarin - Artisan Pattern D
+INSERT IGNORE INTO `guild_item_points` VALUES (8,4284,7,525,3280,3); -- Tender Navarin - Artisan Pattern D
 UPDATE `guild_item_points` SET `itemid`=4411, `points`=120, `max_points`=3120 WHERE `guildid`=8 AND `itemid`=4498 AND `pattern`=4; -- Chocomilk -> Dhalmel Pie (120/3120)
 UPDATE `guild_item_points` SET `itemid`=4322, `points`=160, `max_points`=3120 WHERE `guildid`=8 AND `itemid`=4283 AND `pattern`=4; -- Choco-delight -> Dhalmel Pie +1 (160/3120)
 -- Adept (rank 8)
 UPDATE `guild_item_points` SET `itemid`=4544, `points`=1120, `max_points`=5040 WHERE `guildid`=8 AND `itemid`=5588 AND `pattern`=0; -- Karni Yarik -> Mushroom Stew (1120/5040)
 UPDATE `guild_item_points` SET `itemid`=4344, `points`=1680, `max_points`=5040 WHERE `guildid`=8 AND `itemid`=5589 AND `pattern`=0; -- Karni Yarik +1 -> Witch Stew (1680/5040)
 UPDATE `guild_item_points` SET `itemid`=4564, `points`=1836, `max_points`=5680 WHERE `guildid`=8 AND `itemid`=5660 AND `pattern`=2; -- Pepperoni -> Royal Omelette (1836/5680)
-INSERT INTO `guild_item_points` VALUES (8,4331,8,2516,5680,2); -- Imperial Omelette - Adept Pattern C
+INSERT IGNORE INTO `guild_item_points` VALUES (8,4331,8,2516,5680,2); -- Imperial Omelette - Adept Pattern C
 UPDATE `guild_item_points` SET `points`=966, `max_points`=4320 WHERE `guildid`=8 AND `itemid`=4295 AND `pattern`=6; -- Royal Saute: 1449/4800 -> 966/4320
 -- Veteran (rank 9)
 UPDATE `guild_item_points` SET `itemid`=4297, `points`=730, `max_points`=4640 WHERE `guildid`=8 AND `itemid`=5151 AND `pattern`=0; -- Urchin Sushi -> Black Curry (730/4640)
