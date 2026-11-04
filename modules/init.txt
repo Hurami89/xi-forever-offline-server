@@ -88,6 +88,7 @@ custom/lua/fov_no_buffs.lua
 # Casket changes
 custom/lua/casket_tweaks.lua
 custom/lua/extra_caskets.lua
+custom/lua/gambit_status.lua
 
 # Era experience tables
 custom/lua/era_exp.lua

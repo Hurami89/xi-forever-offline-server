@@ -430,7 +430,8 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
         }
     }
 
-    if (POwner->CanRest() && m_Tick - POwner->LastAttacked > m_tickDelays.at(0) && m_Tick - m_CombatEndTime > m_tickDelays.at(0) &&
+    // Squad mates (FFXI Offline squad module) only recover while their player rests (/heal): no automatic regen.
+    if (POwner->GetLocalVar("SQUAD_ID") == 0 && POwner->CanRest() && m_Tick - POwner->LastAttacked > m_tickDelays.at(0) && m_Tick - m_CombatEndTime > m_tickDelays.at(0) &&
         m_Tick - m_LastHealTickTime > m_tickDelays.at(m_NumHealingTicks))
     {
         if (POwner->health.hp != POwner->health.maxhp || POwner->health.mp != POwner->health.maxmp)
