@@ -19592,6 +19592,7 @@ void CLuaBaseEntity::useMobAbility(sol::variadic_args va)
         else if (mobObj)
         {
             // Self-centered AoE uses self as target
+            // NOLINTBEGIN(bugprone-branch-clone): self-target branches are ordered by priority.
             if (PMobSkill->getAoe() == static_cast<uint8>(AOE_RADIUS::ATTACKER))
             {
                 PEntity->PAI->MobSkill(PEntity->entityId(), skillid, castTimeOverride);
@@ -19613,6 +19614,7 @@ void CLuaBaseEntity::useMobAbility(sol::variadic_args va)
             {
                 PEntity->PAI->MobSkill(PEntity->entityId(), skillid, castTimeOverride);
             }
+            // NOLINTEND(bugprone-branch-clone)
         }
     }));
     // clang-format on
