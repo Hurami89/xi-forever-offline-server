@@ -27,7 +27,6 @@
 #include "data/enums/key_item.h"
 #include "items/item.h"
 
-#include <functional>
 #include <map>
 
 enum class GP_CLI_COMMAND_FISHING_2_MODE : uint8_t;
@@ -333,22 +332,17 @@ struct fishmob_modifiers_t
 
 struct areavector_t
 {
-    float x;
-    float y;
-    float z;
+    float x{};
+    float y{};
+    float z{};
 
-    areavector_t()
-    {
-        x = 0.f;
-        y = 0.f;
-        z = 0.f;
-    }
+    areavector_t() = default;
 
     areavector_t(float _x, float _y, float _z)
+    : x(_x)
+    , y(_y)
+    , z(_z)
     {
-        x = _x;
-        y = _y;
-        z = _z;
     }
 };
 
@@ -418,34 +412,6 @@ struct weights_t
     , NoCatchWeight(0)
     {
     }
-};
-
-struct fish_pool
-{
-    uint16 quantity;
-    uint16 maxQuantity;
-    uint16 restockRate;
-
-    fish_pool()
-    : quantity(0)
-    , maxQuantity(0)
-    , restockRate(0)
-    {
-    }
-};
-
-struct fishing_catch_pool
-{
-    std::map<uint16, fish_pool> stock;
-
-    fishing_catch_pool() = default;
-};
-
-struct fishing_area_pool
-{
-    std::map<uint8, fishing_catch_pool> catchPools;
-
-    fishing_area_pool() = default;
 };
 
 struct fishing_gear_t
@@ -913,36 +879,9 @@ using BigFish                 = xi::Flag<struct BigFishTag>;
 using CancelOnMobLoadFailBait = xi::Flag<struct CancelOnMobLoadFailBaitTag>;
 using Lost                    = xi::Flag<struct LostTag>;
 
-// The daily allowance lives on the account, which only a module knows how to reach. It hands
-// these in at startup, and without them an angler is never held back
-using AccountMeterFetch   = std::function<int32(uint32 accountId, const std::string& varName)>;
-using AccountMeterPersist = std::function<void(uint32 accountId, const std::string& varName, int32 value, uint32 expiry)>;
-
-void SetAccountMeterAccess(AccountMeterFetch fetch, AccountMeterPersist persist);
-
-enum class FishingEvent : uint8
-{
-    Cast,    // The line went out
-    Hook,    // The fight packet was sent; PChar->hookedFish holds what the client was told
-    End,     // The client ended the fight; para is the stamina it reported
-    Release, // The client finished reeling in and is idle again
-    Landed,  // PChar->hookedFish went into the bag
-};
-
-// Modules hand these in at startup and each hears every step of every cast
-using FishingObserver = std::function<void(const CCharEntity* PChar, FishingEvent event, uint32 para)>;
-
-void AddFishingObserver(FishingObserver observe);
-
-// Fatigue owed for a fish: by size and by how far above the angler it sat; failure adds the certain-loss penalty
 auto RodFatigue(uint16 rodId, int32 fatigue) -> int32;
 auto CatchFatigue(uint8 fishingSkill, const fishresponse_t& hooked) -> int32;
 auto FailedCatchFatigue(uint8 fishingSkill, const fishresponse_t& hooked) -> int32;
-
-// Catch Pools
-void ReduceFishPool(xi::ZoneId zoneId, uint8 areaId, uint16 fishId);
-void RestockFishingAreas();
-void CreateFishingPools();
 
 // Calculations
 auto GetMoonPhase() -> uint8;
