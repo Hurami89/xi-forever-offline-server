@@ -66,6 +66,8 @@ protected:
 
 private:
     auto DoNonCombatTick(timer::time_point tick) -> Task<void>;
+    auto DoCampPullTick(timer::time_point tick, const position_t& camp) -> Task<void>; // FFXI Offline squad camp
+    void CampHold(const position_t& camp);
     void Declump(const CCharEntity* PMaster, const CBattleEntity* PTarget) const;
     void PathOutToDistance(const CBattleEntity* PTarget, float amount);
 
@@ -79,4 +81,6 @@ private:
     std::size_t                       m_NumHealingTicks = { 0 };
 
     timer::time_point m_LastRangedAttackTime;
+    timer::time_point m_CampRepath; // FFXI Offline squad camp: last re-path towards the camp spot or the pull target
+    timer::time_point m_CampPullTry; // FFXI Offline squad camp: the puller's last pull spell or ranged shot
 };

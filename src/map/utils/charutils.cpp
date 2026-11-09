@@ -1151,7 +1151,14 @@ void LoadEquip(CCharEntity* PChar)
             }
             else
             {
-                CItem* PItem = PChar->getStorage(inventoryLoc.second)->GetItem(inventoryLoc.first);
+                // FFXI Offline: a bad row (a container that does not exist) is skipped instead of crashing the login
+                CItemContainer* PStorage = PChar->getStorage(inventoryLoc.second);
+                if (PStorage == nullptr)
+                {
+                    continue;
+                }
+
+                CItem* PItem = PStorage->GetItem(inventoryLoc.first);
 
                 if ((PItem != nullptr) && PItem->isType(ITEM_LINKSHELL))
                 {
