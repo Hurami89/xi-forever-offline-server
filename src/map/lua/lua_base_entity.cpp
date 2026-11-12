@@ -181,6 +181,7 @@
 
 CLuaBaseEntity::CLuaBaseEntity(CBaseEntity* PEntity)
 : m_PBaseEntity(PEntity)
+, m_Serial(PEntity != nullptr ? PEntity->serial() : 0)
 {
     if (PEntity == nullptr)
     {
@@ -13243,6 +13244,14 @@ void CLuaBaseEntity::engage(uint16 requestedTarget)
 
 auto CLuaBaseEntity::isEngaged() -> bool
 {
+    // A Lua closure can outlive the entity it captured: characters are replaced as they zone, and a bot's
+    // timer still holds the old handle. Reading that dead pointer is what crashed the map server, so a
+    // handle that is no longer live reads as "not engaged" instead.
+    if (!CBaseEntity::isLive(m_PBaseEntity, m_Serial))
+    {
+        return false;
+    }
+
     return m_PBaseEntity->PAI->IsEngaged();
 }
 

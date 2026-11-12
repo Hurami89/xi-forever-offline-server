@@ -60,6 +60,7 @@ class CLuaBaseEntity
 {
 protected:
     CBaseEntity* m_PBaseEntity;
+    uint64       m_Serial;
 
 public:
     CLuaBaseEntity(CBaseEntity*);

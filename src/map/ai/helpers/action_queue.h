@@ -73,6 +73,7 @@ private:
     using ActionHeap_t = Heap<queueAction_t, QueueActionDeadlineGreater>;
 
     CBaseEntity* PEntity;
+    uint64       m_OwnerSerial;
     ActionHeap_t actionQueue;
     ActionHeap_t timerQueue;
 };

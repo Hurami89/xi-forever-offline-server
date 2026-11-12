@@ -50,7 +50,10 @@ public:
     auto Cast(EntityId target, SpellID spellid) -> bool override;
     auto RangedAttack(EntityId target) -> bool override;
 
-    static constexpr float RoamDistance    = { 3.0f };
+    // 1.5: melee trusts used to path around at 3.0 yalms from the mob's centre and
+    // then stop there, which is outside real hit range on anything larger than a
+    // small mob - the swings simply missed. 1.5 keeps them inside attack range.
+    static constexpr float RoamDistance    = { 1.5f };
     static constexpr float SpawnDistance   = { 3.0f };
     static constexpr float CastingDistance = { 15.0f };
     static constexpr float WarpDistance    = { 30.0f };

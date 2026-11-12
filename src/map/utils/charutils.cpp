@@ -6681,7 +6681,8 @@ void ReloadParty(CCharEntity* PChar)
     }
 
     // A party that was created with trusts disbands if they get dismissed
-    if (PChar->PParty && PChar->PParty->IsFormedByTrusts() && PChar->PTrusts.empty())
+    // (FFXI Offline: not while other players are in it - a bot may have joined a party that calling the squad made)
+    if (PChar->PParty && PChar->PParty->IsFormedByTrusts() && PChar->PTrusts.empty() && PChar->PParty->members.size() <= 1)
     {
         PChar->PParty->DisbandParty();
     }
@@ -7632,7 +7633,8 @@ void removeCharFromZone(CCharEntity* PChar)
     }
 
     // The char wont tick again so ReloadParty needs to end the trust party here
-    if (PChar->PParty && PChar->PParty->IsFormedByTrusts())
+    // (FFXI Offline: not while other players are in it, see ReloadParty)
+    if (PChar->PParty && PChar->PParty->IsFormedByTrusts() && PChar->PParty->members.size() <= 1)
     {
         PChar->PParty->DisbandParty();
     }

@@ -256,20 +256,21 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
                 }
                 case TRUST_MOVEMENT_TYPE::MELEE:
                 {
-                    std::unique_ptr<CBasicPacket> err;
-                    if (!PTrust->CanAttack(PTarget, err) && PTrust->GetSpeed() > 0)
+                    // CanAttack answers "would a swing land", not "am I standing next to
+                    // it": the hitbox sizes are part of GetMeleeRange, so it reads true
+                    // from 3+ yalms away and the mate stopped there, looking like it was
+                    // swinging from the next camp. Keep closing until it is actually
+                    // inside RoamDistance of the mob, whatever CanAttack says.
+                    if (PTrust->GetSpeed() > 0 && currentDistanceToTarget > RoamDistance)
                     {
-                        if (currentDistanceToTarget > RoamDistance)
+                        if (currentDistanceToTarget < RoamDistance * 3.0f &&
+                            PTrust->PAI->PathFind->PathAround(PTarget->loc.p, RoamDistance, PATHFLAG_RUN))
                         {
-                            if (currentDistanceToTarget < RoamDistance * 3.0f &&
-                                PTrust->PAI->PathFind->PathAround(PTarget->loc.p, RoamDistance, PATHFLAG_RUN))
-                            {
-                                PTrust->PAI->PathFind->FollowPath(m_Tick);
-                            }
-                            else if (PTrust->GetSpeed() > 0)
-                            {
-                                PTrust->PAI->PathFind->StepTo(PTarget->loc.p, true);
-                            }
+                            PTrust->PAI->PathFind->FollowPath(m_Tick);
+                        }
+                        else if (PTrust->GetSpeed() > 0)
+                        {
+                            PTrust->PAI->PathFind->StepTo(PTarget->loc.p, true);
                         }
                     }
                     break;
