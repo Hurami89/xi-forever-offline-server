@@ -1205,10 +1205,15 @@ local restTick    -- defined after callMate
 
 -----------------------------------
 -- Squad chat (Ollama sidecar): in-character party chat and generated backstories.
--- The Python sidecar in C:/FFXISOLO/squad-chat owns the character sheets, memory and the model.
+-- The Python sidecar in <kit>/squad-chat owns the character sheets, memory and the model. The kit folder comes from
+-- kit_paths.lua, which the launcher writes every launch (C:/FFXISOLO if it is missing).
 -- This file only passes chat out and plays the replies in party chat.
 -----------------------------------
-local CHAT_DIR = 'C:/FFXISOLO/squad-chat/'
+local CHAT_DIR = (function()   -- no new file-level locals: this file is close to Lua's limit of 200
+    local ok, paths = pcall(require, 'modules/custom/lua/kit_paths')
+    if ok and type(paths) == 'table' and type(paths.kit) == 'string' and paths.kit ~= '' then return paths.kit .. 'squad-chat/' end
+    return 'C:/FFXISOLO/squad-chat/'
+end)()
 local CHAT_IN = CHAT_DIR .. 'in.txt'
 local CHAT_OUT = CHAT_DIR .. 'out.txt'
 local CHAT_POLL_SEC = 1
@@ -1340,7 +1345,7 @@ local function chatPushContext(player)
         return
     end
 
-    chatSend('CTX', zone, level, player:isEngaged() and 1 or 0, chatActiveNames(player))
+    chatSend('CTX', zone, level, player:isEngaged() and 1 or 0, chatActiveNames(player), player:getName(), player:getRace()) -- name and race: who the mates follow
     chatSend('CHAT_STATE', chatEnabled(player) and 1 or 0)
     chatLastContext = now
 
@@ -2048,8 +2053,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
             end
             say(player, string.format('Chat is %s. The sidecar has written %d line(s)%s.', chatEnabled(player) and 'on' or 'off', count,
                 last and ('; last: ' .. last) or ''))
-            say(player, 'Here is a direct test; it should appear in party chat as Kasumi.')
-            player:printToPlayer('This is a test line from your squad chat.', 4, 'Kasumi')
+            local tester = (chatActiveNames(player):match('^([^,]+)')) or 'Squad'   -- the first mate who is out
+            say(player, 'Here is a direct test; it should appear in party chat as ' .. tester .. '.')
+            player:printToPlayer('This is a test line from your squad chat.', 4, tester)
         else
             say(player, 'Squad chat is ' .. (chatEnabled(player) and 'on' or 'off') .. '. Use !squad chat on or !squad chat off.')
         end
@@ -2400,7 +2406,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
 
     if action == 'dismiss' then
         player:clearTrusts()
-        chatSend('CTX', player:getZoneName(), player:getMainLvl(), 0, '')
+        chatSend('CTX', player:getZoneName(), player:getMainLvl(), 0, '', player:getName(), player:getRace())
         say(player, 'Your trusts and squad mates have been dismissed.')
         return
     end

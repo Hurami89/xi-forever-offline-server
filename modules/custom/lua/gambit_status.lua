@@ -1,6 +1,6 @@
 -----------------------------------
 -- !gambit status <entity id> <nonce>
--- Answers the TitanGambits addon (dualbox character) with the status effects of one of its party members,
+-- Answers the Gambits addon (dualbox character) with the status effects of one of its party members,
 -- so it can see buffs on squad mates and Trusts (the game client only shows buffs of real players).
 -- Reply (hidden by the addon): TGST|nonce|targetId|zone|dispellable(0/1/!)|maxMP|id,id,... or '-' or '!'
 -- Only party/alliance members in the same zone are answered; anything else gets '!' (unknown).

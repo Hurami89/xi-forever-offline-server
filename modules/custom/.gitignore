@@ -6,3 +6,11 @@ lua/bots_chat_in.txt
 lua/bots_chat_out.txt
 lua/bots_chat_state.json
 lua/crowds_chat_ai.json
+# written by the launcher every launch (this PC's folders)
+lua/kit_paths.lua
+# written by the launcher from each player's greeting lines (personal)
+lua/squad_greetings_data.lua
+# rewritten by the launcher on every launch from each player's settings
+lua/bots_config.lua
+lua/crowds_config.lua
+lua/era_exp_config.lua

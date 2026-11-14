@@ -265,10 +265,16 @@ end
 
 -- The Crystal Boy addon writes what each character finished to
 --   <Ashita>\config\addons\crystalboy\claims\<Character>\claims.lua
--- (the server and the game run on the same PC). The Ashita folder comes from the kit's config.json.
+-- (the server and the game run on the same PC). The Ashita folder comes from kit_paths.lua (written by the launcher
+-- every launch), else from the kit's config.json, else C:\Ashita-v4beta-main.
 local function ashitaDir()
+    local okp, paths = pcall(require, 'modules/custom/lua/kit_paths')
+    if okp and type(paths) == 'table' and type(paths.ashita) == 'string' and paths.ashita ~= '' then
+        return (paths.ashita:gsub('[/\\]+$', ''))
+    end
+    local kit = (okp and type(paths) == 'table' and type(paths.kit) == 'string' and paths.kit ~= '') and paths.kit or 'C:\\FFXISOLO\\'
     local dir = 'C:\\Ashita-v4beta-main'
-    local f = io.open('C:\\FFXISOLO\\config.json', 'r')
+    local f = io.open(kit .. 'config.json', 'r')
     if f then
         local text = f:read('*a')
         f:close()
