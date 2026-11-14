@@ -1,0 +1,19 @@
+# FFXI Offline: keep Home Point crystals for fast travel with RESTRICT_CONTENT on (core tags them as a later expansion).
+# "content: null" removes the tag (merge patch), as Phoenix does in its own data folder.
+
+npcs:
+
+  17412804:
+    content: null
+
+  17412805:
+    content: null
+
+  17412806:
+    content: null
+
+  17412807:
+    content: null
+
+  17412808:
+    content: null

@@ -317,15 +317,32 @@ auto Application::isRunningInCI() const -> bool
 auto Application::run() -> bool
 {
     ShowInfo("Creating engine");
-    engine_ = createEngine();
 
-    if (engine_)
+    // Startup failures (a busy port, a bad setting, a missing certificate) used to escape as an
+    // uncaught C++ exception, so the launcher only ever showed "stopped unexpectedly" with no
+    // reason. Say what actually went wrong and exit cleanly instead.
+    try
     {
-        ShowInfo("Initializing engine");
-        engine_->onInitialize();
+        engine_ = createEngine();
 
-        // Register specialized commands
-        registerCommands(console());
+        if (engine_)
+        {
+            ShowInfo("Initializing engine");
+            engine_->onInitialize();
+
+            // Register specialized commands
+            registerCommands(console());
+        }
+    }
+    catch (const std::exception& e)
+    {
+        ShowCriticalFmt("The {}-server could not start: {}", serverName_, e.what());
+        return false;
+    }
+    catch (...)
+    {
+        ShowCriticalFmt("The {}-server could not start: unknown error", serverName_);
+        return false;
     }
 
     markLoaded();

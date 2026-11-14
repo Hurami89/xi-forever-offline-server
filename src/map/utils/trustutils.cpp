@@ -574,7 +574,13 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
             }
 
             const auto group = PSpell->getSpellGroup();
-            if (group == SPELLGROUP_TRUST || group == SPELLGROUP_BLUE || group == SPELLGROUP_SUMMONING || group == SPELLGROUP_GEOMANCY)
+            if (group == SPELLGROUP_TRUST || group == SPELLGROUP_SUMMONING || group == SPELLGROUP_GEOMANCY)
+            {
+                continue;
+            }
+
+            // FFXI Offline: blue magic only for a squad Blue Mage (main or sub job)
+            if (group == SPELLGROUP_BLUE && mainJob != xi::Job::BLU && subJob != xi::Job::BLU)
             {
                 continue;
             }

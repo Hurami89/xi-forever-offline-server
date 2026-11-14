@@ -1,0 +1,3938 @@
+-----------------------------------
+-- Squad Mates (v1.15): !squad command   (1.7: level sync; 1.8: rest together; 1.9: adventure journal events for squad chat; 1.10: BST Courier Carrie pets; 1.11: pet skill lists + DRG support magic; 1.12: SMN coverage + pet support skills target the mate; 1.13: per-mate on/off switches for melee, ranged, abilities and spells, and melee-off holds the back line; 1.14: !squad sheet, the stats-and-gear sheet behind the panel's Sheet window; 1.15: exp line on the sheet)
+--
+-- Persistent, customizable Trust-style party members. Each squad mate has its own level and exp for
+-- every job, like a real character. Needs modules/custom/cpp/squad.cpp.
+-- Squad mates do not go through xi.trust.canCast, so the usual Trust zone/battlefield limits do not apply.
+-----------------------------------
+require('modules/module_utils')
+-----------------------------------
+
+local MAX_SLOTS = 6         -- squad mates you can keep
+local MAX_ACTIVE = 5        -- a party holds 6 including you
+local MAX_LEVEL = 75        -- 75-era server
+local SUB_UNLOCK_LEVEL = 18 -- sub job unlocks at main level 18, like retail
+local REQUIRE_UNLOCK = true -- gear must be given to the squad once (!squad give) before any mate can wear it
+
+-- Jobs available on this server (15 base jobs)
+local jobIds =
+{
+    WAR = 1, MNK = 2, WHM = 3, BLM = 4, RDM = 5, THF = 6, PLD = 7, DRK = 8,
+    BST = 9, BRD = 10, RNG = 11, SAM = 12, NIN = 13, DRG = 14, SMN = 15,
+    BLU = 16, COR = 17, PUP = 18, -- v1.17 (Treasures of Aht Urhgan jobs; your character must have unlocked them)
+}
+
+local jobNames = {}
+for name, id in pairs(jobIds) do
+    jobNames[id] = name
+end
+
+-- Spoken job names, for the lines that can say what a mate is on ("Ready as {job}").
+local jobTitles =
+{
+    [1] = 'Warrior', [2] = 'Monk', [3] = 'White Mage', [4] = 'Black Mage', [5] = 'Red Mage',
+    [6] = 'Thief', [7] = 'Paladin', [8] = 'Dark Knight', [9] = 'Beastmaster', [10] = 'Bard',
+    [11] = 'Ranger', [12] = 'Samurai', [13] = 'Ninja', [14] = 'Dragoon', [15] = 'Summoner',
+}
+
+local raceIds =
+{
+    humem = 1, humef = 2, elvm = 3, elvf = 4, tarum = 5, taruf = 6, mithra = 7, galka = 8,
+}
+
+local raceNames = { 'Hume M', 'Hume F', 'Elvaan M', 'Elvaan F', 'Tarutaru M', 'Tarutaru F', 'Mithra', 'Galka' }
+
+-- Equipment slot indexes, same numbering the game uses
+local equipSlots =
+{
+    main = 0, sub = 1, range = 2, ranged = 2, ammo = 3, head = 4, body = 5, hands = 6, legs = 7, feet = 8,
+    neck = 9, waist = 10, ear1 = 11, ear2 = 12, ring1 = 13, ring2 = 14, back = 15,
+}
+
+local equipSlotNames = { [0] = 'main', 'sub', 'range', 'ammo', 'head', 'body', 'hands', 'legs', 'feet', 'neck', 'waist', 'ear1', 'ear2', 'ring1', 'ring2', 'back' }
+
+-- True if bit n of mask is set (items store allowed jobs and slots as bit masks)
+local function hasBit(mask, n)
+    return math.floor(mask / (2 ^ n)) % 2 == 1
+end
+
+-- Roles and modes of squad mates (v1.5, described under "Roles and modes" further down). Stored on the player as SQUAD_AI_<mate id> = role * 10 + mode.
+-- They are defined here, above the !squad command, because a Lua name can only be used below the line that declares it.
+local ROLES = { 'auto', 'tank', 'damage', 'healer', 'support' }
+local MODES = { 'balanced', 'aggressive', 'conserve' }
+
+local function decodeBehavior(code)
+    code = tonumber(code) or 0
+    return ROLES[math.floor(code / 10) + 1] or 'auto', MODES[code % 10 + 1] or 'balanced'
+end
+
+-- On/off switches per mate (v1.13, the idea borrowed from the TitanXI Gambits window): which kinds of action a mate may use
+-- at all, whatever its role says. Stored on the player as SQUAD_SW_<mate id> = mask + 1, so a stored 0 means "never set" (all on)
+-- and a stored 1 means every switch is off.
+local SWITCHES = { 'melee', 'ranged', 'ja', 'magic' }
+local SW_BIT    = { melee = 0, ranged = 1, ja = 2, magic = 3 }
+local SW_ALL    = 15
+
+local function withBit(mask, n, on)
+    local value = 2 ^ n
+    local has   = math.floor(mask / value) % 2 == 1
+    if on and not has then
+        return mask + value
+    elseif not on and has then
+        return mask - value
+    end
+
+    return mask
+end
+
+local function switchesOf(player, mateId)
+    local raw = tonumber(player:getCharVar('SQUAD_SW_' .. mateId)) or 0
+    if raw <= 0 then
+        return SW_ALL
+    end
+
+    return raw - 1
+end
+
+local function switchSummary(mask)
+    local parts = {}
+    for _, name in ipairs(SWITCHES) do
+        parts[#parts + 1] = name .. ' ' .. (hasBit(mask, SW_BIT[name]) and 'on' or 'off')
+    end
+
+    return table.concat(parts, ', ')
+end
+
+local commandObj = {}
+
+commandObj.cmdprops =
+{
+    permission = 0,
+    parameters = 'sssss',
+}
+
+local function say(player, msg)
+    player:printToPlayer(msg)
+end
+
+-- Dialogue lives in squad_dialogue.lua so you can edit what your squad mates say
+local dialogueLoaded, dialogue = pcall(require, 'modules/custom/lua/squad_dialogue')
+if not dialogueLoaded or type(dialogue) ~= 'table' then
+    print('[squad] could not load squad_dialogue.lua - squad mates will stay quiet')
+    dialogue = { voices = {}, voiceOrder = {}, voiceByName = {}, wsShoutChance = 0 }
+end
+
+-- Used when a voice has no lines for an event (for example an older, edited squad_dialogue.lua)
+local fallbackLines =
+{
+    eat = { 'Time for a bite: {food}.', 'Hold on, I am having some {food}.', 'Let me grab a {food} first.' },
+    spellcast = { 'On it: {spell}!', '{spell}, coming up.', 'Casting {spell}.' },
+    spellunknown = { 'I have not learned {spell}.', 'I do not know {spell} yet.', '{spell}? That is beyond me for now.' },
+    spellnotready = { 'I cannot cast {spell} right now (not enough MP, or it is still recasting).', 'Not ready for {spell} yet.' },
+    spellnotarget = { 'There is nothing to cast {spell} on.', 'I need a target for {spell}.' },
+    spellbusy = { 'Give me a moment, I am busy.', 'Hold on, I cannot cast that this second.' },
+    abilitycast = { '{ability}!', 'Using {ability}!', '{ability}, here we go!' },
+    abilityunknown = { '{ability} is not one of my abilities.', 'I cannot use {ability} as a {job}.' },
+    abilitynotready = { '{ability} is not ready yet, it is still recharging.', 'I already used {ability}. Give it time.' },
+    abilitynotarget = { 'I need an enemy for {ability}.', 'Pick a target first for {ability}.' },
+    abilitybusy = { 'I could not get {ability} off, try again in a moment.' },
+}
+
+-- 'cure_iv' -> 'Cure IV'
+local function prettySpellName(name)
+    local text = string.gsub(name, '_', ' ')
+    text = string.gsub(text, '(%a)([%w\']*)', function(first, rest)
+        local word = first .. rest
+        if string.match(word, '^[ivxIVX]+$') then
+            return string.upper(word)
+        end
+
+        return string.upper(first) .. rest
+    end)
+
+    return text
+end
+
+-- A mate's voice is chosen from their name (or voiceByName in squad_dialogue.lua), so it never changes
+local function voiceFor(name)
+    local chosen = dialogue.voiceByName[name]
+    if chosen ~= nil and dialogue.voices[chosen] ~= nil then
+        return chosen
+    end
+
+    if #dialogue.voiceOrder == 0 then
+        return nil
+    end
+
+    local sum = 0
+    for i = 1, #name do
+        sum = sum + string.byte(name, i)
+    end
+
+    return dialogue.voiceOrder[(sum % #dialogue.voiceOrder) + 1]
+end
+
+-- Makes a squad mate say a line for this event in your party chat. The mate's own lines (edited in the launcher's
+-- Squad tab) come first; otherwise the lines of their voice are used. vars fills in {item}, {level}, {zone}, {job}, ...
+local function speak(player, name, event, vars)
+    local voiceName = voiceFor(name)
+    local text
+
+    -- pickLine also remembers the last few lines of each kind, so two mates never say the same line together.
+    if type(dialogue.pickLine) == 'function' then
+        text = dialogue.pickLine(name, event, voiceName)
+    end
+
+    if text == nil then
+        local voice = dialogue.voices[voiceName or '']
+        local lines = voice and voice[event]
+        if lines == nil or #lines == 0 then
+            lines = fallbackLines[event]
+        end
+
+        if lines == nil or #lines == 0 then
+            return
+        end
+
+        text = lines[math.random(#lines)]
+    end
+
+    local values = vars or {}
+    values.name = name
+    values.master = player:getName()
+    values.zone = values.zone or player:getZoneName()
+
+    text = string.gsub(text, '{(%w+)}', function(key)
+        return tostring(values[key] or '')
+    end)
+
+    player:printToPlayer(text, 4, name) -- shows in party chat as if the mate said it
+end
+
+-- Same, from the squad mate's own entity (looks the player up by the id saved at spawn when needed)
+local function speakFromMob(mob, event, vars)
+    local master = mob:getMaster()
+    if master == nil then
+        master = GetPlayerByID(mob:getLocalVar('MASTER_ID'))
+    end
+
+    if master ~= nil then
+        speak(master, mob:getPacketName(), event, vars)
+    end
+end
+
+local jobList = 'WAR MNK WHM BLM RDM THF PLD DRK BST BRD RNG SAM NIN DRG SMN'
+
+local function usage(player)
+    say(player, '!squad - list your squad mates')
+    say(player, '!squad new <name> <job> [level]   e.g. !squad new Bob WAR 75')
+    say(player, '!squad job <slot> <job>   |   !squad sub <slot> <job or none>')
+    say(player, '!squad levels <slot>   |   !squad setlevel <slot> <job> <level>')
+    say(player, '!squad look <slot> <race> <face 1-16>   races: humem humef elvm elvf tarum taruf mithra galka')
+    say(player, '!squad give <item name or id>   - give an item to your squad once; every mate can then wear it')
+    say(player, '!squad unlocked   - show what your squad has been given')
+    say(player, '!squad equip <slot> <item name or id> [equip slot]   |   !squad unequip <slot> <equip slot or all>')
+    say(player, '!squad gear <slot>   (gear is saved per job; equip slots: head body hands legs feet main sub range ammo neck waist ear1 ear2 ring1 ring2 back)')
+    say(player, '!squad rename <slot> <name>   |   !squad delete <slot>')
+    say(player, '!squad call [slot or all]   |   !squad dismiss   |   !squad food   (what they have eaten)')
+    say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
+    say(player, '!squad sw <slot> <melee|ranged|ja|magic|all> <on|off>   - stop one kind of action, e.g. stop a healer from meleeing')
+    say(player, '!squad lore <slot>   - write (or rewrite) that mate\'s backstory')
+    say(player, '!squad chat [on|off|test]   - in-character party chat with your mates')
+    say(player, 'Party chat: /p !note <text>   - add a memory to their adventure journal')
+    say(player, '!startergear   - basic level 1 gear for you and every squad mate   (!startergear me | !startergear squad)')
+    say(player, 'Jobs: ' .. jobList)
+end
+
+local function parseJob(text)
+    if text == nil then
+        return nil
+    end
+
+    return jobIds[string.upper(text)]
+end
+
+-- Food: squad mates eat free, modest food once they are level 11 or higher (see squad_food.lua)
+local foodLoaded, food = pcall(require, 'modules/custom/lua/squad_food')
+if not foodLoaded or type(food) ~= 'table' then
+    print('[squad] could not load squad_food.lua - squad mates will not eat')
+    food = { enabled = false }
+end
+
+local function chooseFood(job, level)
+    local role = food.roleByJob and food.roleByJob[job]
+    if role == nil then
+        return nil
+    end
+
+    for _, tier in ipairs(food.tiers or {}) do
+        if level >= tier.from and level <= tier.to then
+            return food.foods[tier.foods[role]]
+        end
+    end
+
+    return nil
+end
+
+local function changeFoodMods(mob, meal, sign)
+    for _, entry in ipairs(meal.mods) do
+        local modId = xi.mod[entry[1]]
+        if modId == nil then
+            print(string.format('[squad] unknown stat %s in %s - skipped', entry[1], meal.name))
+        elseif sign > 0 then
+            mob:addMod(modId, entry[2])
+        else
+            mob:delMod(modId, entry[2])
+        end
+    end
+end
+
+-- Pets: a dragoon calls a wyvern, a summoner calls Carbuncle, and a beastmaster calls Courier Carrie
+-- when a fight starts, and sends the pet at the enemy. The beastmaster pet is a free squad jug, not a jug item;
+-- charm and the other avatars are not supported yet. Set ENABLE_PETS to false to turn this off.
+local ENABLE_PETS = true
+local PET_RESUMMON_SECONDS = 120 -- a pet that dies is called again after this long
+
+local petByJob =
+{
+    [jobIds.DRG] = 48, -- wyvern
+    [jobIds.SMN] = 8,  -- Carbuncle
+    [jobIds.BST] = 24, -- Courier Carrie (the classic starter jug pet)
+}
+
+-- (in a do-block: this file is close to Lua's limit of 200 local variables at file level, so the new names
+--  below must not be added to it)
+local petTick
+do
+    -- v1.16: which pet, by level (modules/custom/lua/pets_data.lua). A Beastmaster gets the jug pet of its level
+    -- instead of always Courier Carrie; a Summoner gets Carbuncle until 10, then one of the avatars (kept for as long
+    -- as the mate is out), and its avatar uses a Blood Pact: Rage about once a minute, paid for with the mate's MP.
+    -- Carbuncle also uses Healing Ruby on you under half health. A Beastmaster tends a pet under half health every
+    -- 90 seconds (what Reward does). Without pets_data.lua everything is as before.
+    local okPetsData, petsData = pcall(require, 'modules/custom/lua/pets_data')
+    if not okPetsData or type(petsData) ~= 'table' then
+        print('[squad] pets_data.lua could not be loaded, pets stay as before: ' .. tostring(petsData))
+        petsData = nil
+    end
+
+    local BLOOD_PACT_SECONDS = 60
+    local TEND_SECONDS       = 90
+
+    local function squadPetId(mob)
+        local job = mob:getMainJob()
+        local fixed = petByJob[job]
+        if fixed == nil or not petsData or job == jobIds.DRG then
+            return fixed
+        end
+
+        -- (chosen once per summoned mate; pet ids here are never 0)
+        local chosen = mob:getLocalVar('SQUAD_PET_PICK')
+        if chosen == 0 then
+            local lvl = mob:getMainLvl()
+            local okPick, picked = pcall(function()
+                return (job == jobIds.SMN) and petsData.avatarFor(lvl) or petsData.jugFor(lvl)
+            end)
+            chosen = (okPick and picked and picked ~= 0) and picked or fixed
+            mob:setLocalVar('SQUAD_PET_PICK', chosen)
+        end
+
+        return chosen
+    end
+
+    petTick = function(mob)
+        if not ENABLE_PETS then
+            return
+        end
+
+        local petId = squadPetId(mob)
+        if petId == nil then
+            return
+        end
+
+        local now = GetSystemTime()
+        if not SquadHasPet(mob) and now >= mob:getLocalVar('SQUAD_PET_NEXT') then
+            mob:setLocalVar('SQUAD_PET_NEXT', now + PET_RESUMMON_SECONDS)
+            SquadSpawnPet(mob, petId)
+        end
+
+        local target = mob:getTarget()
+        if target ~= nil then
+            SquadPetAttack(mob, target)
+        end
+
+        if not petsData or not SquadHasPet(mob) then
+            return
+        end
+
+        -- the pet's own actions (never allowed to stop the mate: everything in a pcall)
+        pcall(function()
+            local pet = mob:getPet()
+            if not pet then
+                return
+            end
+
+            local job, lvl = mob:getMainJob(), mob:getMainLvl()
+            if job == jobIds.SMN then
+                local cost = 8 + math.floor(lvl * 1.2)
+                local master = mob:getMaster()
+                local ward = petsData.wardFor(pet:getPetID())
+                if ward and master and master:isAlive() and master:getHPP() < 50 and mob:getMP() >= cost and now >= mob:getLocalVar('SQUAD_WARD_NEXT') then
+                    mob:setLocalVar('SQUAD_WARD_NEXT', now + BLOOD_PACT_SECONDS)
+                    mob:delMP(cost)
+                    pet:usePetAbility(ward, master)
+                elseif target ~= nil and target:isAlive() and now >= mob:getLocalVar('SQUAD_BP_NEXT') then
+                    local pact = petsData.rageFor(pet:getPetID(), lvl)
+                    if pact and mob:getMP() >= cost then
+                        mob:setLocalVar('SQUAD_BP_NEXT', now + BLOOD_PACT_SECONDS)
+                        mob:delMP(cost)
+                        pet:usePetAbility(pact, target)
+                    else
+                        mob:setLocalVar('SQUAD_BP_NEXT', now + 10)
+                    end
+                end
+            elseif job == jobIds.BST then
+                local hpp = pet:getHPP()
+                if hpp > 0 and hpp < 50 and now >= mob:getLocalVar('SQUAD_TEND_NEXT') then
+                    mob:setLocalVar('SQUAD_TEND_NEXT', now + TEND_SECONDS)
+                    pet:addHP(math.floor(pet:getMaxHP() * 0.3))
+                end
+            end
+        end)
+    end
+end
+
+-- the eating animation each dish plays for a player (item_usable.animation), and the "<mate> uses <item>." line
+local FOOD_ANIM = { [4456] = 25, [4535] = 25, [4561] = 25, [5166] = 28, [4381] = 28, [5773] = 24, [5701] = 24, [5942] = 29, [5752] = 24,
+                    [4538] = 25, [5729] = 24, [5552] = 24, [5144] = 26, [5676] = 27, [5158] = 26, [4371] = 28, [4437] = 28, [5174] = 24 }
+
+local function showEating(mob, meal)
+    pcall(function()
+        -- category 5 = item use finished, resolution 0 = hit, message 28 = "<actor> uses <item>."
+        mob:injectActionPacket(mob:getID(), 5, FOOD_ANIM[meal.id] or 24, 0, 0, 28, meal.id, meal.id)
+    end)
+end
+
+-- Runs every combat tick: takes off worn-out food, and eats a fresh meal if the mate is not currently eating one
+local function eatIfNeeded(mob)
+    if not food.enabled then
+        return
+    end
+
+    local level = mob:getMainLvl()
+    local now = GetSystemTime()
+    local mealId = mob:getLocalVar('SQUAD_FOOD_ID')
+
+    if mealId ~= 0 and now >= mob:getLocalVar('SQUAD_FOOD_UNTIL') then
+        -- (a meal eaten as the real Food effect wears off by itself; the older way took its stats off here)
+        if mob:getLocalVar('SQUAD_FOOD_FX') == 0 then
+            for _, meal in pairs(food.foods) do
+                if meal.id == mealId then
+                    changeFoodMods(mob, meal, -1)
+                end
+            end
+        end
+
+        mob:setLocalVar('SQUAD_FOOD_ID', 0)
+        mob:setLocalVar('SQUAD_FOOD_FX', 0)
+        mealId = 0
+    end
+
+    -- the Food effect is still on (eaten as a real meal): nothing to do
+    if mealId ~= 0 and mob:getLocalVar('SQUAD_FOOD_FX') == 1 and not mob:hasStatusEffect(xi.effect.FOOD) then
+        mob:setLocalVar('SQUAD_FOOD_ID', 0)
+        mob:setLocalVar('SQUAD_FOOD_FX', 0)
+        mealId = 0
+    end
+
+    if mealId ~= 0 or level < (food.minLevel or 11) then
+        return
+    end
+
+    local meal = chooseFood(mob:getMainJob(), level)
+    if meal == nil then
+        return
+    end
+
+    -- eat it as the real Food effect (the item's own stats, the food icon on the party list), like a player eating;
+    -- if that does not work for some reason, the stats are added directly as before
+    local ate = false
+    if not mob:hasStatusEffect(xi.effect.FOOD) then
+        ate = pcall(function()
+            mob:addStatusEffect(xi.effect.FOOD, { duration = meal.duration, origin = mob, sourceType = xi.effectSourceType.FOOD, sourceTypeParam = meal.id })
+        end) and mob:hasStatusEffect(xi.effect.FOOD)
+    end
+
+    if not ate then
+        changeFoodMods(mob, meal, 1)
+    end
+
+    mob:setLocalVar('SQUAD_FOOD_FX', ate and 1 or 0)
+    mob:setLocalVar('SQUAD_FOOD_ID', meal.id)
+    mob:setLocalVar('SQUAD_FOOD_UNTIL', now + meal.duration)
+    print(string.format('[squad] %s eats %s (%d min%s)', mob:getPacketName(), meal.name, math.floor(meal.duration / 60), ate and '' or ', stats added directly'))
+    showEating(mob, meal)
+
+    if food.speakOnEat ~= false and dialogue.speakOnEat ~= false then
+        speakFromMob(mob, 'eat', { food = meal.name })
+    end
+end
+
+-- WAR MNK WHM BLM RDM THF (job ids 1-6) are available from the start. The other jobs are advanced jobs and
+-- only work for squad mates once your character has unlocked them (like the job unlock quests in the game).
+local STARTER_JOB_MAX = 6
+
+local function jobUnlocked(player, job)
+    return job <= STARTER_JOB_MAX or player:hasJob(job)
+end
+
+local function lockedMessage(player, job)
+    return string.format('%s is an advanced job that %s has not unlocked yet.', jobNames[job], player:getName())
+end
+
+local function validName(name)
+    return type(name) == 'string' and string.match(name, '^%a+$') ~= nil and #name >= 3 and #name <= 15
+end
+
+local function clampLevel(value)
+    return math.max(1, math.min(MAX_LEVEL, math.floor(value)))
+end
+
+local function findMate(squad, slot)
+    for _, mate in ipairs(squad) do
+        if mate.slot == slot then
+            return mate
+        end
+    end
+
+    return nil
+end
+
+-- A job the mate has never used is level 1, like a fresh job on a real character
+local function jobLevel(mate, job)
+    local info = mate.jobs[job]
+    return info and info.level or 1
+end
+
+-- Main level is the main job's own level. The sub job unlocks at SUB_UNLOCK_LEVEL and works like retail:
+-- its level is half the main level, but never higher than the sub job's own level.
+-- cap: the highest main level allowed (level sync to your character); nil = the mate's own level
+local function levelsFor(mate, cap)
+    local main = jobLevel(mate, mate.mjob)
+    if cap ~= nil and cap >= 1 and main > cap then
+        main = cap
+    end
+    local sub = 0
+    local subLevel = 0
+
+    if mate.sjob ~= 0 and mate.sjob ~= mate.mjob and main >= SUB_UNLOCK_LEVEL then
+        sub = mate.sjob
+        subLevel = math.max(1, math.min(jobLevel(mate, sub), math.floor(main / 2)))
+    end
+
+    return main, sub, subLevel
+end
+
+local function describe(mate)
+    local main, sub, subLevel = levelsFor(mate)
+    local subText = sub ~= 0 and string.format('/%s%d', jobNames[sub], subLevel) or ''
+    local race = mate.race > 0 and mate.race or 1 -- a mate with no race chosen is a Hume male
+    local look = ' - ' .. raceNames[race] .. ' face ' .. (mate.face + 1)
+    return string.format('[%d] %s  %s%d%s%s', mate.slot, mate.name, jobNames[mate.mjob] or '???', main, subText, look)
+end
+
+local function summonedMate(player, squadId)
+    for _, member in pairs(player:getPartyWithTrusts()) do
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') == squadId then
+            return member
+        end
+    end
+
+    return nil
+end
+
+local function isSummoned(player, squadId)
+    return summonedMate(player, squadId) ~= nil
+end
+
+-----------------------------------
+-- Camp and pull (!squad camp, !squad pull): the squad holds a spot while someone pulls monsters to it.
+-- This file keeps the camp and picks what to pull. The trust controller (core trust_controller.cpp) does the holding,
+-- the run out and back, and the fighting at camp, through the mates' local vars SQUAD_CAMP* and SQUAD_PULL_*.
+-----------------------------------
+local CAMP_PULL_RANGE   = 80        -- yalms from camp the puller goes for a monster: your own area, not the far
+                                    -- side of the zone (!squad camp range <10-500> changes yours)
+local CAMP_RANGE_LIMITS = { 10, 500 }
+local CAMP_WANT_ABOVE   = 5         -- a kind of monster you picked: pulled up to this many levels above you
+local CAMP_LIST_MAX     = 24        -- kinds of monster listed in the menu
+
+-- the kinds of monster around the camp (within the pull range), for the menu: { name, lo, hi, count, fits }
+local function campKinds(player, c)
+    local zone = player:getZone()
+    if zone == nil or c == nil then
+        return {}
+    end
+
+    local lvl, range = player:getMainLvl(), CAMP_PULL_RANGE
+    local own = player:getCharVar('SQUAD_PULL_RANGE')
+    if own >= CAMP_RANGE_LIMITS[1] and own <= CAMP_RANGE_LIMITS[2] then
+        range = own
+    end
+
+    local byName = {}
+    for _, mob in ipairs(zone:getMobs() or {}) do
+        pcall(function()
+            if mob:isNM() or (xi.allegiance and xi.allegiance.MOB and mob:getAllegiance() ~= xi.allegiance.MOB) then
+                return
+            end
+
+            local pos = mob:getPos()
+            local dx, dz = pos.x - c.x, pos.z - c.z
+            if dx * dx + dz * dz > range * range then
+                return
+            end
+
+            local name, ml = mob:getName(), mob:getMainLvl()
+            local k = byName[name]
+            if k == nil then
+                k = { name = name, lo = ml, hi = ml, count = 0 }
+                byName[name] = k
+            end
+
+            k.lo, k.hi, k.count = math.min(k.lo, ml), math.max(k.hi, ml), k.count + 1
+        end)
+    end
+
+    local list = {}
+    for _, k in pairs(byName) do
+        k.fits = k.lo <= lvl + CAMP_WANT_ABOVE
+        list[#list + 1] = k
+    end
+
+    table.sort(list, function(a, b)
+        if a.fits ~= b.fits then
+            return a.fits
+        end
+
+        return a.lo < b.lo or (a.lo == b.lo and a.name < b.name)
+    end)
+
+    while #list > CAMP_LIST_MAX do
+        table.remove(list)
+    end
+
+    return list
+end
+
+local function campRange(player)
+    local own = player:getCharVar('SQUAD_PULL_RANGE')
+    if own >= CAMP_RANGE_LIMITS[1] and own <= CAMP_RANGE_LIMITS[2] then
+        return own
+    end
+
+    return CAMP_PULL_RANGE
+end
+local CAMP_LEVELS       = { -6, 2 } -- monster level against yours (easy prey up to a decent challenge)
+local CAMP_PULL_TIMEOUT = 300       -- seconds before a pull that did not work is given up (a 400 yalm run out and back)
+local CAMP_PULL_GAP     = { 4, 8 }  -- seconds of quiet at camp before the next pull
+local CAMP_READY_HP     = 60        -- everyone at least this much HP (%) before a pull
+local CAMP_READY_MP     = 30        -- and everyone with MP (you, your second character, the mates) at least this much
+local CAMP_PULL_FLEE_HP = 40        -- a puller this hurt while dragging a monster home drops it and runs for camp
+local CAMP_OTHERS_SPACE = 10        -- never a monster this close to another player (bots included)
+local camps = {}                    -- [player id] = { zone, x, y, z, puller (mate id, 0 = you), state, since, nextPull, nextTick }
+
+local function campEncode(value)
+    return math.floor(value * 100 + 0.5) + 10000000
+end
+
+local function squadTrusts(player)
+    local out = {}
+    for _, member in pairs(player:getPartyWithTrusts()) do
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 then
+            out[#out + 1] = member
+        end
+    end
+
+    return out
+end
+
+-- puts the camp (or no camp) on one mate
+local function campApply(player, trust)
+    local c = camps[player:getID()]
+    if c ~= nil and c.zone == player:getZoneID() then
+        trust:setLocalVar('SQUAD_CAMP_X', campEncode(c.x))
+        trust:setLocalVar('SQUAD_CAMP_Y', campEncode(c.y))
+        trust:setLocalVar('SQUAD_CAMP_Z', campEncode(c.z))
+        trust:setLocalVar('SQUAD_CAMP', 1)
+    else
+        trust:setLocalVar('SQUAD_CAMP', 0)
+        trust:setLocalVar('SQUAD_PULL_PHASE', 0)
+        trust:setLocalVar('SQUAD_PULL_TARGET', 0)
+    end
+end
+
+local function campApplyAll(player)
+    for _, trust in ipairs(squadTrusts(player)) do
+        campApply(player, trust)
+    end
+end
+
+local function campDistance(c, pos)
+    local dx, dz = pos.x - c.x, pos.z - c.z
+    return math.sqrt(dx * dx + dz * dz)
+end
+
+local function percentOf(entity, now, max)
+    local top = entity[max](entity)
+    if top == nil or top <= 0 then
+        return 100
+    end
+
+    return math.floor(entity[now](entity) * 100 / top)
+end
+
+-- What the puller may go for: c.want holds one or more monster names, comma separated.
+local function campWants(c)
+    local list = {}
+    if c == nil or c.want == nil then
+        return list
+    end
+
+    for name in tostring(c.want):gmatch('[^,]+') do
+        name = name:match('^%s*(.-)%s*$')
+        if name ~= '' then
+            list[#list + 1] = name
+        end
+    end
+
+    return list
+end
+
+local function campNameMatches(a, b)
+    return tostring(a):lower():gsub('_', ' ') == tostring(b):lower():gsub('_', ' ')
+end
+
+local function campWantLabel(c)
+    local list = campWants(c)
+    if #list == 0 then
+        return nil
+    end
+
+    local out = {}
+    for _, name in ipairs(list) do
+        out[#out + 1] = tostring(name):gsub('_', ' ')
+    end
+
+    return table.concat(out, ', ')
+end
+
+-- the next monster for the puller: in range of camp, the right level, nobody else's, nearest to camp first
+local function campPick(player, c)
+    local zone = player:getZone()
+    if zone == nil then
+        return nil
+    end
+
+    local others = {}
+    for _, p in ipairs(zone:getPlayers() or {}) do
+        local inParty = false
+        for _, member in pairs(player:getPartyWithTrusts()) do
+            if member:getID() == p:getID() then
+                inParty = true
+            end
+        end
+
+        if not inParty then
+            others[#others + 1] = p:getPos()
+        end
+    end
+
+    local lvl = player:getMainLvl()
+    local range = campRange(player)
+    local wants = campWants(c)
+    local best, bestD = nil, math.huge
+    for _, mob in ipairs(zone:getMobs() or {}) do
+        local ok, usable = pcall(function()
+            if not mob:isAlive() or mob:isNM() or mob:isEngaged() then
+                return false
+            end
+
+            if xi.allegiance and xi.allegiance.MOB and mob:getAllegiance() ~= xi.allegiance.MOB then
+                return false
+            end
+
+            -- the kinds you picked in the menu (any level up to a little above yours), or the usual level window
+            local ml = mob:getMainLvl()
+            if #wants > 0 then
+                if ml > lvl + CAMP_WANT_ABOVE then
+                    return false
+                end
+
+                local name = mob:getName()
+                for _, wanted in ipairs(wants) do
+                    if campNameMatches(name, wanted) then
+                        return true
+                    end
+                end
+
+                return false
+            end
+
+            return ml >= lvl + CAMP_LEVELS[1] and ml <= lvl + CAMP_LEVELS[2]
+        end)
+        if ok and usable then
+            local pos = mob:getPos()
+            local d = campDistance(c, pos)
+            if d <= range and d < bestD then
+                local free = true
+                for _, op in ipairs(others) do
+                    local dx, dz = op.x - pos.x, op.z - pos.z
+                    if dx * dx + dz * dz < CAMP_OTHERS_SPACE * CAMP_OTHERS_SPACE then
+                        free = false
+                    end
+                end
+
+                if free then
+                    best, bestD = mob, d
+                end
+            end
+        end
+    end
+
+    return best
+end
+
+local function campSay(player, mate, text)
+    -- The puller can be gone by the time a line is said (died, dismissed,
+    -- zoned out). printToPlayer with a nil name is what threw inside the TICK
+    -- listener at 06:18, so a missing mate falls back to an unnamed line.
+    local name = nil
+    if mate ~= nil then
+        pcall(function()
+            name = mate:getPacketName()
+        end)
+    end
+
+    if name then
+        player:printToPlayer(text, 4, name)
+    else
+        player:printToPlayer(text)
+    end
+end
+
+-----------------------------------
+-- Skillchains, the way a party did them: one melee mate opens (only when someone else, you included, has the TP to
+-- close), the others hold their TP (up to 2000) for an opening and close it about 3 seconds after it lands, with the
+-- best chain they have. Your own weapon skills open for them too. A lone melee mate holds for yours (up to 1500).
+-- The opener calls it in party chat, so you can close it yourself. Mages magic burst (their job rules).
+-----------------------------------
+local SC_MELEE    = { [1] = true, [2] = true, [5] = true, [6] = true, [7] = true, [8] = true, [9] = true, [12] = true, [13] = true,
+                      [14] = true, [16] = true, [17] = true, [18] = true }
+local SC_HOLD     = 2000  -- a closer weapon skills anyway at this much TP
+local SC_HOLD_ONE = 1500  -- a lone melee mate (holding for yours)
+local SC_ROLE     = { opener = 1, closer = 2, alone = 3 }
+local wsNames     = nil
+
+local function wsName(id)
+    if wsNames == nil then
+        wsNames = {}
+        for key, value in pairs(xi.weaponskill or {}) do
+            wsNames[value] = (key:lower():gsub('_', ' '):gsub('(%a)([%w]*)', function(a, b) return a:upper() .. b end))
+        end
+    end
+
+    return wsNames[id] or 'a weapon skill'
+end
+
+-- who opens and who closes (every few seconds while fighting): the first melee mate opens (a Red Mage only if no one
+-- else can), the rest close
+local function skillchainRoles(player)
+    local melee = {}
+    for _, trust in ipairs(squadTrusts(player)) do
+        if trust:isAlive() and SC_MELEE[trust:getMainJob()] then
+            melee[#melee + 1] = trust
+        end
+    end
+
+    table.sort(melee, function(a, b)
+        local ar, br = a:getMainJob() == 5 and 1 or 0, b:getMainJob() == 5 and 1 or 0
+        if ar ~= br then
+            return ar < br
+        end
+
+        return a:getLocalVar('SQUAD_ID') < b:getLocalVar('SQUAD_ID')
+    end)
+
+    for i, trust in ipairs(melee) do
+        local role = (#melee == 1 and SC_ROLE.alone) or (i == 1 and SC_ROLE.opener) or SC_ROLE.closer
+        if trust:getLocalVar('SQUAD_SC_ROLE') ~= role then
+            trust:setLocalVar('SQUAD_SC_ROLE', role)
+            pcall(function()
+                if role == SC_ROLE.opener then
+                    trust:setTrustTPSkillSettings(ai.tp.OPENER, ai.s.HIGHEST, 1000)
+                elseif role == SC_ROLE.closer then
+                    trust:setTrustTPSkillSettings(ai.tp.CLOSER_UNTIL_TP, ai.s.HIGHEST, SC_HOLD)
+                else
+                    trust:setTrustTPSkillSettings(ai.tp.CLOSER_UNTIL_TP, ai.s.HIGHEST, SC_HOLD_ONE)
+                end
+            end)
+        end
+    end
+end
+
+local function skillchainTick(mob)
+    local player = mob:getMaster()
+    if player == nil or player:getObjType() ~= xi.objType.PC then
+        return
+    end
+
+    local now = os.time()
+    if now < mob:getLocalVar('SQUAD_SC_AT') then
+        return
+    end
+
+    mob:setLocalVar('SQUAD_SC_AT', now + 4)
+    skillchainRoles(player)
+end
+
+-- a mate's weapon skill landed: it opened a chain (tell the party, so you can close it) or closed one
+local function skillchainCall(mob, target, skill)
+    local player = mob:getMaster()
+    if player == nil or target == nil then
+        return
+    end
+
+    local ok, tier = pcall(function()
+        local effect = target:getStatusEffect(xi.effect.SKILLCHAIN)
+        return effect and effect:getTier() or -1
+    end)
+    if not ok or tier ~= 0 then
+        return -- (it closed one: the game itself says "Skillchain: ...")
+    end
+
+    local now = os.time()
+    if now < mob:getLocalVar('SQUAD_SC_SAID') then
+        return
+    end
+
+    mob:setLocalVar('SQUAD_SC_SAID', now + 8)
+    local name = wsName(skill and skill.getID and skill:getID() or 0)
+    campSay(player, mob, ({ 'Opening with %s, close it!', '%s, go!', 'Opener: %s' })[math.random(1, 3)]:format(name))
+end
+
+local function campStop(puller)
+    puller:setLocalVar('SQUAD_PULL_PHASE', 0)
+    puller:setLocalVar('SQUAD_PULL_TARGET', 0)
+end
+
+-- once a second (from the mates' ticks): the puller's next pull, when the camp is quiet and everyone is ready
+local function campTick(mob)
+    local player = mob:getMaster()
+    if player == nil or player:getObjType() ~= xi.objType.PC then
+        return
+    end
+
+    local c = camps[player:getID()]
+    local now = os.time()
+    if c == nil or now < (c.nextTick or 0) then
+        return
+    end
+
+    c.nextTick = now + 1
+    if player:getZoneID() ~= c.zone then
+        camps[player:getID()] = nil
+        campApplyAll(player)
+        say(player, 'Camp lifted: you left the area. Your squad follows you again.')
+        return
+    end
+
+    if c.puller == 0 then
+        return -- (you pull: the mates hold and fight what you bring)
+    end
+
+    local trusts = squadTrusts(player)
+    local puller
+    for _, trust in ipairs(trusts) do
+        if trust:getLocalVar('SQUAD_ID') == c.puller then
+            puller = trust
+        end
+    end
+
+    if puller == nil or not puller:isAlive() then
+        c.state = 'idle'
+        return
+    end
+
+    if c.state == 'pulling' then
+        -- (diagnostics for the map log, every 3 seconds: where the puller is and how fast it moves)
+        if now >= (c.logAt or 0) then
+            pcall(function()
+                local pp, t = puller:getPos(), c.targetEnt
+                local tp = t and t:getPos()
+                local moved = c.lastPos and math.sqrt((pp.x - c.lastPos.x) ^ 2 + (pp.z - c.lastPos.z) ^ 2) or 0
+                print(string.format('[squad] pull: %s phase %d, %.0f yalms to %s (engaged %s), %.0f from camp, moved %.1f yalms in %ds, engaged %s',
+                    puller:getPacketName(), puller:getLocalVar('SQUAD_PULL_PHASE'), tp and math.sqrt((pp.x - tp.x) ^ 2 + (pp.z - tp.z) ^ 2) or -1,
+                    t and t:getName() or '?', t and tostring(t:isEngaged()) or '?', campDistance(c, pp), moved, now - (c.lastLogAt or now),
+                    tostring(puller:isEngaged())))
+                c.lastPos, c.lastLogAt = pp, now
+            end)
+            c.logAt = now + 3
+        end
+
+        -- Being chewed on while dragging a monster home is what killed the
+        -- puller: give the pull up and run for camp instead.
+        local hpPct = percentOf(puller, 'getHP', 'getMaxHP')
+        if hpPct < CAMP_PULL_FLEE_HP then
+            campStop(puller)
+            c.state, c.nextPull = 'idle', now + 20
+            campSay(player, puller, 'too hurt, dropping it - help')
+            print(string.format('[squad] pull: %s at %d%% HP, dropped the pull and headed back', puller:getPacketName(), hpPct))
+            return
+        end
+
+        if puller:getLocalVar('SQUAD_PULL_PHASE') == 0 then
+            c.state, c.since = 'fighting', now -- back at camp with it (or it is gone)
+            print(string.format('[squad] pull: %s is back (or the target is gone) after %ds', puller:getPacketName(), now - (c.pullStart or now)))
+        elseif now - c.since > CAMP_PULL_TIMEOUT then
+            campStop(puller)
+            c.state, c.nextPull = 'idle', now + 10
+            campSay(player, puller, 'cant get to it, coming back')
+            print(string.format('[squad] pull: %s gave up after %ds', puller:getPacketName(), now - (c.pullStart or now)))
+        end
+
+        return
+    end
+
+    local busy = player:isEngaged()
+    for _, trust in ipairs(trusts) do
+        busy = busy or trust:isEngaged()
+    end
+
+    if busy then
+        c.state = 'fighting'
+        return
+    end
+
+    if c.state == 'fighting' then
+        c.state, c.nextPull = 'idle', now + math.random(CAMP_PULL_GAP[1], CAMP_PULL_GAP[2])
+    end
+
+    if now < (c.nextPull or 0) or c.paused then
+        return
+    end
+
+    -- everyone ready? (not while anyone rests, nobody hurt, everyone with MP has some: you, a second character, the mates)
+    local everyone = {}
+    for _, member in pairs(player:getPartyWithTrusts() or {}) do
+        everyone[#everyone + 1] = member
+    end
+
+    if #everyone == 0 then
+        everyone = { player }
+    end
+
+    for _, member in ipairs(everyone) do
+        if member:getObjType() == xi.objType.PC and (member:getAnimation() == xi.animation.HEALING or percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP or
+            (member:getMaxMP() > 0 and percentOf(member, 'getMP', 'getMaxMP') < CAMP_READY_MP)) then
+            if not c.waitSaid then
+                c.waitSaid = true
+                campSay(player, puller, 'waiting a bit, need hp/mp')
+            end
+
+            c.nextPull = now + 5
+            return
+        end
+    end
+
+    for _, trust in ipairs(trusts) do
+        if not trust:isAlive() or percentOf(trust, 'getHP', 'getMaxHP') < CAMP_READY_HP or
+            (trust:getMaxMP() > 0 and percentOf(trust, 'getMP', 'getMaxMP') < CAMP_READY_MP) then
+            if not c.waitSaid then
+                c.waitSaid = true
+                campSay(player, puller, 'waiting a bit, need hp/mp')
+            end
+
+            c.nextPull = now + 5
+            return
+        end
+    end
+
+    c.waitSaid = nil
+    local target = campPick(player, c)
+    if target == nil then
+        c.nextPull = now + 10
+        if not c.noneSaid then
+            c.noneSaid = true
+            local wantLabel = campWantLabel(c)
+            campSay(player, wantLabel and ('no ' .. wantLabel .. ' around right now, waiting for pops') or 'nothing to pull nearby, waiting for pops')
+        end
+
+        return
+    end
+
+    c.noneSaid = nil
+    puller:setLocalVar('SQUAD_PULL_TARGET', target:getTargID())
+    puller:setLocalVar('SQUAD_PULL_PHASE', 1)
+    c.state, c.since = 'pulling', now
+    c.pullStart, c.targetEnt, c.lastPos, c.lastLogAt, c.logAt = now, target, nil, nil, now
+    c.pulls = (c.pulls or 0) + 1
+    pcall(function()
+        print(string.format('[squad] pull: %s (job %d, MP %d) goes for %s (level %d), %.0f yalms from camp', puller:getPacketName(), puller:getMainJob(),
+            puller:getMP(), target:getName(), target:getMainLvl(), campDistance(c, target:getPos())))
+    end)
+    campSay(player, puller, string.format('Pulling >> %s <<', target:getName()))
+end
+
+local function campStatus(player)
+    local c = camps[player:getID()]
+    if c == nil then
+        return 'No camp: your squad follows you. Set one here with !squad camp.'
+    end
+
+    local who = 'you'
+    if c.puller ~= 0 then
+        for _, trust in ipairs(squadTrusts(player)) do
+            if trust:getLocalVar('SQUAD_ID') == c.puller then
+                who = trust:getPacketName()
+            end
+        end
+        if who == 'you' then
+            who = 'a mate who is not out'
+        end
+    end
+
+    return string.format('Camp: %d yalms from you, %s pulling%s (%d pulls so far, pull range %d yalms).', math.floor(campDistance(c, player:getPos())), who,
+        c.paused and ' (paused)' or '', c.pulls or 0, campRange(player)) .. (campWantLabel(c) and (' Pulling only: ' .. campWantLabel(c)) or '')
+end
+
+-- The first time a squad mate comes out as a job, they get basic level 1 gear for it. A marker row (slot 255) in
+-- the saved gear remembers that this happened, so taking gear off later does not bring the starter set back.
+local STARTER_MARK = 255
+
+-- How long to wait between squad mates when they are all called at once (milliseconds)
+local CALL_GAP_MS = 1500
+
+-- The basic level 1 sets come from squad_starter_gear.lua (build_starter_gear.py writes it from your database): the game's own
+-- weapon for each job plus plain level 1 armor, never rare/ex or event items. If the file is missing the old picker is used.
+local starterLoaded, starterSets = pcall(require, 'modules/custom/lua/squad_starter_gear')
+if not starterLoaded or type(starterSets) ~= 'table' then
+    print('[squad] squad_starter_gear.lua not found - using the old starter gear picker. Run build_starter_gear.py to create it.')
+    starterSets = nil
+end
+
+-- The starter weapon (and the Monk's White Belt) is fixed; each armor slot is drawn at random from the plain pieces the job can
+-- wear at that level (pools from build_starter_gear.py, levels 1-10), so no two mates start out alike.
+local STARTER_POOL_MAX_LEVEL = 10
+
+local function starterGearFor(job, level)
+    local fixed = (starterSets ~= nil and starterSets[job]) or BuildStarterGear(job)
+    local pools = starterSets ~= nil and type(starterSets.pools) == 'table' and starterSets.pools[job] or nil
+    if pools == nil then
+        return fixed
+    end
+
+    local cap  = math.max(1, math.min(level or 1, STARTER_POOL_MAX_LEVEL))
+    local gear = {}
+    for slot, itemId in pairs(fixed) do
+        gear[slot] = itemId
+    end
+
+    for slot, list in pairs(pools) do
+        local choices = {}
+        for _, entry in ipairs(list) do
+            if entry[2] <= cap then
+                choices[#choices + 1] = entry[1]
+            end
+        end
+
+        if #choices > 0 then
+            gear[slot] = choices[math.random(#choices)]
+        end
+    end
+
+    return gear
+end
+
+local function ensureStarterGear(player, mate)
+    local worn = mate.equip[mate.mjob] or {}
+    mate.equip[mate.mjob] = worn
+
+    if worn[STARTER_MARK] ~= nil then
+        return
+    end
+
+    for slot, itemId in pairs(starterGearFor(mate.mjob, jobLevel(mate, mate.mjob))) do
+        if worn[slot] == nil then
+            SetSquadEquip(mate.id, mate.mjob, slot, itemId)
+            UnlockSquadItem(player:getID(), itemId) -- basic gear is free for the whole squad
+            worn[slot] = itemId
+        end
+    end
+
+    SetSquadEquip(mate.id, mate.mjob, STARTER_MARK, 1)
+    worn[STARTER_MARK] = 1
+end
+
+-----------------------------------
+-- Level sync (v1.7): a mate never comes out above YOUR current level. getMainLvl() already follows the game's own Level Sync,
+-- so syncing your party in the game syncs the squad too. A mate whose own level is lower keeps it. Like the game's Level Sync,
+-- gear above the synced level is left off while synced. Their own levels and exp are kept; a synced mate still earns exp.
+-- When your level changes (level up, job change, Level Sync on or off), the squad is called again at the new level as soon as
+-- nobody is fighting.
+-----------------------------------
+local SYNC_TO_PLAYER   = true
+local RESYNC_EVERY_SEC = 5
+
+local itemLevels = {}
+local function itemLevel(itemId)
+    if itemLevels[itemId] == nil then
+        local info = GetSquadItemInfo(itemId)
+        itemLevels[itemId] = (info and info.valid and info.level) or 0
+    end
+
+    return itemLevels[itemId]
+end
+
+local function syncCap(player)
+    if not SYNC_TO_PLAYER then
+        return nil
+    end
+
+    return player:getMainLvl()
+end
+
+local resyncSquad -- defined after callMate
+local restTick    -- defined after callMate
+
+-----------------------------------
+-- Squad chat (Ollama sidecar): in-character party chat and generated backstories.
+-- The Python sidecar in C:/FFXISOLO/squad-chat owns the character sheets, memory and the model.
+-- This file only passes chat out and plays the replies in party chat.
+-----------------------------------
+local CHAT_DIR = 'C:/FFXISOLO/squad-chat/'
+local CHAT_IN = CHAT_DIR .. 'in.txt'
+local CHAT_OUT = CHAT_DIR .. 'out.txt'
+local CHAT_POLL_SEC = 1
+
+-- The stand-in tests load this file without a real server: keep them away from the real bridge files.
+local CHAT_ACTIVE = rawget(_G, '__SQUAD_TEST') == nil
+
+xi = xi or {}
+xi.squad = xi.squad or {}
+
+local function chatClean(text)
+    text = tostring(text or '')
+    text = string.gsub(text, '[\r\n\t]', ' ')
+    text = string.gsub(text, '%z', ' ')
+    return text
+end
+
+local function chatSend(kind, ...)
+    local parts = { kind }
+    for i = 1, select('#', ...) do
+        parts[#parts + 1] = chatClean(select(i, ...))
+    end
+
+    if not CHAT_ACTIVE then
+        local test = rawget(_G, '__SQUAD_TEST')
+        if test and test.chatSink then
+            test.chatSink(table.concat(parts, '\t')) -- (the stand-in tests read what would go to the sidecar)
+        end
+
+        return false
+    end
+
+    local handle = io.open(CHAT_IN, 'a')
+    if handle == nil then
+        return false
+    end
+
+    handle:write(table.concat(parts, '\t'), '\n')
+    handle:close()
+    return true
+end
+
+local function chatEnabled(player)
+    return player:getCharVar('SQUAD_CHAT_OFF') ~= 1
+end
+
+local function chatActiveNames(player)
+    local names = {}
+    for _, member in pairs(player:getPartyWithTrusts()) do
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and member:isAlive() then
+            names[#names + 1] = member:getPacketName()
+        end
+    end
+
+    return table.concat(names, ',')
+end
+
+local function chatHasActive(player)
+    for _, member in pairs(player:getPartyWithTrusts()) do
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and member:isAlive() then
+            return true
+        end
+    end
+
+    return false
+end
+
+-- What is happening right now (fight awareness) and the bot players in your party (bots.lua).
+local chatFightState = { engaged = false, nextFight = 0, calls = {} }
+local chatBotsInParty = {} -- [bot name] = { fights = n }
+
+-- A few real adventure beats go into the sidecar's journal, not just zones and levels.
+-- The hook is per player and weak-keyed, so a relog or a new character gets its own listeners.
+local chatHookedPlayers = setmetatable({}, { __mode = 'k' })
+local function chatHookPlayer(player)
+    if chatHookedPlayers[player] then
+        return
+    end
+
+    chatHookedPlayers[player] = true
+    player:addListener('DEFEATED_MOB', 'SQUAD_CHAT_KILL', function(mob)
+        if mob == nil then
+            return
+        end
+
+        local ok, notorious = pcall(function() return mob:isNM() end)
+        if ok and notorious then
+            chatSend('BATTLE', mob:getName(), 1)
+        end
+    end)
+
+    player:addListener('DEATH', 'SQUAD_CHAT_DEATH', function()
+        chatSend('DEATH', player:getZoneName())
+    end)
+
+    -- Your weapon skills: a mate may cheer (or needle) you. At most one every 20 seconds.
+    player:addListener('WEAPONSKILL_USE', 'SQUAD_CHAT_WS', function(entity, target, skill, tp, action, damage)
+        local now = os.time()
+        if now < (chatFightState.wsAt or 0) then
+            return
+        end
+
+        chatFightState.wsAt = now + 20
+        chatSend('ACT', 'ws', player:getName(), target and target:getName() or '', tonumber(damage) or 0)
+    end)
+
+    -- Every kill counts towards the fights a bot player shared with you (for the journal when it leaves).
+    player:addListener('DEFEATED_MOB', 'SQUAD_CHAT_SHARED', function(mob)
+        for name in pairs(chatBotsInParty) do
+            chatBotsInParty[name].fights = chatBotsInParty[name].fights + 1
+        end
+
+        if mob ~= nil then
+            chatFightState.wonName = mob:getName()
+        end
+    end)
+end
+
+local chatLastZone = nil
+local chatLastLevel = nil
+local chatLastContext = 0
+
+local function chatPushContext(player)
+    chatHookPlayer(player)
+    local now = os.time()
+    local zone = player:getZoneName()
+    local level = player:getMainLvl()
+    if zone == chatLastZone and level == chatLastLevel and now - chatLastContext < 15 then
+        return
+    end
+
+    chatSend('CTX', zone, level, player:isEngaged() and 1 or 0, chatActiveNames(player))
+    chatSend('CHAT_STATE', chatEnabled(player) and 1 or 0)
+    chatLastContext = now
+
+    -- The first poll only records where you are; the sidecar should not announce the zone you logged in at.
+    if chatLastZone ~= nil and zone ~= chatLastZone then
+        chatSend('ZONE', zone)
+    end
+
+    if chatLastLevel ~= nil and level ~= chatLastLevel then
+        chatSend('LEVEL', level)
+    end
+
+    chatLastZone = zone
+    chatLastLevel = level
+end
+
+local function chatPercent(entity, now, max)
+    local ok, value = pcall(function()
+        local top = entity[max](entity)
+        if top == nil or top <= 0 then
+            return -1
+        end
+
+        return math.floor(entity[now](entity) * 100 / top)
+    end)
+    return ok and value or -1
+end
+
+-- a callout at most every `every` seconds for the same thing ('lowmp:Kasumi')
+local function chatCall(key, every, ...)
+    local now = os.time()
+    if (chatFightState.calls[key] or 0) > now then
+        return
+    end
+
+    chatFightState.calls[key] = now + every
+    chatSend('ACT', ...)
+end
+
+-- Once a second from chatTick: the fight as it goes (FIGHT every 5 s), and the moments worth a line.
+local function chatFight(player)
+    local now = os.time()
+    local engaged = player:isEngaged()
+    local target = engaged and player:getTarget() or nil
+    if engaged and not chatFightState.engaged then
+        chatFightState.wonName = nil
+        if target ~= nil then
+            chatSend('ACT', 'pull', player:getName(), target:getName())
+        end
+    elseif not engaged and chatFightState.engaged then
+        if chatFightState.wonName ~= nil then
+            chatSend('ACT', 'won', player:getName(), chatFightState.wonName)
+        end
+
+        chatSend('FIGHT', '', -1, -1, -1, '')
+        chatFightState.wonName = nil
+    end
+
+    chatFightState.engaged = engaged
+    if not engaged then
+        return
+    end
+
+    local mates = {}
+    for _, member in pairs(player:getPartyWithTrusts()) do
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and member:isAlive() then
+            local name = member:getPacketName()
+            local hp, mp = chatPercent(member, 'getHP', 'getMaxHP'), chatPercent(member, 'getMP', 'getMaxMP')
+            mates[#mates + 1] = string.format('%s:%d:%d', name, hp, mp)
+            if mp >= 0 and mp < 25 then
+                chatCall('lowmp:' .. name, 180, 'lowmp', name, target and target:getName() or '')
+            end
+
+            if hp >= 0 and hp < 30 then
+                chatCall('hurt:' .. name, 60, 'hurt', name, target and target:getName() or '')
+            end
+        end
+    end
+
+    local hp = chatPercent(player, 'getHP', 'getMaxHP')
+    if hp >= 0 and hp < 35 then
+        chatCall('hurt:' .. player:getName(), 45, 'hurt', player:getName(), target and target:getName() or '')
+    end
+
+    if now >= chatFightState.nextFight then
+        chatFightState.nextFight = now + 5
+        chatSend('FIGHT', target and target:getName() or '', target and chatPercent(target, 'getHP', 'getMaxHP') or -1,
+            hp, chatPercent(player, 'getMP', 'getMaxMP'), table.concat(mates, ','))
+    end
+end
+
+-- Every 30 s from chatTick: the bot players around you (bots.lua, when it is installed), and who joined or left
+-- your party, so the mates know them and remember them.
+local chatNextWorld = 0
+local function chatWorld(player)
+    local now = os.time()
+    if now < chatNextWorld then
+        return
+    end
+
+    chatNextWorld = now + 10
+    local bots = xi.bots
+    if bots == nil or bots.worldFor == nil then
+        return
+    end
+
+    local ok, world = pcall(bots.worldFor, player)
+    if not ok or type(world) ~= 'table' then
+        return
+    end
+
+    local inParty = {}
+    for _, b in ipairs(world.party or {}) do
+        inParty[b.name] = true
+        if chatBotsInParty[b.name] == nil then
+            chatBotsInParty[b.name] = { fights = 0 }
+            chatSend('BOTJOIN', b.name, b.job or '', b.level or 0, player:getZoneName())
+        end
+    end
+
+    for name, info in pairs(chatBotsInParty) do
+        if not inParty[name] then
+            chatBotsInParty[name] = nil
+            chatSend('BOTLEAVE', name, info.fights, player:getZoneName())
+        end
+    end
+
+    if now >= (chatFightState.worldAt or 0) then
+        chatFightState.worldAt = now + 30
+        local function list(t)
+            local out = {}
+            for _, b in ipairs(t or {}) do
+                out[#out + 1] = b.job and string.format('%s (%s %d)', b.name, b.job, b.level or 0) or b.name
+            end
+
+            return table.concat(out, ',')
+        end
+
+        chatSend('WORLD', list(world.near), list(world.friends), world.ls or '', list(world.party))
+    end
+end
+
+-- a bot player said something in your party (bots.lua): the mates hear it
+xi.squad.onBotSay = function(player, botName, text)
+    if player == nil or not chatEnabled(player) or not chatHasActive(player) then
+        return
+    end
+
+    text = chatClean(text)
+    if text ~= '' then
+        chatSend('BOTSAY', botName, text)
+    end
+end
+
+local function chatCountLines()
+    if not CHAT_ACTIVE then
+        return 0
+    end
+
+    local handle = io.open(CHAT_OUT, 'r')
+    if handle == nil then
+        return 0
+    end
+
+    local count = 0
+    for _ in handle:lines() do
+        count = count + 1
+    end
+
+    handle:close()
+    return count
+end
+
+local chatOutCount = chatCountLines()
+
+local function chatRead(player)
+    if not CHAT_ACTIVE then
+        return
+    end
+
+    local handle = io.open(CHAT_OUT, 'r')
+    if handle == nil then
+        return
+    end
+
+    local lines = {}
+    for line in handle:lines() do
+        lines[#lines + 1] = line
+    end
+
+    handle:close()
+
+    -- The sidecar clears the file when it starts; start over if that happened.
+    if chatOutCount > #lines then
+        chatOutCount = 0
+    end
+
+    for index = chatOutCount + 1, #lines do
+        local kind, mate, text = string.match(lines[index], '^(%u+)\t([^\t]*)\t(.*)$')
+        if text ~= nil then
+            -- Windows text-mode writers can leave a carriage return at the end. The client treats control
+            -- characters literally, so strip them before the line goes into party chat.
+            text = chatClean(text):gsub('^%s+', ''):gsub('%s+$', '')
+        end
+        if kind == 'SAY' and mate ~= '' and text ~= '' then
+            player:printToPlayer(text, 4, mate)
+            print(string.format('[squad] chat %s: %s', mate, text))
+        elseif kind == 'NOTE' and text ~= '' then
+            player:printToPlayer('[Squad] ' .. text)
+        end
+    end
+
+    chatOutCount = #lines
+end
+
+local chatNextPoll = 0
+
+local function chatTick(mob)
+    if not CHAT_ACTIVE then
+        return
+    end
+
+    local now = os.time()
+    if now < chatNextPoll then
+        return
+    end
+
+    chatNextPoll = now + CHAT_POLL_SEC
+
+    local master = mob:getMaster()
+    if master == nil then
+        master = GetPlayerByID(mob:getLocalVar('MASTER_ID'))
+    end
+
+    if master == nil or master:getObjType() ~= xi.objType.PC then
+        return
+    end
+
+    chatPushContext(master)
+    pcall(chatFight, master)
+    pcall(chatWorld, master)
+    chatRead(master)
+end
+
+-- Called by squad.cpp for every party-chat line (after auto-translate is decoded).
+xi.squad.onPartyChat = function(player, text)
+    if not chatEnabled(player) or not chatHasActive(player) then
+        return
+    end
+
+    text = chatClean(text)
+    if text == '' then
+        return
+    end
+
+    chatSend('CHAT', player:getName(), text)
+end
+
+local nationNames = { [0] = "San d'Oria", [1] = 'Bastok', [2] = 'Windurst' }
+
+local function chatNewMate(name, race, job, level, nation)
+    chatSend('NEWMATE', name, race or 1, job or 'WAR', level or 1, nation or "San d'Oria")
+end
+
+-- A mate made in the launcher's Squad tab is written straight to the database, so it never goes through
+-- !squad new. Send the current roster when you list or call the squad; the sidecar generates a sheet for
+-- anyone it has not seen, using the job and level the mate has now.
+local function chatRoster(player, squad)
+    for _, mate in ipairs(squad) do
+        chatSend('ROSTER', mate.name, mate.race > 0 and mate.race or 1, jobNames[mate.mjob] or 'WAR',
+            jobLevel(mate, mate.mjob), nationNames[mate.nation] or "San d'Oria")
+    end
+end
+
+local function callMate(player, mate)
+    if isSummoned(player, mate.id) then
+        say(player, string.format('%s is already with you.', mate.name))
+        return
+    end
+
+    if #player:getPartyWithTrusts() >= MAX_ACTIVE + 1 then
+        say(player, 'Your party is full.')
+        return
+    end
+
+    local cap = syncCap(player)
+    local main, sub, subLevel = levelsFor(mate, cap)
+    local synced = main < jobLevel(mate, mate.mjob)
+
+    ensureStarterGear(player, mate)
+
+    local outfit = {}
+    for slot, itemId in pairs(mate.equip[mate.mjob]) do
+        if slot ~= STARTER_MARK and (not synced or itemLevel(itemId) <= main) then
+            outfit[slot] = itemId
+        end
+    end
+
+    local trust = SpawnSquadMate(player,
+    {
+        id       = mate.id,
+        mjob     = mate.mjob,
+        sjob     = sub,
+        mlevel   = main,
+        slevel   = subLevel,
+        template = mate.template,
+        race     = mate.race > 0 and mate.race or 1,
+        face     = mate.face,
+        equip    = outfit,
+    })
+
+    if trust == nil then
+        say(player, string.format('Could not call %s (see the map server log).', mate.name))
+        return
+    end
+
+    trust:renameEntity(mate.name, true)
+    trust:setLocalVar('SQUAD_ID', mate.id) -- make sure the tag is there after spawning
+    -- The party list was sent while the mate still had its template's name (the last one called kept showing "Shantotto"):
+    -- send the party list again now, and once more a moment later, so it shows the new name.
+    player:reloadParty()
+    player:timer(1500, function(entity)
+        entity:reloadParty()
+    end)
+    trust:setLocalVar('SQUAD_CAP', cap or 0)  -- the level it was synced to, to notice when yours changes
+    trust:setLocalVar('SQUAD_OWN', jobLevel(mate, mate.mjob))
+
+    if dialogue.speakOnSpawn then
+        speak(player, mate.name, 'spawn', { job = jobTitles[mate.mjob] or '' })
+    end
+
+    campApply(player, trust)
+
+    trust:addListener('WEAPONSKILL_USE', 'SQUAD_SC', function(mobArg, target, skill)
+        pcall(skillchainCall, mobArg, target, skill)
+    end)
+
+    trust:addListener('COMBAT_TICK', 'SQUAD_FOOD', function(mobArg)
+        campTick(mobArg)
+        pcall(skillchainTick, mobArg)
+        eatIfNeeded(mobArg)
+        petTick(mobArg)
+        -- Also poll the chat bridge here: a trust in combat still gets COMBAT_TICK,
+        -- and this makes sure replies are not held back if the idle tick is late.
+        chatTick(mobArg)
+    end)
+
+    -- Every AI tick, fighting or not (COMBAT_TICK only fires while you fight): resting with you, and following your level
+    trust:addListener('TICK', 'SQUAD_IDLE', function(mobArg)
+        campTick(mobArg)
+        if restTick ~= nil then
+            restTick(mobArg)
+        end
+        if resyncSquad ~= nil then
+            resyncSquad(mobArg)
+        end
+        chatTick(mobArg)
+    end)
+
+    trust:addListener('WEAPONSKILL_USE', 'SQUAD_WS_SHOUT', function(mobArg, target, skill, tp, action)
+        if (dialogue.wsShoutChance or 0) > 0 and math.random(100) <= dialogue.wsShoutChance then
+            speakFromMob(mobArg, 'weaponskill')
+        end
+    end)
+
+    return trust
+end
+
+-- Summon cooldown: after a squad mate is called with !squad call, that mate cannot be called again for
+-- CALL_COOLDOWN_SEC (each mate has their own timer, kept across logouts). Following your level, zoning and the Squad
+-- menu's "Apply now" (!squad reapply) re-call mates without the cooldown.
+local CALL_COOLDOWN_SEC = 10 * 60
+
+local function cooldownLeft(player, mate)
+    local calledAt = player:getCharVar('SQUAD_CALLED_' .. mate.id)
+    if calledAt <= 0 then
+        return 0
+    end
+
+    return math.max(0, calledAt + CALL_COOLDOWN_SEC - os.time())
+end
+
+local function callWithCooldown(player, mate)
+    if not isSummoned(player, mate.id) then
+        local left = cooldownLeft(player, mate)
+        if left > 0 then
+            say(player, string.format('%s is not ready to come out yet: %d min %02d s left.', mate.name, math.floor(left / 60), left % 60))
+            return nil
+        end
+    end
+
+    local trust = callMate(player, mate)
+    if trust ~= nil then
+        player:setCharVar('SQUAD_CALLED_' .. mate.id, os.time())
+    end
+
+    return trust
+end
+
+-----------------------------------
+-- Resting with you (v1.8): while you rest (/heal), mates who are not fighting sit down too and recover HP and MP:
+-- the first time after REST_FIRST_SEC, then every REST_EVERY_SEC. They stand up when you do.
+-----------------------------------
+local REST_FIRST_SEC = 10   -- the game makes you wait 20 seconds; mates are a little quicker
+local REST_EVERY_SEC = 10
+local REST_HP_PERCENT = 10  -- of their max HP per tick
+local REST_MP_PERCENT = 10  -- of their max MP per tick
+
+restTick = function(mob)
+    local master = mob:getMaster()
+    if master == nil or master:getObjType() ~= xi.objType.PC or not mob:isAlive() then
+        return
+    end
+
+    local sitting = mob:getAnimation() == xi.animation.HEALING
+    local resting = master:getAnimation() == xi.animation.HEALING and not mob:isEngaged() and not master:isEngaged()
+    if not resting then
+        if sitting then
+            mob:setAnimation(xi.animation.NONE)
+        end
+
+        return
+    end
+
+    local now = os.time()
+    if not sitting then
+        mob:setAnimation(xi.animation.HEALING)
+        mob:setLocalVar('SQUAD_REST_AT', now + REST_FIRST_SEC)
+        return
+    end
+
+    if now < mob:getLocalVar('SQUAD_REST_AT') then
+        return
+    end
+
+    mob:setLocalVar('SQUAD_REST_AT', now + REST_EVERY_SEC)
+    if mob:getHP() < mob:getMaxHP() then
+        mob:addHP(math.max(1, math.floor(mob:getMaxHP() * REST_HP_PERCENT / 100)))
+    end
+
+    if mob:getMaxMP() > 0 and mob:getMP() < mob:getMaxMP() then
+        mob:addMP(math.max(1, math.floor(mob:getMaxMP() * REST_MP_PERCENT / 100)))
+    end
+end
+
+-- Called from each mate's tick: when your level no longer matches the level the squad came out at, call everyone again
+resyncSquad = function(mob)
+    if not SYNC_TO_PLAYER then
+        return
+    end
+
+    local master = mob:getMaster()
+    if master == nil or master:getObjType() ~= xi.objType.PC then
+        return
+    end
+
+    local cap = master:getMainLvl()
+    if mob:getLocalVar('SQUAD_CAP') == cap then
+        return
+    end
+
+    -- your level changed, but would this mate's? (a mate below both levels stays as it is)
+    local own = mob:getLocalVar('SQUAD_OWN')
+    if own > 0 and math.min(own, cap) == mob:getMainLvl() then
+        mob:setLocalVar('SQUAD_CAP', cap)
+        return
+    end
+
+    local now = os.time()
+    if now - master:getLocalVar('SQUAD_RESYNC_AT') < RESYNC_EVERY_SEC or master:isEngaged() then
+        return
+    end
+
+    master:setLocalVar('SQUAD_RESYNC_AT', now)
+
+    local out = {}
+    for _, member in pairs(master:getPartyWithTrusts()) do
+        if member:getObjType() == xi.objType.TRUST then
+            if member:isEngaged() then
+                return -- someone is still fighting: try again in a moment
+            end
+
+            local squadId = member:getLocalVar('SQUAD_ID')
+            if squadId > 0 then
+                out[squadId] = true
+            end
+        end
+    end
+
+    local squad = GetSquad(master:getID())
+    local again = {}
+    for _, mate in ipairs(squad) do
+        if out[mate.id] then
+            again[#again + 1] = mate
+        end
+    end
+
+    if #again == 0 then
+        return
+    end
+
+    master:clearTrusts()
+    say(master, string.format('Your squad matches your level (%d).', cap))
+    for index, mate in ipairs(again) do
+        master:timer(index * CALL_GAP_MS, function(entity)
+            callMate(entity, mate)
+        end)
+    end
+end
+
+-- Trading gear to a squad mate: every new piece of equipment is kept by the squad for good and every mate can
+-- wear it (the same collection !squad give fills). Called from squad.cpp when you trade with one of your mates.
+xi = xi or {}
+xi.squad = xi.squad or {}
+
+local function prettyItem(name)
+    return (string.gsub(string.gsub(name, '_', ' '), '(%a)([%w]*)', function(first, rest)
+        return string.upper(first) .. rest
+    end))
+end
+
+-- Spell commands typed in party chat (see squad.cpp). result: cast, unknown, notready, notarget or busy
+xi.squad.onSpellCommand = function(player, trust, spellName, result)
+    local events = { cast = 'spellcast', unknown = 'spellunknown', notready = 'spellnotready', notarget = 'spellnotarget', busy = 'spellbusy' }
+    local event = events[result]
+    if event ~= nil then
+        speak(player, trust:getPacketName(), event, { spell = prettySpellName(spellName) })
+    end
+end
+
+-- Job abilities typed in party chat (see squad.cpp). result: cast, unknown, notready, notarget or busy.
+-- Busy (mid-swing or mid-cast) is tried again every second for a few seconds, so the ability still goes off.
+local ABILITY_RETRIES = 6
+
+xi.squad.onAbilityCommand = function(player, trust, abilityName, result, abilityId)
+    local who  = trust:getPacketName()
+    local vars = { ability = prettySpellName(abilityName), job = xi.job and tostring(trust:getMainJob()) or '' }
+    for jobName, id in pairs(xi.job or {}) do
+        if id == trust:getMainJob() then
+            vars.job = jobName
+        end
+    end
+
+    if result ~= 'busy' then
+        speak(player, who, 'ability' .. result, vars)
+        return
+    end
+
+    local tries = 0
+    local function again(mate)
+        tries = tries + 1
+        local now = SquadUseAbility(player, mate, abilityId)
+        if now == 'busy' and tries < ABILITY_RETRIES then
+            mate:timer(1000, again)
+        else
+            speak(player, who, 'ability' .. now, vars)
+        end
+    end
+
+    trust:timer(1000, again)
+end
+
+xi.squad.onTrade = function(player, trust, items)
+    local who = trust:getPacketName()
+    -- the squad belongs to the trust's master; the items come from whoever traded (maybe the dualbox character)
+    local owner = trust:getMaster()
+    if owner == nil or owner:getObjType() ~= xi.objType.PC then
+        owner = player
+    end
+
+    if player:checkDistance(trust) > 6 then
+        speak(player, who, 'closer')
+        return
+    end
+
+    local unlocked = GetSquadUnlocks(owner:getID())
+    local took = 0
+
+    for _, offer in ipairs(items) do
+        local info = GetSquadItemInfo(offer.itemId)
+
+        if not info.valid then
+            speak(player, who, 'cannotuse')
+        elseif unlocked[offer.itemId] then
+            speak(player, who, 'alreadyhave', { item = prettyItem(info.name) })
+        elseif player:delItemAt(offer.itemId, 1, xi.inv.INVENTORY, offer.slot) then
+            UnlockSquadItem(owner:getID(), offer.itemId)
+            unlocked[offer.itemId] = true
+            took = took + 1
+            speak(player, who, 'thanks', { item = prettyItem(info.name) })
+        else
+            speak(player, who, 'failed')
+        end
+    end
+
+    if took > 0 then
+        owner:printToPlayer('Use the Squad tab in the launcher, or !squad equip, to dress your squad.')
+        if owner:getID() ~= player:getID() then
+            player:printToPlayer(string.format('Added to %s\'s squad collection.', owner:getName()))
+        end
+    end
+end
+
+local function save(player, mate)
+    SaveSquadMate(player:getID(), mate.slot, mate)
+    say(player, 'Saved: ' .. describe(mate) .. '  (dismiss and call them again to apply)')
+end
+
+commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
+    local charId = player:getID()
+    if action ~= 'panel' and action ~= 'sheet' then
+        print(string.format('[squad] %s: !squad %s %s %s', player:getName(), tostring(action or ''), tostring(arg1 or ''), tostring(arg2 or '')))
+    end
+    local squad = GetSquad(charId)
+    action = action and string.lower(action) or nil
+
+    if action == nil or action == 'list' or action == 'call' then
+        chatRoster(player, squad)
+    end
+
+    if action == nil or action == 'list' then
+        if #squad == 0 then
+            say(player, 'You have no squad mates yet. Try: !squad new Bob WAR')
+            return
+        end
+
+        for _, mate in ipairs(squad) do
+            say(player, describe(mate))
+        end
+
+        return
+    end
+
+    -- what each mate out with you has eaten, and how long it lasts
+    if action == 'food' then
+        if not food.enabled then
+            say(player, 'Squad food is switched off (squad_food.lua).')
+            return
+        end
+
+        local any = false
+        for _, trust in ipairs(squadTrusts(player)) do
+            any = true
+            local mealId, left = trust:getLocalVar('SQUAD_FOOD_ID'), trust:getLocalVar('SQUAD_FOOD_UNTIL') - GetSystemTime()
+            local name
+            for _, meal in pairs(food.foods) do
+                if meal.id == mealId then
+                    name = meal.name
+                end
+            end
+
+            if mealId ~= 0 and name and left > 0 then
+                say(player, string.format('%s: %s, %d min left', trust:getPacketName(), name, math.floor(left / 60)))
+            elseif trust:getMainLvl() < (food.minLevel or 10) then
+                say(player, string.format('%s: no food yet (mates eat from level %d)', trust:getPacketName(), food.minLevel or 10))
+            else
+                local meal = chooseFood(trust:getMainJob(), trust:getMainLvl())
+                say(player, string.format('%s: nothing right now, eats %s when the next fight starts', trust:getPacketName(), meal and meal.name or '(no food for this job)'))
+            end
+        end
+
+        if not any then
+            say(player, 'None of your squad mates are out.')
+        end
+
+        return
+    end
+
+    if action == 'ai' then
+        if #squad == 0 then
+            say(player, 'You have no squad mates yet. Try: !squad new Bob WAR')
+            return
+        end
+
+        for _, mate in ipairs(squad) do
+            local role, mode = decodeBehavior(player:getCharVar('SQUAD_AI_' .. mate.id))
+            say(player, string.format('%d: %s - role %s, mode %s', mate.slot, mate.name, role, mode))
+            say(player, string.format('     %s', switchSummary(switchesOf(player, mate.id))))
+        end
+
+        say(player, 'Change with: !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
+        say(player, 'Switches: !squad sw <slot> <melee|ranged|ja|magic|all> <on|off>')
+        return
+    end
+
+    if action == 'chat' then
+        local mode = arg1 and string.lower(arg1) or nil
+        if mode == 'off' then
+            player:setCharVar('SQUAD_CHAT_OFF', 1)
+            chatSend('CHAT_STATE', 0)
+            say(player, 'Squad chat off. Your mates will still fight; they just will not talk in party chat.')
+        elseif mode == 'on' then
+            player:setCharVar('SQUAD_CHAT_OFF', 0)
+            chatSend('CHAT_STATE', 1)
+            say(player, 'Squad chat on. Talk in party chat and they will answer.')
+        elseif mode == 'test' then
+            local handle = io.open(CHAT_OUT, 'r')
+            local count, last = 0, nil
+            if handle ~= nil then
+                for line in handle:lines() do
+                    count = count + 1
+                    last = line
+                end
+                handle:close()
+            end
+            say(player, string.format('Chat is %s. The sidecar has written %d line(s)%s.', chatEnabled(player) and 'on' or 'off', count,
+                last and ('; last: ' .. last) or ''))
+            say(player, 'Here is a direct test; it should appear in party chat as Kasumi.')
+            player:printToPlayer('This is a test line from your squad chat.', 4, 'Kasumi')
+        else
+            say(player, 'Squad chat is ' .. (chatEnabled(player) and 'on' or 'off') .. '. Use !squad chat on or !squad chat off.')
+        end
+
+        return
+    end
+
+    if action == 'lore' then
+        if #squad == 0 then
+            say(player, 'You have no squad mates yet. Try: !squad new Bob WAR')
+            return
+        end
+
+        local mate = arg1 ~= nil and findMate(squad, tonumber(arg1) or 0) or nil
+        if mate == nil then
+            say(player, '!squad lore <slot> - write (or rewrite) that mate\'s backstory.')
+            for _, member in ipairs(squad) do
+                say(player, string.format('  [%d] %s', member.slot, member.name))
+            end
+
+            return
+        end
+
+        chatSend('LORE', mate.name)
+        say(player, string.format('Writing %s\'s backstory. This takes a moment; you will get a note when it is ready.', mate.name))
+        return
+    end
+
+    if action == 'panel' then
+        -- For the in-game Squad panel addon, which reads these lines and hides them from the chat log:
+        --   squadpanel:<slot>|<name>|<main job>|<main level>|<sub job or ->|<sub level>|<role>|<mode>|<1 if the mate is out now>|<switch mask>
+        for _, mate in ipairs(squad) do
+            local main, sub, subLevel = levelsFor(mate)
+            local role, mode = decodeBehavior(player:getCharVar('SQUAD_AI_' .. mate.id))
+            say(player, string.format('squadpanel:%d|%s|%s|%d|%s|%d|%s|%s|%d|%d', mate.slot, mate.name, jobNames[mate.mjob] or '???', main,
+                sub ~= 0 and jobNames[sub] or '-', subLevel, role, mode, isSummoned(player, mate.id) and 1 or 0,
+                switchesOf(player, mate.id)))
+        end
+
+        -- the menu's Camp row (servermenu 1.6): camp|<on>|<puller slot, 0 = you>|<paused>|<pulls>
+        local c = camps[charId]
+        local pullerSlot = 0
+        if c and c.puller ~= 0 then
+            for _, mate in ipairs(squad) do
+                if mate.id == c.puller then
+                    pullerSlot = mate.slot
+                end
+            end
+        end
+
+        say(player, string.format('squadpanel:camp|%d|%d|%d|%d', c and 1 or 0, pullerSlot, c and c.paused and 1 or 0, c and c.pulls or 0))
+        -- (servermenu 1.8) what the puller goes for, and the kinds of monster around the camp
+        if c then
+            say(player, 'squadpanel:campwant|' .. (c.want or '-'))
+            for _, k in ipairs(campKinds(player, c)) do
+                say(player, string.format('squadpanel:campmob|%s|%d|%d|%d|%d', k.name, k.lo, k.hi, k.count, k.fits and 1 or 0))
+            end
+        end
+
+        say(player, 'squadpanel:end')
+        return
+    end
+
+    if action == 'sheet' then
+        -- The stat sheet behind the panel's Sheet window (the idea is borrowed from TitanXI's trust profiles).
+        -- Same channel as 'panel': lines the addon reads and hides from your chat log.
+        --   squadsheet:hdr|<name>|<main job>|<main level>|<sub job or ->|<sub level>|<role>|<mode>|<race>|<switch mask>
+        --   squadsheet:job|<job>|<level>                               every job the mate has
+--   squadsheet:exp|<job>|<own level>|<exp>|<needed>          main job exp (needed 0 = level cap)
+        --   squadsheet:vital|<HP|MP|TP>|<current>|<max>                only while the mate is called
+        --   squadsheet:stat|<STR..CHR>|<value>
+        --   squadsheet:combat|<Attack|Accuracy|Defense|Evasion|Ranged attack|Ranged accuracy>|<value>
+        --   squadsheet:haste|<gear|magic|ability>|<hundredths of a percent>
+        --   squadsheet:eq|<slot index>|<slot name>|<item name>|<item id>
+        --   squadsheet:note|<text>
+        --   squadsheet:end
+        local mate = arg1 ~= nil and findMate(squad, tonumber(arg1) or 0) or nil
+        if mate == nil then
+            say(player, '!squad sheet <slot> - the stat sheet of one squad mate, for the squad panel.')
+            return
+        end
+
+        local main, sub, subLevel = levelsFor(mate)
+        local role, mode         = decodeBehavior(player:getCharVar('SQUAD_AI_' .. mate.id))
+        local live               = summonedMate(player, mate.id)
+        local clean              = function(text) return tostring(text or '?'):gsub('|', '/') end
+
+        say(player, string.format('squadsheet:hdr|%s|%s|%d|%s|%d|%s|%s|%s|%d', clean(mate.name), jobNames[mate.mjob] or '???', main,
+            sub ~= 0 and jobNames[sub] or '-', subLevel, role, mode, raceNames[mate.race] or '?', switchesOf(player, mate.id)))
+
+        local jobs = {}
+        for job = 1, 18 do
+            if mate.jobs[job] ~= nil then
+                jobs[#jobs + 1] = { job, mate.jobs[job].level }
+            end
+        end
+
+        table.sort(jobs, function(a, b) return a[2] > b[2] or (a[2] == b[2] and a[1] < b[1]) end)
+        for _, entry in ipairs(jobs) do
+            say(player, string.format('squadsheet:job|%s|%d', jobNames[entry[1]] or '???', entry[2]))
+        end
+
+        -- 1.15: exp toward the next level of the main job. This is the mate's own level, not the synced one.
+        --   squadsheet:exp|<job>|<own level>|<exp>|<exp needed, 0 at the level cap>
+        local mainInfo = mate.jobs[mate.mjob]
+        if mainInfo ~= nil then
+            local ownLevel = tonumber(mainInfo.level) or 0
+            local needed   = 0
+            if ownLevel < MAX_LEVEL then
+                local ok, value = pcall(GetSquadExpNeeded, ownLevel)
+                needed = ok and (tonumber(value) or 0) or 0
+            end
+            say(player, string.format('squadsheet:exp|%s|%d|%d|%d', jobNames[mate.mjob] or '???', ownLevel, tonumber(mainInfo.exp) or 0, needed))
+        end
+
+        if live ~= nil then
+            -- Every reading is wrapped: a missing binding must not stop the rest of the sheet.
+            local function read(method, arg)
+                local fn = live[method]
+                if type(fn) ~= 'function' then
+                    return 0
+                end
+
+                local ok, value
+                if arg == nil then
+                    ok, value = pcall(fn, live)
+                else
+                    ok, value = pcall(fn, live, arg)
+                end
+
+                return ok and (tonumber(value) or 0) or 0
+            end
+
+            say(player, string.format('squadsheet:vital|HP|%d|%d', read('getHP'), read('getMaxHP')))
+            say(player, string.format('squadsheet:vital|MP|%d|%d', read('getMP'), read('getMaxMP')))
+            say(player, string.format('squadsheet:vital|TP|%d|%d', read('getTP'), 3000))
+
+            local stats = { { 'STR', xi.mod.STR }, { 'DEX', xi.mod.DEX }, { 'VIT', xi.mod.VIT }, { 'AGI', xi.mod.AGI },
+                            { 'INT', xi.mod.INT }, { 'MND', xi.mod.MND }, { 'CHR', xi.mod.CHR } }
+            for _, entry in ipairs(stats) do
+                say(player, string.format('squadsheet:stat|%s|%d', entry[1], read('getStat', entry[2])))
+            end
+
+            -- Accuracy, evasion and the ranged pair are the numbers the game works its hit rates out from;
+            -- attack and defense are only stored as modifiers.
+            local combat = { { 'Attack', 'getMod', xi.mod.ATT }, { 'Accuracy', 'getACC' }, { 'Defense', 'getMod', xi.mod.DEF },
+                             { 'Evasion', 'getEVA' }, { 'Ranged attack', 'getRATT' }, { 'Ranged accuracy', 'getRACC' } }
+            for _, entry in ipairs(combat) do
+                say(player, string.format('squadsheet:combat|%s|%d', entry[1], read(entry[2], entry[3])))
+            end
+
+            local haste = { { 'gear', xi.mod.HASTE_GEAR }, { 'magic', xi.mod.HASTE_MAGIC }, { 'ability', xi.mod.HASTE_ABILITY } }
+            for _, entry in ipairs(haste) do
+                say(player, string.format('squadsheet:haste|%s|%d', entry[1], read('getMod', entry[2])))
+            end
+        else
+            say(player, 'squadsheet:note|Not called right now, so there are no live stats. The gear below is what they wear as ' ..
+                (jobNames[mate.mjob] or '???') .. '.')
+        end
+
+        local worn = mate.equip[mate.mjob] or {}
+        for slot = 0, 15 do
+            local itemId = worn[slot]
+            if itemId ~= nil and itemId ~= 0 then
+                local info = GetSquadItemInfo(itemId)
+                say(player, string.format('squadsheet:eq|%d|%s|%s|%d', slot, equipSlotNames[slot], clean(info.valid and info.name or itemId), itemId))
+            end
+        end
+
+        say(player, 'squadsheet:end')
+        return
+    end
+
+    if action == 'new' then
+        local name = arg1
+        local job = parseJob(arg2)
+        local level = tonumber(arg3) or player:getMainLvl()
+
+        if not validName(name) then
+            say(player, 'Name must be 3-15 letters. Example: !squad new Bob WAR 75')
+            return
+        elseif job == nil then
+            say(player, 'Unknown job. Jobs: ' .. jobList)
+            return
+        elseif not jobUnlocked(player, job) then
+            say(player, lockedMessage(player, job))
+            return
+        end
+
+        local slot = nil
+        for s = 1, MAX_SLOTS do
+            if findMate(squad, s) == nil then
+                slot = s
+                break
+            end
+        end
+
+        if slot == nil then
+            say(player, string.format('Your squad is full (%d). Use !squad delete <slot> first.', MAX_SLOTS))
+            return
+        end
+
+        local id = SaveSquadMate(charId, slot, { name = name, race = 1, face = 0, nation = 0, mjob = job, sjob = 0, template = 0 })
+        SetSquadJob(id, job, clampLevel(level), 0)
+        chatNewMate(name, 1, jobNames[job], clampLevel(level), "San d'Oria")
+        say(player, string.format('Created %s in slot %d. Use !squad call %d to bring them out.', name, slot, slot))
+        return
+    end
+
+    if action == 'debug' then
+        say(player, 'Party members that are trusts (name shown / internal / squad id / job / level):')
+        for _, member in pairs(player:getPartyWithTrusts()) do
+            if member:getObjType() == xi.objType.TRUST then
+                say(player, string.format('  %s / %s / SQUAD_ID %d / job %d / level %d', member:getPacketName(), member:getName(), member:getLocalVar('SQUAD_ID'), member:getMainJob(), member:getMainLvl()))
+            end
+        end
+
+        return
+    end
+
+    if action == 'camp' then
+        local what = arg1 and string.lower(arg1) or nil
+        if what == 'off' then
+            camps[charId] = nil
+            campApplyAll(player)
+            say(player, 'Camp lifted. Your squad follows you again.')
+        elseif what == 'status' then
+            say(player, campStatus(player))
+        elseif what == 'want' then
+            local c = camps[charId]
+            local raw = arg2 and arg2 ~= '' and arg2 or 'any'
+            if c == nil then
+                say(player, 'Set a camp first (!squad camp), then pick what to pull.')
+                return
+            end
+
+            raw = raw:match('^%s*(.-)%s*$')
+            local marker, name = raw:sub(1, 1), raw
+            if marker ~= '+' and marker ~= '-' then
+                marker = ''
+            else
+                name = raw:sub(2):match('^%s*(.-)%s*$')
+            end
+
+            if marker == '' and string.lower(name) == 'any' then
+                c.want = nil
+                say(player, 'Your puller goes for anything of a good level again.')
+                return
+            end
+
+            local list = campWants(c)
+            local at = nil
+            for i, existing in ipairs(list) do
+                if campNameMatches(existing, name) then
+                    at = i
+                end
+            end
+
+            -- A menu pick toggles: picking a kind that is already on the list takes it off.
+            if marker == '-' or (marker == '' and at ~= nil) then
+                if at ~= nil then
+                    table.remove(list, at)
+                end
+            elseif not at then
+                list[#list + 1] = name
+            end
+
+            if #list == 0 then
+                c.want = nil
+                say(player, 'Nothing picked: your puller is back to anything of a good level.')
+            else
+                c.want = table.concat(list, ',')
+                say(player, string.format('Your puller goes for %s now (up to level %d).', campWantLabel(c), player:getMainLvl() + CAMP_WANT_ABOVE))
+            end
+        elseif what == 'range' then
+            local n = tonumber(arg2 or '')
+            if n and n >= CAMP_RANGE_LIMITS[1] and n <= CAMP_RANGE_LIMITS[2] then
+                player:setCharVar('SQUAD_PULL_RANGE', math.floor(n))
+                say(player, string.format('Your puller now goes for monsters up to %d yalms from camp.', math.floor(n)))
+            else
+                say(player, string.format('Pull range is %d yalms. Change it with !squad camp range <%d-%d>.', campRange(player), CAMP_RANGE_LIMITS[1], CAMP_RANGE_LIMITS[2]))
+            end
+        elseif what == 'pause' or what == 'resume' then
+            local c = camps[charId]
+            if c then
+                c.paused = what == 'pause'
+                say(player, what == 'pause' and 'Pulls paused (the squad still holds camp).' or 'Pulls resume.')
+            else
+                say(player, campStatus(player))
+            end
+        else
+            local pos = player:getPos()
+            local old = camps[charId]
+            camps[charId] = { zone = player:getZoneID(), x = pos.x, y = pos.y, z = pos.z, puller = old and old.puller or 0, state = 'idle', pulls = old and old.pulls or 0,
+                              want = old and old.zone == player:getZoneID() and old.want or nil }
+            campApplyAll(player)
+            say(player, 'Camp set here. Your squad holds this spot and fights whatever comes within 20 yalms of it.')
+            say(player, 'Who pulls: !squad pull <slot>  (a mate)  or  !squad pull me  |  !squad camp off  |  !squad camp pause|resume|status|range <yalms>|want <Monster_Name or any>')
+        end
+
+        return
+    end
+
+    if action == 'pull' then
+        local who = arg1 and string.lower(arg1) or 'me'
+        local mate = nil
+        if who ~= 'me' and who ~= 'off' then
+            mate = findMate(squad, tonumber(who) or -1)
+            for _, m in ipairs(squad) do
+                if mate == nil and string.lower(m.name) == who then
+                    mate = m
+                end
+            end
+
+            if mate == nil or not isSummoned(player, mate.id) then
+                say(player, 'Call that mate first (!squad call <slot>), then: !squad pull <slot>')
+                return
+            end
+        end
+
+        local c = camps[charId]
+        if c == nil then
+            local pos = player:getPos()
+            c = { zone = player:getZoneID(), x = pos.x, y = pos.y, z = pos.z, puller = 0, state = 'idle', pulls = 0 }
+            camps[charId] = c
+            campApplyAll(player)
+            say(player, 'Camp set here (where you stand).')
+        end
+
+        for _, trust in ipairs(squadTrusts(player)) do
+            if trust:getLocalVar('SQUAD_ID') == c.puller then
+                campStop(trust)
+            end
+        end
+
+        c.state = 'idle'
+        if mate == nil then
+            c.puller = 0
+            say(player, 'You pull. Bring them back within 20 yalms of camp and the squad joins in.')
+            return
+        end
+
+        c.puller, c.nextPull = mate.id, os.time() + 2
+        say(player, string.format('%s pulls. Monsters level %d-%d within %d yalms of camp, one at a time when everyone is ready.',
+            mate.name, math.max(1, player:getMainLvl() + CAMP_LEVELS[1]), player:getMainLvl() + CAMP_LEVELS[2], campRange(player)))
+        return
+    end
+
+    if action == 'dismiss' then
+        player:clearTrusts()
+        chatSend('CTX', player:getZoneName(), player:getMainLvl(), 0, '')
+        say(player, 'Your trusts and squad mates have been dismissed.')
+        return
+    end
+
+    if action == 'call' then
+        if #squad == 0 then
+            say(player, 'You have no squad mates yet.')
+            return
+        end
+
+        if arg1 == nil or string.lower(arg1) == 'all' then
+            -- One at a time, a moment apart. Several characters appearing in the very same instant can leave the last ones undressed.
+            for index, mate in ipairs(squad) do
+                if index == 1 then
+                    callWithCooldown(player, mate)
+                else
+                    player:timer((index - 1) * CALL_GAP_MS, function(entity)
+                        callWithCooldown(entity, mate)
+                    end)
+                end
+            end
+
+            return
+        end
+
+        local mate = findMate(squad, tonumber(arg1) or 0)
+        if mate == nil then
+            say(player, 'No squad mate in that slot. Use !squad to list them.')
+            return
+        end
+
+        callWithCooldown(player, mate)
+        return
+    end
+
+    -- The Squad menu's "Apply now": the mates who are out come back with their new settings (no cooldown)
+    if action == 'reapply' then
+        local out = {}
+        for _, mate in ipairs(squad) do
+            if isSummoned(player, mate.id) then
+                out[#out + 1] = mate
+            end
+        end
+
+        player:clearTrusts()
+        for index, mate in ipairs(out) do
+            player:timer(index * CALL_GAP_MS, function(entity)
+                callMate(entity, mate)
+            end)
+        end
+
+        if #out == 0 then
+            say(player, 'None of your squad mates are out.')
+        end
+
+        return
+    end
+
+    if action == 'give' then
+        local itemId = FindSquadItem(arg1 or '')
+        if itemId == 0 then
+            say(player, 'Item not found. Use the item name (like bronze_harness) or its id.')
+            return
+        end
+
+        local info = GetSquadItemInfo(itemId)
+        if not info.valid then
+            say(player, 'Your squad can only be given equipment.')
+            return
+        end
+
+        if GetSquadUnlocks(charId)[itemId] then
+            say(player, string.format('Your squad already has %s. Every mate can wear it.', info.name))
+            return
+        end
+
+        if not player:hasItem(itemId) then
+            say(player, string.format('You do not have %s with you.', info.name))
+            return
+        end
+
+        player:delItem(itemId, 1)
+        UnlockSquadItem(charId, itemId)
+        say(player, string.format('You give %s to your squad. Every squad mate can wear it now.', info.name))
+        return
+    elseif action == 'unlocked' then
+        local count = 0
+        local names = {}
+        for itemId in pairs(GetSquadUnlocks(charId)) do
+            count = count + 1
+            if #names < 15 then
+                local info = GetSquadItemInfo(itemId)
+                names[#names + 1] = info.valid and info.name or tostring(itemId)
+            end
+        end
+
+        say(player, string.format('Your squad has been given %d item(s).', count))
+        if count > 0 then
+            say(player, table.concat(names, ', ') .. (count > #names and ', ...' or ''))
+        end
+
+        return
+    end
+
+    -- Everything below works on one slot: !squad <action> <slot> ...
+    local mate = findMate(squad, tonumber(arg1) or 0)
+    if mate == nil then
+        usage(player)
+        return
+    end
+
+    if action == 'role' or action == 'mode' then
+        local list = action == 'role' and ROLES or MODES
+        local wanted = string.lower(arg2 or '')
+        local synonyms = { dps = 'damage', attacker = 'damage', heal = 'healer', buffer = 'support', normal = 'balanced', aggro = 'aggressive', careful = 'conserve' }
+        wanted = synonyms[wanted] or wanted
+        local index = nil
+        for i, word in ipairs(list) do
+            if word == wanted then
+                index = i
+            end
+        end
+
+        if index == nil then
+            say(player, string.format('Use: !squad %s <slot> <%s>', action, table.concat(list, '|')))
+            return
+        end
+
+        local currentRole, currentMode = decodeBehavior(player:getCharVar('SQUAD_AI_' .. mate.id))
+        local roleIndex, modeIndex = 1, 1
+        for i, word in ipairs(ROLES) do
+            if word == currentRole then
+                roleIndex = i
+            end
+        end
+
+        for i, word in ipairs(MODES) do
+            if word == currentMode then
+                modeIndex = i
+            end
+        end
+
+        if action == 'role' then
+            roleIndex = index
+        else
+            modeIndex = index
+        end
+
+        player:setCharVar('SQUAD_AI_' .. mate.id, (roleIndex - 1) * 10 + (modeIndex - 1))
+        say(player, string.format('%s: role %s, mode %s  (dismiss and call them again to apply)', mate.name, ROLES[roleIndex], MODES[modeIndex]))
+        return
+    end
+
+    if action == 'sw' or action == 'switch' or action == 'switches' then
+        local wanted = string.lower(arg2 or '')
+        local state  = string.lower(arg3 or '')
+
+        if wanted == '' then
+            say(player, string.format('%s: %s', mate.name, switchSummary(switchesOf(player, mate.id))))
+            say(player, 'Use: !squad sw <slot> <melee|ranged|ja|magic|all> <on|off>')
+            return
+        end
+
+        local targets = nil
+        if wanted == 'all' then
+            targets = SWITCHES
+        elseif SW_BIT[wanted] ~= nil then
+            targets = { wanted }
+        end
+
+        local on = (state == 'on' or state == 'yes' or state == '1')
+        if targets == nil or (not on and state ~= 'off' and state ~= 'no' and state ~= '0') then
+            say(player, 'Use: !squad sw <slot> <melee|ranged|ja|magic|all> <on|off>')
+            return
+        end
+
+        local mask = switchesOf(player, mate.id)
+        for _, name in ipairs(targets) do
+            mask = withBit(mask, SW_BIT[name], on)
+        end
+
+        player:setCharVar('SQUAD_SW_' .. mate.id, mask + 1)
+
+        -- Melee off takes effect right away on a mate who is already out; everything else is built when they are called.
+        local live = summonedMate(player, mate.id)
+        if live ~= nil and not hasBit(mask, SW_BIT.melee) then
+            live:setAutoAttackEnabled(false)
+            if live:getMobMod(xi.mobMod.TRUST_DISTANCE) == 0 then
+                live:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MID_RANGE)
+            end
+        end
+
+        say(player, string.format('%s: %s', mate.name, switchSummary(mask)))
+        say(player, 'Dismiss and call them again to apply everything else.')
+        return
+    end
+
+    if action == 'equip' then
+        local itemId = FindSquadItem(arg2 or '')
+        if itemId == 0 then
+            say(player, 'Item not found. Use the item name (like bronze_harness) or its id.')
+            return
+        end
+
+        local info = GetSquadItemInfo(itemId)
+        if not info.valid then
+            say(player, 'That is not an equippable item.')
+            return
+        end
+
+        if REQUIRE_UNLOCK and not GetSquadUnlocks(charId)[itemId] then
+            say(player, string.format('%s has not been given to your squad yet. Use !squad give %s first.', info.name, arg2))
+            return
+        end
+
+        local mainLevel = levelsFor(mate)
+        if info.level > mainLevel then
+            say(player, string.format('%s needs level %d, but %s is level %d as %s.', info.name, info.level, mate.name, mainLevel, jobNames[mate.mjob]))
+            return
+        elseif not hasBit(info.jobs, mate.mjob - 1) then
+            say(player, string.format('%s cannot be worn by %s.', info.name, jobNames[mate.mjob]))
+            return
+        end
+
+        local slotIndex = nil
+        if arg3 ~= nil then
+            slotIndex = equipSlots[string.lower(arg3)]
+            if slotIndex == nil or not hasBit(info.slot, slotIndex) then
+                say(player, string.format('%s does not fit that slot.', info.name))
+                return
+            end
+        else
+            local worn = mate.equip[mate.mjob] or {}
+            for s = 0, 15 do
+                if hasBit(info.slot, s) then
+                    if slotIndex == nil then
+                        slotIndex = s
+                    end
+
+                    if worn[s] == nil then
+                        slotIndex = s
+                        break
+                    end
+                end
+            end
+        end
+
+        if slotIndex == nil then
+            say(player, 'Could not find a slot for that item.')
+            return
+        end
+
+        SetSquadEquip(mate.id, mate.mjob, slotIndex, itemId)
+        say(player, string.format('%s now wears %s (%s) as %s. Dismiss and call them again to apply.', mate.name, info.name, equipSlotNames[slotIndex], jobNames[mate.mjob]))
+        return
+    elseif action == 'unequip' then
+        local which = string.lower(arg2 or '')
+        if which == 'all' then
+            for s = 0, 15 do
+                SetSquadEquip(mate.id, mate.mjob, s, 0)
+            end
+
+            say(player, string.format('%s took off everything (%s gear).', mate.name, jobNames[mate.mjob]))
+            return
+        end
+
+        local slotIndex = equipSlots[which]
+        if slotIndex == nil then
+            say(player, 'Which slot? head body hands legs feet main sub range ammo neck waist ear1 ear2 ring1 ring2 back, or all')
+            return
+        end
+
+        SetSquadEquip(mate.id, mate.mjob, slotIndex, 0)
+        say(player, string.format('%s took off the %s item. Dismiss and call them again to apply.', mate.name, equipSlotNames[slotIndex]))
+        return
+    elseif action == 'gear' then
+        local worn = mate.equip[mate.mjob] or {}
+        say(player, string.format('%s - %s gear:', mate.name, jobNames[mate.mjob]))
+
+        local any = false
+        for s = 0, 15 do
+            if worn[s] ~= nil then
+                local info = GetSquadItemInfo(worn[s])
+                say(player, string.format('  %s: %s', equipSlotNames[s], info.valid and info.name or tostring(worn[s])))
+                any = true
+            end
+        end
+
+        if not any then
+            say(player, '  (nothing equipped)')
+        end
+
+        return
+    elseif action == 'delete' then
+        chatSend('DELETE', mate.name)
+        DeleteSquadMate(charId, mate.slot)
+        say(player, string.format('Deleted %s.', mate.name))
+        return
+    elseif action == 'levels' then
+        say(player, string.format('%s - job levels (unlisted jobs are level 1):', mate.name))
+        for id = 1, 18 do
+            local info = mate.jobs[id]
+            if info ~= nil then
+                say(player, string.format('  %s %d  (%d exp)', jobNames[id], info.level, info.exp))
+            end
+        end
+
+        return
+    elseif action == 'setlevel' then
+        local job = parseJob(arg2)
+        local level = tonumber(arg3)
+        if job == nil or level == nil then
+            say(player, '!squad setlevel <slot> <job> <level>')
+            return
+        elseif not jobUnlocked(player, job) then
+            say(player, lockedMessage(player, job))
+            return
+        end
+
+        SetSquadJob(mate.id, job, clampLevel(level), 0)
+        chatSend('UPDATE', mate.name, 'level', clampLevel(level))
+        say(player, string.format('%s: %s is now level %d.', mate.name, jobNames[job], clampLevel(level)))
+        return
+    elseif action == 'job' then
+        local job = parseJob(arg2)
+        if job == nil then
+            say(player, 'Unknown job. Jobs: ' .. jobList)
+            return
+        elseif not jobUnlocked(player, job) and job ~= mate.mjob and job ~= mate.sjob then
+            say(player, lockedMessage(player, job))
+            return
+        end
+
+        mate.mjob = job
+        if mate.sjob == job then
+            mate.sjob = 0
+        end
+        chatSend('UPDATE', mate.name, 'job', jobNames[job])
+    elseif action == 'sub' then
+        if arg2 ~= nil and string.lower(arg2) == 'none' then
+            mate.sjob = 0
+        else
+            local job = parseJob(arg2)
+            if job == nil or job == mate.mjob then
+                say(player, 'Pick a different job than the main job, or "none".')
+                return
+            elseif not jobUnlocked(player, job) and job ~= mate.sjob then
+                say(player, lockedMessage(player, job))
+                return
+            end
+
+            mate.sjob = job
+        end
+    elseif action == 'look' then
+        local race = raceIds[string.lower(arg2 or '')]
+        local face = tonumber(arg3)
+        if race == nil or face == nil or face < 1 or face > 16 then
+            say(player, '!squad look <slot> <race> <face 1-16>   races: humem humef elvm elvf tarum taruf mithra galka')
+            return
+        end
+
+        mate.race = race
+        mate.face = math.floor(face) - 1
+        chatSend('UPDATE', mate.name, 'race', race)
+    elseif action == 'rename' then
+        if not validName(arg2) then
+            say(player, 'Name must be 3-15 letters.')
+            return
+        end
+
+        local oldName = mate.name
+        mate.name = arg2
+        chatSend('RENAME', oldName, arg2)
+    else
+        usage(player)
+        return
+    end
+
+    save(player, mate)
+end
+
+xi.module.registerCommand('squad', commandObj)
+
+-----------------------------------
+-- !startergear: the basic level 1 gear for a job (the starter weapon and plain armor)
+--   !startergear           you (for the job you are on now) and every one of your squad mates
+--   !startergear me        only you
+--   !startergear squad     only your squad
+-- You get the items in your inventory. Squad mates have their gear saved for their job; it shows up the next time
+-- you call them (dismiss and call them again if they are out already). Gear a mate already wears is never replaced.
+-----------------------------------
+local gearCommand = {}
+
+gearCommand.cmdprops =
+{
+    permission = 0,
+    parameters = 's',
+}
+
+local STARTER_SLOT_ORDER = { 0, 4, 5, 6, 7, 8, 10 } -- weapon, head, body, hands, legs, feet, waist (the Monk's White Belt)
+
+local function itemLabel(itemId)
+    local info = GetSquadItemInfo(itemId)
+    return info.valid and prettyItem(info.name) or ('item ' .. tostring(itemId))
+end
+
+local function starterGearForPlayer(player)
+    local gear = starterGearFor(player:getMainJob(), player:getMainLvl())
+    local added, already = {}, 0
+
+    for _, slot in ipairs(STARTER_SLOT_ORDER) do
+        local itemId = gear[slot]
+        if itemId ~= nil then
+            if player:hasItem(itemId) then
+                already = already + 1
+            elseif player:getFreeSlotsCount() == 0 then
+                say(player, 'Your inventory is full - make some room and use !startergear me again.')
+                break
+            elseif player:addItem(itemId, 1) then
+                added[#added + 1] = itemLabel(itemId)
+            end
+        end
+    end
+
+    if #added == 0 and already == 0 then
+        say(player, 'There is no basic level 1 gear for your current job in this game.')
+    elseif #added == 0 then
+        say(player, string.format('You: you already have all of your starter gear (%d pieces).', already))
+    else
+        say(player, 'You: added ' .. table.concat(added, ', ') .. (already > 0 and string.format(' (you already had %d more).', already) or '.'))
+    end
+end
+
+local function starterGearForSquad(player)
+    local squad = GetSquad(player:getID())
+    if #squad == 0 then
+        say(player, 'You have no squad mates yet. Try: !squad new Bob WAR')
+        return
+    end
+
+    for _, mate in ipairs(squad) do
+        mate.equip = mate.equip or {}
+        local worn = mate.equip[mate.mjob] or {}
+        mate.equip[mate.mjob] = worn
+
+        local added = 0
+        for slot, itemId in pairs(starterGearFor(mate.mjob, jobLevel(mate, mate.mjob))) do
+            if worn[slot] == nil then
+                SetSquadEquip(mate.id, mate.mjob, slot, itemId)
+                UnlockSquadItem(player:getID(), itemId) -- basic gear is free for the whole squad
+                worn[slot] = itemId
+                added = added + 1
+            end
+        end
+
+        SetSquadEquip(mate.id, mate.mjob, STARTER_MARK, 1)
+        worn[STARTER_MARK] = 1
+
+        if added > 0 then
+            say(player, string.format('%s: %d starter piece(s) added.', mate.name, added))
+        else
+            say(player, string.format('%s: already has gear in every starter slot.', mate.name))
+        end
+    end
+
+    if next(squad) ~= nil then
+        say(player, 'Squad gear is saved. Dismiss and call your squad again to see it on them.')
+    end
+end
+
+gearCommand.onTrigger = function(player, who)
+    who = who and string.lower(who) or 'all'
+
+    if who == 'me' then
+        starterGearForPlayer(player)
+    elseif who == 'squad' then
+        starterGearForSquad(player)
+    elseif who == 'all' then
+        starterGearForPlayer(player)
+        starterGearForSquad(player)
+    else
+        say(player, 'Use: !startergear   or   !startergear me   or   !startergear squad')
+    end
+end
+
+xi.module.registerCommand('startergear', gearCommand)
+
+-----------------------------------
+-- Job behavior for squad mates
+--
+-- Squad mates spawn using a "template" trust, but the template scripts hand out abilities without checking level
+-- (a normal Trust always matches your level). So for every squad mate we replace the template's spawn script with
+-- level-aware behavior for the mate's main job, plus the sub job's abilities and spells at the sub level.
+-- Spells are limited by level through the spell lists; job abilities are limited here, using the levels below.
+-- Names are looked up when the server starts. Any ability or spell this server does not know is skipped and logged
+-- as "[squad] unknown ...", so a wrong name never breaks a spawn.
+-----------------------------------
+
+-- The level job abilities are checked against: the main level for the main job, the sub level for the sub job
+local profileLevel = 1
+
+-- A gambit condition from a condition type and an optional argument (an effect name like 'HASTE', or a number)
+local function cond(condition, arg)
+    local value = 0
+    if type(arg) == 'string' then
+        value = xi.effect[arg]
+        if value == nil then
+            print(string.format('[squad] unknown effect %s - skipped', arg))
+            return nil
+        end
+    elseif arg ~= nil then
+        value = arg
+    end
+
+    return { condition, value }
+end
+
+-- Two conditions that must both be true
+local function both(first, second)
+    if first == nil or second == nil then
+        return nil
+    end
+
+    return { first, second }
+end
+
+local function spell(name)
+    local id = xi.magic.spell[name]
+    if id == nil then
+        print(string.format('[squad] unknown spell %s - skipped', name))
+        return nil
+    end
+
+    return { ai.r.MA, ai.s.SPECIFIC, id }
+end
+
+local function family(name)
+    local id = xi.magic.spellFamily[name]
+    if id == nil then
+        print(string.format('[squad] unknown spell family %s - skipped', name))
+        return nil
+    end
+
+    return { ai.r.MA, ai.s.HIGHEST, id }
+end
+
+-----------------------------------
+-- Roles and modes (v1.5)
+--
+-- Every gambit of a squad mate goes through addGambit below. The mate's ROLE decides which kinds of gambit it keeps, and its MODE
+-- decides how early it heals and how much mana it holds back. "auto" and "balanced" change nothing at all.
+--   tank     keeps Provoke, Sentinel, Holy Circle, Third Eye, Yonin, Flash and its own buffs. Heals only when someone is in real trouble.
+--   damage   keeps attacks, nukes, ranged attacks and its own buffs. Heals only when someone is in real trouble.
+--   healer   keeps cures, status removal and buffs for the party. Does not nuke, shoot or weaken the enemy.
+--   support  keeps buffs, weakening spells, status removal and normal cures. Does not nuke.
+--   aggressive heals earlier (+15% HP) and holds nothing back.   conserve heals later (-15% HP) and keeps 40% mana in reserve.
+-- A role and a mode are stored on your character (SQUAD_AI_<mate id>), set with !squad role / !squad mode, and read when the mate is called.
+-----------------------------------
+local EMERGENCY_HP    = { tank = 40, damage = 30 }
+local CONSERVE_MP     = 40
+local MODE_HEAL_SHIFT = { aggressive = 15, conserve = -15 }
+
+-- Which kind each spell, spell family and job ability is. Anything not listed counts as 'other' (spells) or 'meleeja' (abilities).
+local CATEGORY_NAMES =
+{
+    family =
+    {
+        heal   = { 'CURE' },
+        buff   = { 'HASTE', 'PHALANX', 'PROTECT', 'PROTECTRA', 'SHELL', 'SHELLRA', 'MARCH', 'VALOR_MINUET', 'UTSUSEMI' },
+        debuff = { 'DIA', 'DISTRACT', 'HOJO', 'KURAYAMI', 'PARALYZE', 'SLOW' },
+        nuke   = { 'BANISH' },
+    },
+    spell =
+    {
+        heal    = { 'CURE' },
+        cleanse = { 'BLINDNA', 'CURSNA', 'ERASE', 'PARALYNA', 'POISONA', 'SILENA', 'STONA', 'VIRUNA' },
+        buff    = { 'ENFIRE', 'REFRESH' },
+        debuff  = { 'FLASH' },
+        nuke    = { 'ASPIR', 'DRAIN', 'STONE' },
+    },
+    ja =
+    {
+        tankja  = { 'PROVOKE', 'SENTINEL', 'HOLY_CIRCLE', 'THIRD_EYE', 'YONIN' },
+        utility = { 'CONVERT', 'CHAKRA' },
+    },
+}
+
+-- What each role does with each kind: true keeps it, false drops it, 'emergency' keeps it but only for a badly hurt target, 'self' keeps it only on the mate itself
+local ROLE_KEEPS =
+{
+    heal    = { tank = 'emergency', damage = 'emergency', healer = true,  support = true },
+    cleanse = { tank = false,       damage = false,       healer = true,  support = true },
+    buff    = { tank = 'self',      damage = 'self',      healer = true,  support = true },
+    debuff  = { tank = true,        damage = true,        healer = false, support = true },
+    nuke    = { tank = false,       damage = true,        healer = false, support = false },
+    ranged  = { tank = false,       damage = true,        healer = false, support = true },
+    tankja  = { tank = true,        damage = false,       healer = false, support = false },
+    meleeja = { tank = true,        damage = true,        healer = false, support = false },
+}
+
+local categoryIds = nil
+
+local function buildCategoryIds()
+    categoryIds = { family = {}, spell = {}, ja = {} }
+    local sources = { family = xi.magic.spellFamily, spell = xi.magic.spell, ja = xi.ja }
+    for kind, byCategory in pairs(CATEGORY_NAMES) do
+        for category, names in pairs(byCategory) do
+            for _, name in ipairs(names) do
+                local id = sources[kind][name]
+                if id ~= nil then
+                    categoryIds[kind][id] = category
+                end
+            end
+        end
+    end
+end
+
+-- The kind of a gambit, from its action
+local function classify(action)
+    if categoryIds == nil then
+        buildCategoryIds()
+    end
+
+    local reaction, selector, id = action[1], action[2], action[3]
+    if reaction == ai.r.JA then
+        return categoryIds.ja[id] or 'meleeja'
+    end
+
+    if reaction == ai.r.RATTACK then
+        return 'ranged'
+    end
+
+    if reaction == ai.r.MA then
+        if selector == ai.s.MB_ELEMENT then
+            return 'nuke'
+        end
+
+        if selector == ai.s.HIGHEST then
+            if id == xi.magic.spellFamily.NONE then
+                return 'nuke'
+            end
+
+            return categoryIds.family[id] or 'other'
+        end
+
+        return categoryIds.spell[id] or 'other'
+    end
+
+    return 'other'
+end
+
+-- A condition is { condition, value }, or a pair of those (see both). Changes the "HP below" threshold, wherever it is.
+local function mapHeal(condition, change)
+    if type(condition[1]) == 'table' then
+        return { mapHeal(condition[1], change), mapHeal(condition[2], change) }
+    end
+
+    if condition[1] == ai.c.HPP_LT then
+        return { ai.c.HPP_LT, change(condition[2]) }
+    end
+
+    return condition
+end
+
+-- Adds "mana at least floor%" to a condition, or raises the one it already has. A pair of other conditions is left alone.
+local function withMpFloor(condition, floor)
+    if type(condition[1]) == 'table' then
+        local first, second = condition[1], condition[2]
+        if first[1] == ai.c.MPP_GTE then
+            return { { ai.c.MPP_GTE, math.max(first[2], floor) }, second }
+        end
+
+        if second[1] == ai.c.MPP_GTE then
+            return { first, { ai.c.MPP_GTE, math.max(second[2], floor) } }
+        end
+
+        return condition
+    end
+
+    if condition[1] == ai.c.MPP_GTE then
+        return { ai.c.MPP_GTE, math.max(condition[2], floor) }
+    end
+
+    return { condition, { ai.c.MPP_GTE, floor } }
+end
+
+-- One gambit under a role and a mode. Returns keep (true/false) and the possibly changed condition.
+local function behaviorFilter(role, mode, target, condition, action)
+    local category = classify(action)
+    local keeps = ROLE_KEEPS[category] and ROLE_KEEPS[category][role]
+    if keeps == false then
+        return false, condition
+    end
+
+    if keeps == 'self' and target ~= ai.t.SELF then
+        return false, condition
+    end
+
+    if keeps == 'emergency' then
+        local cap = EMERGENCY_HP[role]
+        condition = mapHeal(condition, function(value)
+            return math.min(value, cap)
+        end)
+    end
+
+    if category == 'heal' then
+        local shift = MODE_HEAL_SHIFT[mode]
+        if shift ~= nil then
+            condition = mapHeal(condition, function(value)
+                return math.max(15, math.min(90, value + shift))
+            end)
+        end
+    elseif mode == 'conserve' and (category == 'buff' or category == 'debuff' or category == 'nuke' or category == 'cleanse') then
+        condition = withMpFloor(condition, CONSERVE_MP)
+    end
+
+    return true, condition
+end
+
+-- Set while a mate's behavior is being built (see squadSpawn). Nil, or "auto" and "balanced", mean no change.
+local activeBehavior = nil
+
+-- Ditto for the on/off switches: nil means every kind of action is allowed.
+local activeSwitches = nil
+
+-- The switch that guards an action, or nil for actions no switch covers (weapon skills belong to the trust template, not to us).
+local function switchForAction(action)
+    local reaction = action[1]
+    if reaction == ai.r.MA then
+        return 'magic'
+    elseif reaction == ai.r.JA then
+        return 'ja'
+    elseif reaction == ai.r.RATTACK then
+        return 'ranged'
+    end
+
+    return nil
+end
+
+local function addGambit(mob, target, condition, action, retry)
+    if condition == nil or action == nil then
+        return
+    end
+
+    if activeSwitches ~= nil then
+        local needed = switchForAction(action)
+        if needed ~= nil and not hasBit(activeSwitches, SW_BIT[needed]) then
+            return
+        end
+    end
+
+    if activeBehavior ~= nil and (activeBehavior.role ~= 'auto' or activeBehavior.mode ~= 'balanced') then
+        local keep, adjusted = behaviorFilter(activeBehavior.role, activeBehavior.mode, target, condition, action)
+        if not keep then
+            return
+        end
+
+        condition = adjusted
+    end
+
+    if retry ~= nil then
+        mob:addGambit(target, condition, action, retry)
+    else
+        mob:addGambit(target, condition, action)
+    end
+end
+
+-- Adds a job ability gambit if the mate's level for that job allows it
+local function addJA(mob, minLevel, jaName, target, condition, arg)
+    if profileLevel < minLevel then
+        return
+    end
+
+    local jaId = xi.ja[jaName]
+    if jaId == nil then
+        print(string.format('[squad] unknown job ability %s - skipped', jaName))
+        return
+    end
+
+    addGambit(mob, target, cond(condition, arg), { ai.r.JA, ai.s.SPECIFIC, jaId })
+end
+
+-- Each job has three parts: ja (job abilities), magic (spells), stance (stat tweaks and where it stands).
+-- As a sub job only ja and magic are used, at the sub level.
+local jobs = {}
+
+-- Warrior: Provoke 5, Berserk 15, Warcry 35, Aggressor 45
+jobs[jobIds.WAR] =
+{
+    ja = function(mob)
+        addJA(mob, 5, 'PROVOKE', ai.t.SELF, ai.c.NOT_HAS_TOP_ENMITY, 0)
+        addJA(mob, 15, 'BERSERK', ai.t.SELF, ai.c.NOT_STATUS, 'BERSERK')
+        addJA(mob, 35, 'WARCRY', ai.t.SELF, ai.c.NOT_STATUS, 'WARCRY')
+        addJA(mob, 45, 'AGGRESSOR', ai.t.SELF, ai.c.NOT_STATUS, 'AGGRESSOR')
+    end,
+}
+
+-- Monk: Boost 5, Dodge 15, Focus 25, Chakra 35, Counterstance 45
+jobs[jobIds.MNK] =
+{
+    ja = function(mob)
+        addJA(mob, 5, 'BOOST', ai.t.SELF, ai.c.NOT_STATUS, 'BOOST')
+        addJA(mob, 15, 'DODGE', ai.t.SELF, ai.c.ALWAYS, 0)
+        addJA(mob, 25, 'FOCUS', ai.t.SELF, ai.c.ALWAYS, 0)
+        addJA(mob, 35, 'CHAKRA', ai.t.SELF, ai.c.HPP_LT, 50)
+        addJA(mob, 45, 'COUNTERSTANCE', ai.t.SELF, ai.c.HAS_TOP_ENMITY, 0)
+    end,
+}
+
+-- White Mage: cures, status removal and buffs
+jobs[jobIds.WHM] =
+{
+    magic = function(mob)
+        addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, 25), family('CURE'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'SLEEP_I'), spell('CURE'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'SLEEP_II'), spell('CURE'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, 75), family('CURE'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'PROTECT'), family('PROTECTRA'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'SHELL'), family('SHELLRA'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'POISON'), spell('POISONA'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'PARALYSIS'), spell('PARALYNA'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'BLINDNESS'), spell('BLINDNA'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'SILENCE'), spell('SILENA'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'PETRIFICATION'), spell('STONA'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'DISEASE'), spell('VIRUNA'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'CURSE_I'), spell('CURSNA'))
+        addGambit(mob, ai.t.SELF, cond(ai.c.STATUS_FLAG, xi.effectFlag.ERASABLE), spell('ERASE'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS_FLAG, xi.effectFlag.ERASABLE), spell('ERASE'))
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'PARALYSIS'), family('PARALYZE'), 60)
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'SLOW'), family('SLOW'), 60)
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'FLASH'), spell('FLASH'), 60)
+        -- Now and then, after everything above: Dia (never when the mob already has it) and Banish, keeping MP for cures
+        addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, 40), cond(ai.c.NOT_STATUS, 'DIA')), family('DIA'), 60)
+        addGambit(mob, ai.t.TARGET, cond(ai.c.MPP_GTE, 50), family('BANISH'), 30)
+    end,
+    stance = function(mob)
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.NO_MOVE)
+    end,
+}
+
+-- Black Mage: magic bursts and the strongest nuke available. As a sub job it only nukes with plenty of MP left.
+jobs[jobIds.BLM] =
+{
+    -- Elemental Seal 15: on a magic burst (the burst itself is the first magic rule)
+    ja = function(mob)
+        addJA(mob, 15, 'ELEMENTAL_SEAL', ai.t.SELF, ai.c.MB_AVAILABLE, 0)
+    end,
+    magic = function(mob, isSub)
+        addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, isSub and 60 or 0), cond(ai.c.MB_AVAILABLE, 0)), { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE })
+        addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, isSub and 60 or 0), cond(ai.c.NOT_SC_AVAILABLE, 0)), { ai.r.MA, ai.s.HIGHEST, xi.magic.spellFamily.NONE }, 60)
+    end,
+    stance = function(mob)
+        local power = mob:getMainLvl() / 10
+        mob:addMod(xi.mod.MATT, power)
+        mob:addMod(xi.mod.MACC, power)
+        mob:addMod(xi.mod.HASTE_MAGIC, 1000) -- 10% haste (magic)
+
+        mob:setAutoAttackEnabled(false)
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.NO_MOVE)
+    end,
+}
+
+-- Red Mage: heals, buffs itself and you, and slows or weakens the enemy. Convert at 40.
+jobs[jobIds.RDM] =
+{
+    ja = function(mob)
+        addJA(mob, 40, 'CONVERT', ai.t.SELF, ai.c.MPP_LT, 25)
+    end,
+    magic = function(mob)
+        addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, 50), family('CURE'))
+        -- 15s, not 60s: the retry timer is global across targets, so a full minute made him skip
+        -- every new mob after the first Dia. The NOT_STATUS check still stops him recasting on one mob.
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'DIA'), family('DIA'), 15) -- Dia from level 1 (Dia II at 31)
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'HASTE'), family('HASTE'))
+        addGambit(mob, ai.t.MASTER, cond(ai.c.NOT_STATUS, 'HASTE'), family('HASTE'))
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'REFRESH'), spell('REFRESH'))
+        addGambit(mob, ai.t.MASTER, cond(ai.c.NOT_STATUS, 'REFRESH'), spell('REFRESH'))
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'PHALANX'), family('PHALANX'))
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'ENFIRE'), spell('ENFIRE'))
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'EVASION_DOWN'), family('DISTRACT'), 60)
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'SLOW'), family('SLOW'), 60)
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'PARALYSIS'), family('PARALYZE'), 60)
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'PROTECT'), family('PROTECT'))
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'SHELL'), family('SHELL'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'PROTECT'), family('PROTECT'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'SHELL'), family('SHELL'))
+        -- A skillchain just landed: magic burst it (with MP to spare for cures)
+        addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, 30), cond(ai.c.MB_AVAILABLE, 0)), { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE })
+        -- Now and then, after everything above: the best elemental spell the mob is weakest to, keeping MP for the rest
+        addGambit(mob, ai.t.TARGET, cond(ai.c.MPP_GTE, 50), { ai.r.MA, ai.s.BEST_AGAINST_TARGET, xi.magic.spell.STONE }, 30)
+    end,
+    stance = function(mob)
+        -- Red Mages fight up close and cast between swings. With the melee switch off (!squad sw / the panel),
+        -- the melee-off rule below still sends him to casting range.
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MELEE)
+    end,
+}
+
+-- Thief: plain melee for now (the template's Despoil is not available in this era)
+jobs[jobIds.THF] = {}
+
+-- Paladin: Holy Circle 5, Sentinel 30; Flash and Cure come from the spell list
+jobs[jobIds.PLD] =
+{
+    ja = function(mob)
+        addJA(mob, 5, 'HOLY_CIRCLE', ai.t.SELF, ai.c.NOT_STATUS, 'HOLY_CIRCLE')
+        addJA(mob, 30, 'SENTINEL', ai.t.SELF, ai.c.NOT_STATUS, 'SENTINEL')
+    end,
+    magic = function(mob)
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'FLASH'), spell('FLASH'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, 75), family('CURE'))
+    end,
+}
+
+-- Dark Knight: Arcane Circle 5, Last Resort 15, Souleater 30; Drain heals when hurt, Aspir restores MP
+jobs[jobIds.DRK] =
+{
+    ja = function(mob)
+        addJA(mob, 5, 'ARCANE_CIRCLE', ai.t.SELF, ai.c.NOT_STATUS, 'ARCANE_CIRCLE')
+        addJA(mob, 15, 'LAST_RESORT', ai.t.SELF, ai.c.NOT_STATUS, 'LAST_RESORT')
+        addJA(mob, 30, 'SOULEATER', ai.t.SELF, ai.c.NOT_STATUS, 'SOULEATER')
+    end,
+    magic = function(mob)
+        addGambit(mob, ai.t.TRIGGER_SELF_ACTION_TARGET, cond(ai.c.HPP_LT, 75), spell('DRAIN'), 30)
+        addGambit(mob, ai.t.TRIGGER_SELF_ACTION_TARGET, cond(ai.c.MPP_LT, 50), spell('ASPIR'), 60)
+    end,
+}
+
+-- Beastmaster: Courier Carrie is called by the pet loop; charm and jug items are not supported yet.
+-- Aamr is the BST trust template: its axe TP settings are reused, while the pet's own Jug_Crab skills are
+-- enabled on the C++ side (see petutils::SpawnPet).
+jobs[jobIds.BST] =
+{
+    ja = function(mob)
+        mob:setTrustTPSkillSettings(ai.tp.ASAP, ai.s.HIGHEST, 1000)
+    end,
+}
+
+-- Bard: Minuet and March for you and the party, ranged attacks from a distance
+jobs[jobIds.BRD] =
+{
+    magic = function(mob)
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'MINUET'), family('VALOR_MINUET'))
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'MARCH'), family('MARCH'))
+        addGambit(mob, ai.t.TARGET, cond(ai.c.ALWAYS, 0), { ai.r.RATTACK, 0, 0 }, 60)
+    end,
+    stance = function(mob)
+        mob:setAutoAttackEnabled(false)
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MID_RANGE)
+    end,
+}
+
+-- Ranger: Sharpshot 20, fires often from a distance
+jobs[jobIds.RNG] =
+{
+    ja = function(mob)
+        addJA(mob, 20, 'SHARPSHOT', ai.t.SELF, ai.c.NOT_STATUS, 'SHARPSHOT')
+        addGambit(mob, ai.t.TARGET, cond(ai.c.ALWAYS, 0), { ai.r.RATTACK, 0, 0 }, 10)
+    end,
+    stance = function(mob)
+        mob:setAutoAttackEnabled(false)
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.LONG_RANGE)
+    end,
+}
+
+-- Samurai: Third Eye 15, Hasso 25, Meditate 30
+jobs[jobIds.SAM] =
+{
+    ja = function(mob)
+        addJA(mob, 15, 'THIRD_EYE', ai.t.SELF, ai.c.HAS_TOP_ENMITY, 0)
+        addJA(mob, 25, 'HASSO', ai.t.SELF, ai.c.NOT_STATUS, 'HASSO')
+        addJA(mob, 30, 'MEDITATE', ai.t.SELF, ai.c.TP_LT, 1000)
+    end,
+}
+
+-- Ninja: Yonin 40 when holding the enemy's attention; shadows, blind and slow from the spell list
+jobs[jobIds.NIN] =
+{
+    ja = function(mob)
+        addJA(mob, 40, 'YONIN', ai.t.SELF, ai.c.HAS_TOP_ENMITY, 0)
+    end,
+    magic = function(mob)
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'COPY_IMAGE'), family('UTSUSEMI'))
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'BLINDNESS'), family('KURAYAMI'), 30)
+        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'SLOW'), family('HOJO'), 30)
+    end,
+}
+
+-- Dragoon: Jump 1, Ancient Circle 5 (against dragons), High Jump 35, Super Jump 50; the pet loop calls the wyvern.
+-- Shikaree Z is the DRG trust template: its polearm TP settings and WHM-sub support spells are reused here.
+jobs[jobIds.DRG] =
+{
+    ja = function(mob)
+        addJA(mob, 5, 'ANCIENT_CIRCLE', ai.t.TARGET, ai.c.IS_ECOSYSTEM, xi.ecosystem.DRAGON)
+        addJA(mob, 1, 'JUMP', ai.t.TARGET, ai.c.ALWAYS, 0)
+        addJA(mob, 35, 'HIGH_JUMP', ai.t.TARGET, ai.c.ALWAYS, 0)
+        addJA(mob, 50, 'SUPER_JUMP', ai.t.SELF, ai.c.HAS_TOP_ENMITY, 0)
+        mob:setTrustTPSkillSettings(ai.tp.CLOSER_UNTIL_TP, ai.s.HIGHEST, 2000)
+    end,
+    magic = function(mob)
+        -- Only a DRG/WHM has these spells; a DRG/WAR simply skips the block.
+        if mob:getSubJob() ~= jobIds.WHM then
+            return
+        end
+
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'HASTE'), family('HASTE'))
+        addGambit(mob, ai.t.SELF, cond(ai.c.STATUS_FLAG, xi.effectFlag.ERASABLE), spell('ERASE'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS_FLAG, xi.effectFlag.ERASABLE), spell('ERASE'))
+        addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, 50), family('CURE'))
+    end,
+}
+
+-- Summoner: Carbuncle is called by the pet loop; Blood Pacts and the other avatars are not supported yet
+jobs[jobIds.SMN] = {}
+
+-- Blue Mage (v1.17): fights with a sword and casts blue magic between swings - its cures and defences first, then
+-- the two strongest physical spells its level has. A squad Blue Mage knows every blue spell of its level (no
+-- hunting for them, no set points). There is no Blue Mage trust to borrow, so it uses the plain body template.
+jobs[jobIds.BLU] =
+{
+    magic = function(mob)
+        addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, 50), spell('MAGIC_FRUIT'))              -- 58
+        addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, 50), spell('WILD_CARROT'))              -- 30
+        addGambit(mob, ai.t.SELF, cond(ai.c.HPP_LT, 50), spell('HEALING_BREEZE'))            -- 16
+        addGambit(mob, ai.t.SELF, cond(ai.c.HPP_LT, 50), spell('POLLEN'))                    -- 1
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'DEFENSE_BOOST'), spell('COCOON'))   -- 8
+        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'STONESKIN'), spell('METALLIC_BODY')) -- 8
+
+        -- (only two attack spells, each on its own timer: with all of them listed it would cast without a pause)
+        local attacks = { { 38, 'JET_STREAM' }, { 38, 'UPPERCUT' }, { 26, 'SCREWDRIVER' }, { 18, 'BLUDGEON' }, { 12, 'HEAD_BUTT' },
+                          { 12, 'BATTLE_DANCE' }, { 4, 'POWER_ATTACK' }, { 4, 'SPROUT_SMACK' }, { 4, 'WILD_OATS' } }
+        local used = 0
+        for _, a in ipairs(attacks) do
+            if used < 2 and profileLevel >= a[1] then
+                used = used + 1
+                addGambit(mob, ai.t.TARGET, cond(ai.c.MPP_GTE, 30), spell(a[2]), used == 1 and 20 or 35)
+            end
+        end
+    end,
+    stance = function(mob)
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MELEE)
+    end,
+}
+
+-- Corsair (v1.17): Corsair's Roll (more experience for the party) from 5, and one fighting roll - Hunter's Roll
+-- (accuracy) from 11, Chaos Roll (attack) from 14. Only two: a third roll would push the first one off, for ever.
+-- It fights up close and fires when it has something to fire.
+jobs[jobIds.COR] =
+{
+    ja = function(mob)
+        addJA(mob, 5, 'CORSAIRS_ROLL', ai.t.SELF, ai.c.NOT_STATUS, 'CORSAIRS_ROLL')
+        if profileLevel >= 14 then
+            addJA(mob, 14, 'CHAOS_ROLL', ai.t.SELF, ai.c.NOT_STATUS, 'CHAOS_ROLL')
+        else
+            addJA(mob, 11, 'HUNTERS_ROLL', ai.t.SELF, ai.c.NOT_STATUS, 'HUNTERS_ROLL')
+        end
+
+        addGambit(mob, ai.t.TARGET, cond(ai.c.ALWAYS, 0), { ai.r.RATTACK, 0, 0 }, 15)
+    end,
+    stance = function(mob)
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MELEE)
+    end,
+}
+
+-- Puppetmaster (v1.17): hand-to-hand, weapon skills as soon as it has the TP. It has NO automaton: the game's
+-- automaton belongs to a player character (its frame, head, attachments and skills are read from the character),
+-- so a squad mate cannot own one without a change to the pet code itself.
+jobs[jobIds.PUP] =
+{
+    ja = function(mob)
+        mob:setTrustTPSkillSettings(ai.tp.ASAP, ai.s.HIGHEST, 1000)
+    end,
+    stance = function(mob)
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MELEE)
+    end,
+}
+
+-----------------------------------
+-- Editable job rules (v1.5)
+--
+-- modules/custom/lua/squad_rules_data.lua (written by the launcher) can replace the rules of a job. For a job it lists, its "ja" (job abilities)
+-- and/or "magic" (spells) list is used instead of the built-in one; anything it does not list stays as it is built in. A rule is a table:
+--   { on = true, target = 'PARTY', cond = { 'HPP_LT', 25 }, cond2 = { 'MPP_GTE', 10 }, action = { 'family', 'CURE' }, retry = 60, level = 5 }
+--   target   SELF, PARTY, MASTER or TARGET                    cond2, retry and level are optional
+--   cond     { condition name, argument }: the argument is a number, an effect name (like 'HASTE'), { flag = 'ERASABLE' },
+--            { ecosystem = 'DRAGON' }, or { main = 0, sub = 60 } for a different number as a sub job
+--   action   { 'spell', NAME } | { 'family', NAME } | { 'ja', NAME } | { 'ranged' } | { 'nuke' } | { 'burst' }
+--   level    the least level a job ability needs (spells are limited by the mate's learned spells instead)
+-- A rule with anything wrong in it is skipped and logged as "[squad] ...", it never stops the mate from spawning.
+-----------------------------------
+local rulesOk, rulesData = pcall(require, 'modules/custom/lua/squad_rules_data')
+if not rulesOk then
+    if not string.find(tostring(rulesData), 'not found', 1, true) then
+        print('[squad] squad_rules_data.lua could not be read: ' .. tostring(rulesData))
+    end
+
+    rulesData = {}
+elseif type(rulesData) ~= 'table' then
+    rulesData = {}
+end
+
+local function ruleArg(arg, isSub)
+    if type(arg) == 'table' then
+        if arg.flag ~= nil then
+            return xi.effectFlag[arg.flag]
+        end
+
+        if arg.ecosystem ~= nil then
+            return xi.ecosystem[arg.ecosystem]
+        end
+
+        if arg.main ~= nil or arg.sub ~= nil then
+            if isSub then
+                return arg.sub or 0
+            end
+
+            return arg.main or 0
+        end
+    end
+
+    return arg
+end
+
+local function ruleCondition(spec, isSub)
+    if type(spec) ~= 'table' then
+        return nil
+    end
+
+    local id = ai.c[spec[1]]
+    if id == nil then
+        print(string.format('[squad] unknown condition %s - rule skipped', tostring(spec[1])))
+        return nil
+    end
+
+    return cond(id, ruleArg(spec[2], isSub))
+end
+
+local function ruleAction(spec)
+    if type(spec) ~= 'table' then
+        return nil
+    end
+
+    local kind = spec[1]
+    if kind == 'spell' then
+        return spell(spec[2])
+    elseif kind == 'family' then
+        return family(spec[2])
+    elseif kind == 'ja' then
+        local id = xi.ja[spec[2]]
+        if id == nil then
+            print(string.format('[squad] unknown job ability %s - rule skipped', tostring(spec[2])))
+            return nil
+        end
+
+        return { ai.r.JA, ai.s.SPECIFIC, id }
+    elseif kind == 'ranged' then
+        return { ai.r.RATTACK, 0, 0 }
+    elseif kind == 'nuke' then
+        return { ai.r.MA, ai.s.HIGHEST, xi.magic.spellFamily.NONE }
+    elseif kind == 'burst' then
+        return { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE }
+    end
+
+    print(string.format('[squad] unknown action %s - rule skipped', tostring(kind)))
+    return nil
+end
+
+local function applyRules(mob, rules, isSub)
+    for _, rule in ipairs(rules) do
+        if type(rule) == 'table' and rule.on ~= false and profileLevel >= (rule.level or 0) then
+            local target = ai.t[rule.target]
+            if target == nil then
+                print(string.format('[squad] unknown target %s - rule skipped', tostring(rule.target)))
+            else
+                local condition = ruleCondition(rule.cond, isSub)
+                if condition ~= nil and rule.cond2 ~= nil then
+                    condition = both(condition, ruleCondition(rule.cond2, isSub))
+                end
+
+                addGambit(mob, target, condition, ruleAction(rule.action), rule.retry)
+            end
+        end
+    end
+end
+
+-- Runs one part ('ja' or 'magic') of a job: the edited list if there is one, otherwise the built-in code
+local function runPart(mob, jobId, part, isSub)
+    local custom = type(rulesData.jobs) == 'table' and rulesData.jobs[jobNames[jobId]]
+    if type(custom) == 'table' and custom.enabled ~= false and type(custom[part]) == 'table' then
+        applyRules(mob, custom[part], isSub)
+        return
+    end
+
+    local definition = jobs[jobId]
+    if definition ~= nil and definition[part] ~= nil then
+        definition[part](mob, isSub)
+    end
+end
+
+-- A mate's on/off switches, from the number stored on its master
+local function switchesForMob(mob)
+    local master = mob:getMaster()
+    local squadId = mob:getLocalVar('SQUAD_ID')
+    if master == nil or squadId == 0 then
+        return SW_ALL
+    end
+
+    return switchesOf(master, squadId)
+end
+
+-- A mate's role and mode, from the number stored on its master
+local function behaviorOf(mob)
+    local master = mob:getMaster()
+    local squadId = mob:getLocalVar('SQUAD_ID')
+    if master == nil or squadId == 0 then
+        return 'auto', 'balanced'
+    end
+
+    return decodeBehavior(master:getCharVar('SQUAD_AI_' .. squadId))
+end
+
+-- Runs when a squad mate spawns: the main job at the main level, then the sub job (if any) at the sub level.
+-- Returns true if we handled it, false to let the template script run.
+local function squadSpawn(mob)
+    local main = jobs[mob:getMainJob()]
+    if main == nil then
+        return false
+    end
+
+    local role, mode = behaviorOf(mob)
+    local switches = switchesForMob(mob)
+    activeBehavior = { role = role, mode = mode }
+    activeSwitches = switches
+
+    profileLevel = mob:getMainLvl()
+    runPart(mob, mob:getMainJob(), 'ja', false)
+    runPart(mob, mob:getMainJob(), 'magic', false)
+
+    if main.stance then
+        main.stance(mob)
+    end
+
+    local sub = jobs[mob:getSubJob()]
+    if sub ~= nil then
+        profileLevel = mob:getSubLvl()
+        runPart(mob, mob:getSubJob(), 'ja', true)
+        runPart(mob, mob:getSubJob(), 'magic', true)
+    end
+
+    -- Melee off: the mate swings at nothing and, if its job does not already keep it at a distance, stands at casting range.
+    -- Turning melee back on is only done by calling the mate again, so a job that never melees (BLM, WHM) stays that way.
+    if not hasBit(switches, SW_BIT.melee) then
+        mob:setAutoAttackEnabled(false)
+        if mob:getMobMod(xi.mobMod.TRUST_DISTANCE) == 0 then
+            mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MID_RANGE)
+        end
+    end
+
+    activeBehavior = nil
+    activeSwitches = nil
+    return true
+end
+
+local m = Module:new('squad')
+
+-- Every trust script, because a squad mate can spawn from any of them. Normal trusts (no SQUAD_ID) are left exactly as they were.
+local templates =
+{
+   'aaev', 'aagk', 'aahm', 'aamr', 'aatt', 'abenzio', 'abquhbah', 'adelheid', 'ajido-marujido', 'aldo', 'aldo_uc',
+   'amchuchu', 'apururu_uc', 'arciela', 'arciela_ii', 'areuhat', 'august', 'ayame', 'ayame_uc', 'babban', 'balamor',
+   'brygid', 'chacharoon', 'cherukiki', 'cid', 'cornelia', 'curilla', 'd_shantotto', 'darrcuiln', 'elivira',
+   'excenmille', 'excenmille_s', 'fablinix', 'ferreous_coffin', 'flaviria_uc', 'gadalar', 'gessho', 'gilgamesh',
+   'halver', 'i_shield_uc', 'ingrid', 'ingrid_ii', 'iroha', 'iroha_ii', 'iron_eater', 'jakoh_uc', 'joachim',
+   'karaha-baruha', 'kayeel-payeel', 'king_of_hearts', 'klara', 'koru-moru', 'kukki-chebukki', 'kupipi', 'kupofried',
+   'kuyin_hathdenna', 'lehko_habhoka', 'leonoyne', 'lhe_lhangavo', 'lhu_mhakaracca', 'lilisette', 'lilisette_ii',
+   'lion', 'lion_ii', 'luzaf', 'maat', 'maat_uc', 'makki-chebukki', 'margret', 'matsui-p', 'maximilian', 'mayakov',
+   'mihli_aliapoh', 'mildaurion', 'mnejing', 'monberaux', 'moogle', 'morimar', 'mumor', 'mumor_ii', 'naja_salaheem',
+   'naja_uc', 'najelith', 'naji', 'nanaa_mihgo', 'nashmeira', 'nashmeira_ii', 'noillurie', 'ovjang', 'pieuje_uc',
+   'prishe', 'prishe_ii', 'qultada', 'rahal', 'rainemard', 'robel-akbel', 'romaa_mihgo', 'rongelouts', 'rosulatia',
+   'rughadjeen', 'sakura', 'selh_teus', 'semih_lafihna', 'shantotto', 'shantotto_ii', 'shikaree_z', 'star_sibyl',
+   'sylvie_uc', 'tenzen', 'tenzen_ii', 'teodor', 'trion', 'uka_totlihn', 'ullegore', 'ulmia', 'valaineral', 'volker',
+   'ygnas', 'yoran-oran_uc', 'zazarg', 'zeid', 'zeid_ii',
+}
+
+for _, name in ipairs(templates) do
+    local base = 'xi.actions.spells.trust.' .. name
+
+    m:addOverride(base .. '.onMobSpawn', function(mob)
+        if mob:getLocalVar('SQUAD_ID') > 0 then
+            local master = mob:getMaster()
+            if master ~= nil then
+                mob:setLocalVar('MASTER_ID', master:getID())
+            end
+
+            if squadSpawn(mob) then
+                return
+            end
+        end
+
+        super(mob)
+    end)
+
+    -- Squad mates use their own lines instead of the template trust's speeches
+    m:addOverride(base .. '.onMobDespawn', function(mob)
+        if mob:getLocalVar('SQUAD_ID') == 0 then
+            super(mob)
+        elseif dialogue.speakOnDespawn then
+            speakFromMob(mob, 'despawn')
+        end
+    end)
+
+    m:addOverride(base .. '.onMobDeath', function(mob)
+        if mob:getLocalVar('SQUAD_ID') == 0 then
+            super(mob)
+        elseif dialogue.speakOnDeath then
+            speakFromMob(mob, 'death')
+        end
+    end)
+end
+
+-- Template trust speeches (like Naji's battle cries) are skipped for squad mates, whatever their job
+m:addOverride('xi.trust.message', function(mob, messageOffset)
+    if mob:getLocalVar('SQUAD_ID') > 0 then
+        return
+    end
+
+    return super(mob, messageOffset)
+end)
+
+m:addOverride('xi.trust.teamworkMessage', function(mob, teamworkMessages)
+    if mob:getLocalVar('SQUAD_ID') > 0 then
+        return
+    end
+
+    return super(mob, teamworkMessages)
+end)
+
+-----------------------------------
+-- Experience (v0.3)
+--
+-- When you gain experience from a kill, each squad mate that is in your party, alive and near the
+-- monster earns experience for their own main job, worked out with their own level.
+-- Levels gained are saved right away; they apply the next time the mate is called.
+-----------------------------------
+-- Your exp ring (or Dedication food) gives YOU a bonus until its cap runs out. A mate's exp is worked out through your character,
+-- which would use up that cap once per mate. So the ring is set aside while a mate's exp is calculated and put back exactly as it
+-- was, and your ring lasts as long as it would for a player on their own.
+local MATES_GET_DEDICATION = false -- false: mates get no ring bonus. true: mates get it too, for free, without using up your ring.
+local warnedNoSetPower     = false
+
+local function calcForMate(calc, master, mob, mateData)
+    local dedication = master:getStatusEffect(xi.effect.DEDICATION)
+    if dedication == nil then
+        return calc(master, mob, mateData)
+    end
+
+    local power    = dedication:getPower()
+    local subPower = dedication:getSubPower()
+
+    local zeroed = false
+    if not MATES_GET_DEDICATION then
+        zeroed = pcall(dedication.setPower, dedication, 0) -- no bonus, so nothing is used up
+        if not zeroed and not warnedNoSetPower then
+            warnedNoSetPower = true
+            print('[squad] this server cannot zero a Dedication bonus - mates will share it without using up your ring')
+        end
+    end
+
+    if not zeroed then
+        dedication:setSubPower(1000000000) -- an endless cap, so nothing is used up
+    end
+
+    local ok, result = pcall(calc, master, mob, mateData)
+
+    -- put the ring back exactly as it was
+    local current = master:getStatusEffect(xi.effect.DEDICATION)
+    if current ~= nil then
+        if zeroed then
+            pcall(current.setPower, current, power)
+        end
+
+        current:setSubPower(subPower)
+    end
+
+    if not ok then
+        print('[squad] exp calculation failed for a mate: ' .. tostring(result))
+        return nil
+    end
+
+    return result
+end
+
+local grantSquadExp
+
+local function awardSquadExp(calc, master, mate, mob, data, squadId)
+    local level = mate:getMainLvl()
+
+    local mateData = {}
+    for key, value in pairs(data) do
+        mateData[key] = value
+    end
+
+    mateData.memberLevel = level
+    mateData.memberTNL = GetSquadExpNeeded(level)
+
+    local result = calcForMate(calc, master, mob, mateData)
+    if result == nil or result.exp <= 0 then
+        return
+    end
+
+    -- The exp rate from the Rates tab (map.EXP_RATE) is applied by the game's core when a player gains exp, so apply it here too
+    local expRate = tonumber(xi.settings.map.EXP_RATE) or 1
+    local gain    = math.max(math.floor(result.exp * expRate), 0)
+    grantSquadExp(master, mate, squadId, gain)
+end
+
+-- Gives a mate a set amount of exp for their main job, with the level-up lines and new spells. Also used by Fields/Grounds pages.
+grantSquadExp = function(master, mate, squadId, gain)
+    if gain <= 0 then
+        return
+    end
+
+    local outcome = AddSquadExp(squadId, mate:getMainJob(), gain, MAX_LEVEL)
+    if outcome.gained > 0 then
+        local name = mate:getPacketName()
+        master:printToPlayer(string.format('%s reaches level %d! (call them again to apply it)', name, outcome.level))
+        chatSend('UPDATE', name, 'level', outcome.level)
+        if dialogue.speakOnLevelUp then
+            speak(master, name, 'levelup', { level = outcome.level, job = jobTitles[mate:getMainJob()] or '' })
+        end
+
+        -- Squad mates learn their job's new spells automatically when they level, no scrolls needed
+        local learned = SquadNewSpells(mate:getMainJob(), outcome.level - outcome.gained, outcome.level)
+        if #learned > 0 then
+            local shown = {}
+            for i = 1, math.min(#learned, 8) do
+                shown[i] = prettySpellName(learned[i])
+            end
+
+            master:printToPlayer(string.format('%s learns: %s%s', name, table.concat(shown, ', '), #learned > 8 and ', ...' or ''), 4, name)
+        end
+    end
+end
+
+m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
+    local result = super(member, mob, data)
+    if result == nil then
+        return result
+    end
+
+    for _, mate in pairs(member:getPartyWithTrusts()) do
+        if mate:getObjType() == xi.objType.TRUST then
+            local squadId = mate:getLocalVar('SQUAD_ID')
+            if
+                squadId > 0 and
+                mate:isAlive() and
+                mate:getZoneID() == mob:getZoneID() and
+                mate:checkDistance(mob) < 100
+            then
+                awardSquadExp(super, member, mate, mob, data, squadId)
+            end
+        end
+    end
+
+    return result
+end)
+
+-- Squad mates who are out with this player, alive and in the same zone: { { mate = entity, squadId = n }, ... }
+local function activeMates(master)
+    local out = {}
+    for _, mate in pairs(master:getPartyWithTrusts()) do
+        if mate:getObjType() == xi.objType.TRUST then
+            local squadId = mate:getLocalVar('SQUAD_ID')
+            if squadId > 0 and mate:isAlive() and mate:getZoneID() == master:getZoneID() then
+                table.insert(out, { mate = mate, squadId = squadId })
+            end
+        end
+    end
+
+    return out
+end
+
+-- For other modules (fov_no_buffs.lua: page exp for squad mates)
+xi.squad = xi.squad or {}
+xi.squad.activeMates = activeMates
+xi.squad.grantExp    = function(master, mate, squadId, gain)
+    grantSquadExp(master, mate, squadId, math.floor(tonumber(gain) or 0))
+end
+
+-- For the bot players (bots_party.lua): the same job profiles the squad mates use, as a list of gambits
+-- { target, condition, action } for a main job / level and sub job / level. Nothing is spawned or changed.
+xi.squad = xi.squad or {}
+xi.squad.profileFor = function(mainJob, mainLvl, subJob, subLvl)
+    local recorder = { list = {} }
+    function recorder:addGambit(target, condition, action)
+        self.list[#self.list + 1] = { target = target, condition = condition, action = action }
+    end
+
+    local savedBehavior, savedSwitches, savedLevel = activeBehavior, activeSwitches, profileLevel
+    activeBehavior, activeSwitches = nil, nil
+    local ok, err = pcall(function()
+        if jobs[mainJob] ~= nil then
+            profileLevel = mainLvl
+            runPart(recorder, mainJob, 'ja', false)
+            runPart(recorder, mainJob, 'magic', false)
+        end
+
+        if subJob and subJob ~= 0 and jobs[subJob] ~= nil and (subLvl or 0) > 0 then
+            profileLevel = subLvl
+            runPart(recorder, subJob, 'ja', true)
+            runPart(recorder, subJob, 'magic', true)
+        end
+    end)
+    activeBehavior, activeSwitches, profileLevel = savedBehavior, savedSwitches, savedLevel
+    if not ok then
+        print('[squad] profile for a bot failed: ' .. tostring(err))
+    end
+
+    return recorder.list
+end
+
+-- For the automatic tests only: does nothing on a real server, where __SQUAD_TEST does not exist
+if rawget(_G, '__SQUAD_TEST') ~= nil then
+    __SQUAD_TEST.hooks =
+    {
+        jobs = jobs, jobIds = jobIds, jobNames = jobNames, squadSpawn = squadSpawn, runPart = runPart, classify = classify,
+        behaviorFilter = behaviorFilter, applyRules = applyRules, decodeBehavior = decodeBehavior, commandObj = commandObj,
+        setLevel = function(level) profileLevel = level end, setRules = function(data) rulesData = data end,
+        ROLES = ROLES, MODES = MODES, SWITCHES = SWITCHES, SW_BIT = SW_BIT, SW_ALL = SW_ALL,
+        switchesOf = switchesOf, withBit = withBit, switchSummary = switchSummary, switchForAction = switchForAction,
+        chatFight = chatFight, chatWorld = chatWorld, chatHookPlayer = chatHookPlayer,
+    }
+end
+
+return m

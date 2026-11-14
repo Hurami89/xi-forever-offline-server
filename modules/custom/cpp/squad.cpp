@@ -1,0 +1,1383 @@
+//
+// Squad Mates (v1.9)
+//
+//   Persistent, customizable Trust-style party members.
+//
+//   - Each squad mate (squad_mate) has a level and exp for every job (squad_job).
+//   - Spawns a squad mate as a Trust: the trust that matches the chosen main job is used as the
+//     template for AI, spells and weaponskills, while job, subjob and level come from the record.
+//   - Optionally gives the mate a player race and face.
+//   - Equipment (squad_equip): item modifiers, main hand weapon stats and armor appearance.
+//   - Needs trustutils.patch applied (adds trustutils::SquadSpec).
+//
+//   Lua:
+//   - SpawnSquadMate(player, { id, mjob, sjob, mlevel, slevel, template, race, face, equip }) -> trust entity or nil
+//   - GetSquad(charId)                       -> array of squad mates, each with a .jobs[jobId] = { level, exp }
+//   - SaveSquadMate(charId, slot, record)    -> creates or updates a squad mate, returns its id
+//   - SetSquadJob(squadId, job, level, exp)
+//   - AddSquadExp(squadId, job, exp, cap)    -> { level, exp, gained }
+//   - GetSquadExpNeeded(level)               -> exp needed for the next level
+//   - DeleteSquadMate(charId, slot)
+//   - SetSquadEquip(squadId, job, slot, itemId)   (itemId 0 removes the item)
+//   - FindSquadItem(text)                         -> item id from a numeric id or an item name, 0 if not found
+//   - GetSquadItemInfo(itemId)                    -> { valid, name, level, jobs, slot } for equipment
+//   - Trading: when a player trades items to one of their squad mates, the offered items are handed to the Lua function
+//              xi.squad.onTrade(player, trust, items), where items = array of { itemId, slot, quantity }.
+//   - BuildStarterGear(job)                       -> { [slot] = itemId } basic level 1 gear for that job
+//   - SquadSpawnPet(mate, petId) -> bool     summons a pet (needs trust-squad-pets.patch)
+//   - SquadHasPet(mate) -> bool
+//   - SquadPetAttack(mate, target)           sends the pet at the enemy, if it is not already fighting
+//   - Party chat: typing a spell name casts it. Results go to xi.squad.onSpellCommand(player, mate, spellName, result).
+//   - Party chat: typing a job ability name (or "2hr") uses it. Results go to
+//     xi.squad.onAbilityCommand(player, mate, abilityName, result, abilityId).
+//   - SquadUseAbility(player, mate, abilityId) -> result ("cast", "unknown", "notready", "notarget", "busy")
+//   - SquadNewSpells(job, oldLevel, newLevel) -> names of spells that job learns between those levels
+//   - UnlockSquadItem(charId, itemId)             -> adds an item to the shared squad collection
+//   - GetSquadUnlocks(charId)                     -> table with [itemId] = true for each unlocked item
+//
+
+#include "common/database.h"
+#include "map/ability.h"
+#include "map/recast_container.h"
+#include "map/ai/ai_container.h"
+#include "map/autotranslate.h"
+#include "common/lua.h"
+#include "map/entities/char_entity.h"
+#include "map/entities/trust_entity.h"
+#include "map/item_container.h"
+#include "map/items/item.h"
+#include "map/items/item_equipment.h"
+#include "map/items/item_weapon.h"
+#include "map/lua/lua_base_entity.h"
+#include "map/utils/charutils.h"
+#include "map/utils/itemutils.h"
+#include "map/map_session.h"
+#include "map/mob_spell_container.h"
+#include "map/spell.h"
+#include "map/packets/basic.h"
+#include "map/ai/controllers/trust_controller.h"
+#include "map/ai/helpers/gambits_container.h"
+#include "map/packets/c2s/0x032_trade_req.h"
+#include "map/packets/c2s/0x0b5_chat_std.h"
+#include "map/packets/c2s/0x036_item_transfer.h"
+#include "map/utils/moduleutils.h"
+#include "map/utils/petutils.h"
+#include "map/utils/trustutils.h"
+#include "map/utils/battleutils.h"
+#include "map/weapon_skill.h"
+#include "map/mobskill.h"
+
+#include <algorithm>
+#include <cctype>
+#include <sstream>
+#include <map>
+#include <optional>
+#include <string>
+
+namespace
+{
+
+// Main job id -> trust spell id used as the template for that job
+std::map<int, uint32> jobTemplates;
+
+// Entity id -> squad id for squad mates we have spawned, so they are recognised even if their SQUAD_ID tag is lost
+std::map<uint32, uint32> squadEntities;
+
+bool isPassiveTemplate(std::string name)
+{
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c)
+                   { return static_cast<char>(std::tolower(c)); });
+
+    // Walking GEO bubbles are untargetable, so they make poor squad mates
+    for (const char* bad : { "sakura", "moogle", "star_sibyl", "star sibyl", "kuyin" })
+    {
+        if (name.find(bad) != std::string::npos)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// What a squad mate wears, as the appearance values sent to the game client. Characters that are not players are sent these values
+// as they are stored, so each armor piece carries its slot (head 0x1000, body 0x2000, hands 0x3000, legs 0x4000, feet 0x5000,
+// main 0x6000, sub 0x7000, ranged 0x8000). 0 means nothing is shown in that slot.
+struct OutfitLook
+{
+    uint16 head{ 0 }, body{ 0 }, hands{ 0 }, legs{ 0 }, feet{ 0 }, main{ 0 }, sub{ 0 }, ranged{ 0 };
+};
+
+// `equip` maps equipment slot index -> item id (0 main, 1 sub, 2 ranged, 3 ammo, 4 head, 5 body, 6 hands, 7 legs, 8 feet, ...)
+auto outfitLook(const sol::table& equip) -> OutfitLook
+{
+    OutfitLook look{};
+
+    for (const auto& entry : equip)
+    {
+        const int    slot   = entry.first.as<int>();
+        const uint16 itemId = static_cast<uint16>(entry.second.as<uint32>());
+
+        const auto* item = xi::items::lookup<CItemEquipment>(itemId);
+        if (item == nullptr)
+        {
+            continue;
+        }
+
+        const uint16 model    = item->getModelId();
+        const auto   withSlot = [model](const uint16 slotBase) -> uint16
+        {
+            return model != 0 ? static_cast<uint16>(slotBase + model) : static_cast<uint16>(0);
+        };
+
+        switch (slot)
+        {
+            case 0: look.main = withSlot(0x6000); break;
+            case 1: look.sub = withSlot(0x7000); break;
+            case 2: look.ranged = withSlot(0x8000); break;
+            case 4: look.head = withSlot(0x1000); break;
+            case 5: look.body = withSlot(0x2000); break;
+            case 6: look.hands = withSlot(0x3000); break;
+            case 7: look.legs = withSlot(0x4000); break;
+            case 8: look.feet = withSlot(0x5000); break;
+            default: break;
+        }
+    }
+
+    return look;
+}
+
+// Applies a squad mate's outfit stats: item modifiers and the main hand weapon.
+// (How the mate looks is set before spawning, see spawnSquadMate.)
+void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
+{
+    bool any = false;
+
+    for (const auto& entry : equip)
+    {
+        const int    slot   = entry.first.as<int>();
+        const uint16 itemId = static_cast<uint16>(entry.second.as<uint32>());
+
+        const auto* item = xi::items::lookup<CItemEquipment>(itemId);
+        if (item == nullptr)
+        {
+            continue;
+        }
+
+        any = true;
+
+        // Item modifiers (stats). Copy the list because addModifiers takes a non-const pointer.
+        auto mods = item->modList;
+        PTrust->addModifiers(&mods);
+
+        // Main hand weapon: use the real damage, delay and weapon type
+        if (slot == 0)
+        {
+            const auto* weapon     = dynamic_cast<const CItemWeapon*>(item);
+            auto*       mainWeapon = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[SLOT_MAIN]);
+            if (weapon != nullptr && mainWeapon != nullptr)
+            {
+                mainWeapon->setSkillType(weapon->getSkillType());
+                mainWeapon->setDamage(weapon->getDamage());
+                mainWeapon->setDelay(weapon->getDelay());
+                mainWeapon->setBaseDelay(weapon->getDelay());
+                mainWeapon->setMaxHit(weapon->getHitCount() > 0 ? weapon->getHitCount() : static_cast<uint8>(1));
+
+                if (mainWeapon->getDelay() > 0)
+                {
+                    mainWeapon->setDPS(static_cast<double>(mainWeapon->getDamage()) / (static_cast<double>(mainWeapon->getDelay()) / 1000.0));
+                }
+            }
+        }
+    }
+
+    if (!any)
+    {
+        return;
+    }
+
+    // Item bonuses can change max HP/MP, so refresh and top up. No look update is flagged: a renamed character's later
+    // update packets would garble the armor, and the appearance is already part of the spawn packet.
+    PTrust->UpdateHealth();
+    PTrust->health.hp = PTrust->GetMaxHP();
+    PTrust->health.mp = PTrust->GetMaxMP();
+    PTrust->updatemask |= UPDATE_HP;
+}
+
+void limitWeaponSkills(CTrustEntity* PTrust); // below: weapon skills like a player's
+
+auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::optional<CLuaBaseEntity>
+{
+    if (master == nullptr || master->GetBaseEntity() == nullptr || master->GetBaseEntity()->objtype != TYPE_PC)
+    {
+        return std::nullopt;
+    }
+
+    auto* PChar = static_cast<CCharEntity*>(master->GetBaseEntity());
+
+    const int mJob   = spec.get_or("mjob", 0);
+    const int sJob   = spec.get_or("sjob", 0);
+    const int mLevel = spec.get_or("mlevel", 0);
+    const int sLevel = spec.get_or("slevel", 0);
+    const int id     = spec.get_or("id", 0);
+    const int race   = spec.get_or("race", 0);
+    const int face   = spec.get_or("face", 0);
+    int       templ  = spec.get_or("template", 0);
+
+    if (mJob < 1 || mJob > 22 || mLevel < 1 || mLevel > 99)
+    {
+        ShowWarning("[SQUAD] SpawnSquadMate: invalid job (%i) or level (%i)", mJob, mLevel);
+        return std::nullopt;
+    }
+
+    if (templ == 0)
+    {
+        const auto it = jobTemplates.find(mJob);
+        if (it == jobTemplates.end())
+        {
+            ShowWarning("[SQUAD] SpawnSquadMate: no trust template found for job %i", mJob);
+            return std::nullopt;
+        }
+        templ = static_cast<int>(it->second);
+    }
+
+    trustutils::SquadSpec squadSpec{};
+    squadSpec.mJob    = static_cast<uint8>(mJob);
+    squadSpec.sJob    = static_cast<uint8>(std::clamp(sJob, 0, 22));
+    squadSpec.mLevel  = static_cast<uint8>(mLevel);
+    squadSpec.sLevel  = static_cast<uint8>(std::clamp(sLevel, 0, 99));
+    squadSpec.squadId = static_cast<uint32>(std::max(id, 0));
+    squadSpec.race    = static_cast<uint8>((race >= 1 && race <= 8) ? race : 0);
+
+    // The appearance is handed to the spawn itself, so the very first message the game receives already shows the right race,
+    // face and armor. (Changing it afterwards does not work: a renamed character's update packets garble the armor.)
+    const sol::optional<sol::table> equip = spec.get<sol::optional<sol::table>>("equip");
+    const OutfitLook                outfit = equip ? outfitLook(*equip) : OutfitLook{};
+    if (race >= 1 && race <= 8)
+    {
+        squadSpec.hasLook    = true;
+        squadSpec.face       = static_cast<uint8>(std::clamp(face, 0, 15));
+        squadSpec.lookHead   = outfit.head;
+        squadSpec.lookBody   = outfit.body;
+        squadSpec.lookHands  = outfit.hands;
+        squadSpec.lookLegs   = outfit.legs;
+        squadSpec.lookFeet   = outfit.feet;
+        squadSpec.lookMain   = outfit.main;
+        squadSpec.lookSub    = outfit.sub;
+        squadSpec.lookRanged = outfit.ranged;
+    }
+
+    auto* PTrust = trustutils::SpawnTrust(PChar, static_cast<uint32>(templ), &squadSpec);
+    if (PTrust == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    // Remember this squad mate, and make sure the SQUAD_ID tag is still on it after spawning
+    ShowInfo("[SQUAD] spawned squad mate %s (entity %u, squad id %u): SQUAD_ID reads back as %u",
+             PTrust->getName(), static_cast<unsigned>(PTrust->id), static_cast<unsigned>(squadSpec.squadId), static_cast<unsigned>(PTrust->GetLocalVar("SQUAD_ID")));
+    squadEntities[PTrust->id] = squadSpec.squadId;
+    PTrust->SetLocalVar("SQUAD_ID", squadSpec.squadId);
+
+    if (squadSpec.hasLook)
+    {
+        ShowInfo("[SQUAD] outfit for %s: head %04X body %04X hands %04X legs %04X feet %04X main %04X sub %04X ranged %04X (0000 = nothing shown)",
+                 PTrust->getName(), outfit.head, outfit.body, outfit.hands, outfit.legs, outfit.feet, outfit.main, outfit.sub, outfit.ranged);
+    }
+
+    if (equip)
+    {
+        applyEquipment(PTrust, *equip);
+    }
+
+    limitWeaponSkills(PTrust);
+
+    return CLuaBaseEntity(PTrust);
+}
+
+// Weapon skills like a player's (squad 1.16): a Trust gets every move on its template's list from level 1, including
+// Trust-only moves. A squad mate instead gets exactly the player weapon skills for the weapon in its main hand that its
+// job may use, that need no quest, and that its skill in that weapon has reached (its skills are the max for job and level).
+void limitWeaponSkills(CTrustEntity* PTrust)
+{
+    auto* controller = dynamic_cast<CTrustController*>(PTrust->PAI->GetController());
+    if (controller == nullptr || controller->m_GambitsContainer == nullptr)
+    {
+        return;
+    }
+
+    const auto* weapon     = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[SLOT_MAIN]);
+    const auto  weaponType = weapon != nullptr ? static_cast<uint8>(weapon->getSkillType()) : static_cast<uint8>(0);
+    const auto  job        = PTrust->GetMJob();
+
+    // Exactly the weapon skills a player of this job could use with this weapon right now: no Trust-only moves
+    // (Peacebreaker and the like), none for another weapon, none above the skill level, none that needs a quest.
+    auto& skills = controller->m_GambitsContainer->tp_skills;
+    skills.clear();
+    std::string kept;
+    for (uint16 id = 1; id < MAX_WEAPONSKILL_ID; ++id)
+    {
+        auto* ws = battleutils::GetWeaponSkill(id);
+        if (ws == nullptr || weaponType == 0 || ws->getType() != weaponType || ws->getJob(job) == 0 || ws->getUnlockId() != 0)
+        {
+            continue;
+        }
+
+        if (PTrust->GetSkill(static_cast<xi::SkillType>(ws->getType())) < ws->getSkillLevel())
+        {
+            continue;
+        }
+
+        gambits::TrustSkill_t skill;
+        skill.skill_type    = gambits::G_REACTION::WS;
+        skill.skill_id      = id;
+        skill.primary       = ws->getPrimarySkillchain();
+        skill.secondary     = ws->getSecondarySkillchain();
+        skill.tertiary      = ws->getTertiarySkillchain();
+        skill.valid_targets = battleutils::isValidSelfTargetWeaponskill(id) ? TARGET_SELF : TARGET_ENEMY;
+        skills.push_back(skill);
+        kept += (kept.empty() ? "" : ", ") + ws->getName();
+    }
+
+    ShowInfo("[SQUAD] %s: weapon skills like a player's (skill type %u): %s", PTrust->getName(), static_cast<unsigned>(weaponType), kept.empty() ? "none yet" : kept.c_str());
+}
+
+auto getSquad(const uint32 charId) -> sol::table
+{
+    auto squad = ::lua.create_table();
+
+    std::map<uint32, sol::table> jobTables;
+    std::map<uint32, sol::table> equipTables;
+
+    const auto rset = db::preparedStmt("SELECT id, slot, name, race, face, nation, mjob, sjob, template "
+                                       "FROM squad_mate WHERE charid = ? ORDER BY slot",
+                                       charId);
+
+    auto index = 1;
+    FOR_DB_MULTIPLE_RESULTS(rset)
+    {
+        const auto id = rset->get<uint32>("id");
+
+        auto jobs = ::lua.create_table();
+        jobTables.insert_or_assign(id, jobs);
+
+        auto equip = ::lua.create_table();
+        equipTables.insert_or_assign(id, equip);
+
+        auto entry        = ::lua.create_table();
+        entry["id"]       = id;
+        entry["slot"]     = rset->get<uint8>("slot");
+        entry["name"]     = rset->get<std::string>("name");
+        entry["race"]     = rset->get<uint8>("race");
+        entry["face"]     = rset->get<uint8>("face");
+        entry["nation"]   = rset->get<uint8>("nation");
+        entry["mjob"]     = rset->get<uint8>("mjob");
+        entry["sjob"]     = rset->get<uint8>("sjob");
+        entry["template"] = rset->get<uint16>("template");
+        entry["jobs"]     = jobs;
+        entry["equip"]    = equip;
+        squad[index++]    = entry;
+    }
+
+    const auto jrset = db::preparedStmt("SELECT squad_id, job, level, exp FROM squad_job "
+                                        "WHERE squad_id IN (SELECT id FROM squad_mate WHERE charid = ?)",
+                                        charId);
+
+    FOR_DB_MULTIPLE_RESULTS(jrset)
+    {
+        const auto it = jobTables.find(jrset->get<uint32>("squad_id"));
+        if (it != jobTables.end())
+        {
+            auto info     = ::lua.create_table();
+            info["level"] = jrset->get<uint8>("level");
+            info["exp"]   = jrset->get<uint32>("exp");
+
+            const int job = static_cast<int>(jrset->get<uint8>("job"));
+            it->second[job] = info;
+        }
+    }
+
+    const auto erset = db::preparedStmt("SELECT squad_id, job, slot, itemid FROM squad_equip "
+                                        "WHERE squad_id IN (SELECT id FROM squad_mate WHERE charid = ?)",
+                                        charId);
+
+    FOR_DB_MULTIPLE_RESULTS(erset)
+    {
+        const auto it = equipTables.find(erset->get<uint32>("squad_id"));
+        if (it != equipTables.end())
+        {
+            const int job = static_cast<int>(erset->get<uint8>("job"));
+
+            const sol::optional<sol::table> existing = it->second[job].get<sol::optional<sol::table>>();
+            sol::table                      jobEquip = existing ? *existing : ::lua.create_table();
+
+            jobEquip[static_cast<int>(erset->get<uint8>("slot"))] = erset->get<uint16>("itemid");
+            it->second[job]                                       = jobEquip;
+        }
+    }
+
+    return squad;
+}
+
+auto saveSquadMate(const uint32 charId, const uint32 slot, const sol::table& record) -> uint32
+{
+    const std::string name   = record.get_or<std::string>("name", "Squad");
+    const uint32      race   = record.get_or("race", 0);
+    const uint32      face   = record.get_or("face", 0);
+    const uint32      nation = record.get_or("nation", 0);
+    const uint32      mJob   = record.get_or("mjob", 1);
+    const uint32      sJob   = record.get_or("sjob", 0);
+    const uint32      templ  = record.get_or("template", 0);
+
+    db::preparedStmt("INSERT INTO squad_mate (charid, slot, name, race, face, nation, mjob, sjob, template) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                     "ON DUPLICATE KEY UPDATE name = VALUES(name), race = VALUES(race), face = VALUES(face), "
+                     "nation = VALUES(nation), mjob = VALUES(mjob), sjob = VALUES(sjob), template = VALUES(template)",
+                     charId,
+                     slot,
+                     name,
+                     race,
+                     face,
+                     nation,
+                     mJob,
+                     sJob,
+                     templ);
+
+    const auto rset = db::preparedStmt("SELECT id FROM squad_mate WHERE charid = ? AND slot = ?", charId, slot);
+    FOR_DB_SINGLE_RESULT(rset)
+    {
+        return rset->get<uint32>("id");
+    }
+
+    return 0;
+}
+
+void setSquadJob(const uint32 squadId, const uint32 job, const uint32 level, const uint32 exp)
+{
+    db::preparedStmt("INSERT INTO squad_job (squad_id, job, level, exp) VALUES (?, ?, ?, ?) "
+                     "ON DUPLICATE KEY UPDATE level = VALUES(level), exp = VALUES(exp)",
+                     squadId,
+                     job,
+                     level,
+                     exp);
+}
+
+auto addSquadExp(const uint32 squadId, const uint32 job, const uint32 gain, const uint32 cap) -> sol::table
+{
+    uint32 level = 1;
+    uint32 exp   = 0;
+
+    const auto rset = db::preparedStmt("SELECT level, exp FROM squad_job WHERE squad_id = ? AND job = ?", squadId, job);
+    FOR_DB_SINGLE_RESULT(rset)
+    {
+        level = rset->get<uint8>("level");
+        exp   = rset->get<uint32>("exp");
+    }
+
+    const uint32 startLevel = level;
+    const uint32 maxLevel   = std::clamp<uint32>(cap, 1, 99);
+
+    exp += gain;
+    while (level < maxLevel)
+    {
+        const uint32 needed = charutils::GetExpNEXTLevel(static_cast<uint8>(level));
+        if (needed == 0 || exp < needed)
+        {
+            break;
+        }
+
+        exp -= needed;
+        level++;
+    }
+
+    if (level >= maxLevel)
+    {
+        level = maxLevel;
+        exp   = 0;
+    }
+
+    setSquadJob(squadId, job, level, exp);
+
+    auto result      = ::lua.create_table();
+    result["level"]  = level;
+    result["exp"]    = exp;
+    result["gained"] = level - startLevel;
+    return result;
+}
+
+auto getSquadExpNeeded(const uint32 level) -> uint32
+{
+    return charutils::GetExpNEXTLevel(static_cast<uint8>(std::clamp<uint32>(level, 0, 255)));
+}
+
+void setSquadEquip(const uint32 squadId, const uint32 job, const uint32 slot, const uint32 itemId)
+{
+    if (itemId == 0)
+    {
+        db::preparedStmt("DELETE FROM squad_equip WHERE squad_id = ? AND job = ? AND slot = ?", squadId, job, slot);
+        return;
+    }
+
+    db::preparedStmt("INSERT INTO squad_equip (squad_id, job, slot, itemid) VALUES (?, ?, ?, ?) "
+                     "ON DUPLICATE KEY UPDATE itemid = VALUES(itemid)",
+                     squadId,
+                     job,
+                     slot,
+                     itemId);
+}
+
+// Accepts a numeric item id or an item name ("Bronze Harness" and "bronze_harness" both work)
+auto findSquadItem(std::string text) -> uint32
+{
+    if (!text.empty() && std::all_of(text.begin(), text.end(), [](unsigned char c)
+                                     { return std::isdigit(c) != 0; }))
+    {
+        return static_cast<uint32>(std::stoul(text));
+    }
+
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c)
+                   { return static_cast<char>(c == ' ' ? '_' : std::tolower(c)); });
+
+    const auto rset = db::preparedStmt("SELECT itemId FROM item_equipment WHERE name = ? LIMIT 1", text);
+    FOR_DB_SINGLE_RESULT(rset)
+    {
+        return rset->get<uint32>("itemId");
+    }
+
+    return 0;
+}
+
+auto getSquadItemInfo(const uint32 itemId) -> sol::table
+{
+    auto info     = ::lua.create_table();
+    info["valid"] = false;
+
+    const auto rset = db::preparedStmt("SELECT name, level, jobs, slot FROM item_equipment WHERE itemId = ?", itemId);
+    FOR_DB_SINGLE_RESULT(rset)
+    {
+        info["valid"] = true;
+        info["name"]  = rset->get<std::string>("name");
+        info["level"] = rset->get<uint8>("level");
+        info["jobs"]  = rset->get<uint32>("jobs");
+        info["slot"]  = rset->get<uint32>("slot");
+    }
+
+    return info;
+}
+
+// Basic level 1 gear a job can wear: main hand, head, body, hands, legs and feet.
+// For each slot we take the lowest-numbered plain (no script, no item level) level 1 item that the job can equip.
+auto buildStarterGear(const uint32 job) -> sol::table
+{
+    auto gear = ::lua.create_table();
+
+    if (job < 1 || job > 22)
+    {
+        return gear;
+    }
+
+    for (const uint32 slot : { 0u, 4u, 5u, 6u, 7u, 8u })
+    {
+        const auto rset = db::preparedStmt("SELECT itemId FROM item_equipment "
+                                           "WHERE level = 1 AND ilevel = 0 AND scriptType = 0 "
+                                           "AND ((jobs >> ?) & 1) = 1 AND (slot & ?) <> 0 "
+                                           "ORDER BY itemId LIMIT 1",
+                                           job - 1,
+                                           1u << slot);
+        FOR_DB_SINGLE_RESULT(rset)
+        {
+            gear[static_cast<int>(slot)] = rset->get<uint16>("itemId");
+        }
+    }
+
+    return gear;
+}
+
+// ---- Pets: a squad mate's wyvern or avatar (the game's pet code is used as it is) ----
+
+auto toSquadMate(CLuaBaseEntity* mate) -> CTrustEntity*
+{
+    if (mate == nullptr || mate->GetBaseEntity() == nullptr)
+    {
+        return nullptr;
+    }
+
+    return dynamic_cast<CTrustEntity*>(mate->GetBaseEntity());
+}
+
+bool squadSpawnPet(CLuaBaseEntity* mate, const int petId)
+{
+    auto* PTrust = toSquadMate(mate);
+    if (PTrust == nullptr || PTrust->PPet != nullptr || petId < 0 || petId >= MAX_PETID)
+    {
+        return false;
+    }
+
+    petutils::SpawnPet(PTrust, static_cast<uint32>(petId), false);
+    return PTrust->PPet != nullptr;
+}
+
+bool squadHasPet(CLuaBaseEntity* mate)
+{
+    const auto* PTrust = toSquadMate(mate);
+    return PTrust != nullptr && PTrust->PPet != nullptr && !PTrust->PPet->isDead();
+}
+
+void squadPetAttack(CLuaBaseEntity* mate, CLuaBaseEntity* target)
+{
+    auto* PTrust = toSquadMate(mate);
+    if (PTrust == nullptr || PTrust->PPet == nullptr || PTrust->PPet->isDead() || target == nullptr)
+    {
+        return;
+    }
+
+    auto* PTarget = dynamic_cast<CBattleEntity*>(target->GetBaseEntity());
+    if (PTarget == nullptr || PTarget->isDead() || PTrust->PPet->PAI->IsEngaged())
+    {
+        return;
+    }
+
+    petutils::AttackTarget(PTrust, PTarget);
+}
+
+// ---- Spells ----
+
+bool isLearnableGroup(const SPELLGROUP group)
+{
+    return group != SPELLGROUP_TRUST && group != SPELLGROUP_BLUE && group != SPELLGROUP_SUMMONING && group != SPELLGROUP_GEOMANCY;
+}
+
+// Names of the spells a job learns when going from oldLevel to newLevel
+auto squadNewSpells(const int job, const int oldLevel, const int newLevel) -> sol::table
+{
+    auto names = ::lua.create_table();
+    if (job < 1 || job > 22)
+    {
+        return names;
+    }
+
+    int count = 1;
+    for (uint16 id = 1; id < MAX_SPELL_ID; ++id)
+    {
+        CSpell* PSpell = spell::GetSpell(static_cast<SpellID>(id));
+        if (PSpell == nullptr || !isLearnableGroup(PSpell->getSpellGroup()))
+        {
+            continue;
+        }
+
+        const int needed = PSpell->getJob(static_cast<xi::Job>(job));
+        if (needed > oldLevel && needed <= newLevel)
+        {
+            names[count++] = PSpell->getName();
+        }
+    }
+
+    return names;
+}
+
+enum class SpellCastResult
+{
+    Cast,
+    Unknown,
+    NotReady,
+    NoTarget,
+    Busy,
+};
+
+auto spellResultName(const SpellCastResult result) -> const char*
+{
+    switch (result)
+    {
+        case SpellCastResult::Cast: return "cast";
+        case SpellCastResult::Unknown: return "unknown";
+        case SpellCastResult::NotReady: return "notready";
+        case SpellCastResult::NoTarget: return "notarget";
+        default: return "busy";
+    }
+}
+
+// Asks one squad mate to cast a spell: beneficial spells go on the player, attack and debuff spells on their enemy
+auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellId) -> SpellCastResult
+{
+    CSpell* PSpell = spell::GetSpell(spellId);
+    if (PSpell == nullptr || !spell::CanUseSpell(PTrust, PSpell))
+    {
+        return SpellCastResult::Unknown;
+    }
+
+    CBattleEntity* PTarget = nullptr;
+    if (PSpell->canTargetEnemy())
+    {
+        PTarget = PChar->GetBattleTarget();
+        if (PTarget == nullptr)
+        {
+            PTarget = PTrust->GetBattleTarget();
+        }
+    }
+    else
+    {
+        PTarget = PChar;
+    }
+
+    if (PTarget == nullptr || PTarget->isDead())
+    {
+        return SpellCastResult::NoTarget;
+    }
+
+    if (!PTrust->SpellContainer->GetAvailable(spellId).has_value())
+    {
+        return SpellCastResult::NotReady; // not enough MP, or the spell is still recasting
+    }
+
+    auto* controller = dynamic_cast<CTrustController*>(PTrust->PAI->GetController());
+    if (controller == nullptr)
+    {
+        return SpellCastResult::Busy;
+    }
+
+    return controller->Cast(PTarget->entityId(), spellId) ? SpellCastResult::Cast : SpellCastResult::Busy;
+}
+
+void reportSpellResult(CCharEntity* PChar, CTrustEntity* PTrust, const std::string& spellName, const SpellCastResult result)
+{
+    const sol::optional<sol::table> xiTable = ::lua["xi"].get<sol::optional<sol::table>>();
+    if (!xiTable)
+    {
+        return;
+    }
+
+    const sol::optional<sol::table> squadTable = (*xiTable)["squad"].get<sol::optional<sol::table>>();
+    if (!squadTable)
+    {
+        return;
+    }
+
+    sol::protected_function handler = (*squadTable)["onSpellCommand"];
+    if (!handler.valid())
+    {
+        return;
+    }
+
+    const auto outcome = handler(CLuaBaseEntity(PChar), CLuaBaseEntity(PTrust), spellName, spellResultName(result));
+    if (!outcome.valid())
+    {
+        const sol::error err = outcome;
+        ShowError("[SQUAD] spell command handler failed: %s", err.what());
+    }
+}
+
+// Party chat is also handed to Lua (xi.squad.onPartyChat), where it goes to the squad-chat sidecar and comes back
+// as in-character lines in party chat. The message itself is never blocked or changed.
+void forwardPartyChat(CCharEntity* PChar, CBasicPacket& packet)
+{
+    if (PChar == nullptr)
+    {
+        return;
+    }
+
+    const auto* chat = packet.as<GP_CLI_COMMAND_CHAT_STD>();
+    if (chat->Kind != static_cast<uint8_t>(GP_CLI_COMMAND_CHAT_STD_KIND::Party))
+    {
+        return;
+    }
+
+    const std::size_t total = static_cast<std::size_t>(chat->header.size) * 4;
+    if (total <= 6)
+    {
+        return;
+    }
+
+    const std::size_t length = std::min<std::size_t>(total - 6, sizeof(chat->Str));
+    std::string       text(reinterpret_cast<const char*>(chat->Str), length);
+    text = text.substr(0, text.find('\0'));
+
+    // Commands stay out of the AI chat, except /p !note, which the sidecar turns into a journal entry.
+    const bool noteCommand = text == "!note" || text.rfind("!note ", 0) == 0;
+    if (text.empty() || text[0] == '/' || (text[0] == '!' && !noteCommand))
+    {
+        return;
+    }
+
+    // Auto-translate phrases arrive as raw bytes (FD 02 02 xx xx FD); decode them the same way the spell commands do.
+    if (text.find('\xFD') != std::string::npos)
+    {
+        text = autotranslate::replaceBytes(text);
+    }
+
+    const sol::optional<sol::table> xiTable = ::lua["xi"].get<sol::optional<sol::table>>();
+    if (!xiTable)
+    {
+        return;
+    }
+
+    const sol::optional<sol::table> squadTable = (*xiTable)["squad"].get<sol::optional<sol::table>>();
+    if (!squadTable)
+    {
+        return;
+    }
+
+    sol::protected_function handler = (*squadTable)["onPartyChat"];
+    if (!handler.valid())
+    {
+        return;
+    }
+
+    const auto outcome = handler(CLuaBaseEntity(PChar), text);
+    if (!outcome.valid())
+    {
+        const sol::error err = outcome;
+        ShowError("[SQUAD] party chat handler failed: %s", err.what());
+    }
+}
+
+// ---- Job abilities ----
+
+auto findAbilityByName(const std::string& name) -> CAbility*
+{
+    for (uint16 id = 0; id < MAX_ABILITY_ID; ++id)
+    {
+        CAbility* PAbility = ability::GetAbility(id);
+        if (PAbility != nullptr && !PAbility->isPetAbility() && PAbility->getName() == name)
+        {
+            return PAbility;
+        }
+    }
+
+    return nullptr;
+}
+
+auto isTwoHourWord(const std::string& name) -> bool
+{
+    return name == "2hr" || name == "2_hr" || name == "2hour" || name == "2_hour" || name == "two_hour" || name == "twohour" ||
+           name == "1hr" || name == "1_hr" || name == "sp" || name == "sp1" || name == "sp_ability";
+}
+
+// Asks one squad mate to use a job ability: self abilities on themselves, enemy abilities on your enemy, the rest on you
+auto trySquadAbility(CCharEntity* PChar, CTrustEntity* PTrust, CAbility* PAbility) -> SpellCastResult
+{
+    if (PAbility == nullptr || !ability::CanLearnAbility(PTrust, PAbility->getID()))
+    {
+        return SpellCastResult::Unknown;
+    }
+
+    const uint16   valid   = PAbility->getValidTarget();
+    CBattleEntity* PTarget = nullptr;
+    if (valid & TARGET_ENEMY)
+    {
+        PTarget = PChar->GetBattleTarget();
+        if (PTarget == nullptr)
+        {
+            PTarget = PTrust->GetBattleTarget();
+        }
+    }
+    else if (valid & TARGET_SELF)
+    {
+        PTarget = PTrust;
+    }
+    else
+    {
+        PTarget = PChar;
+    }
+
+    if (PTarget == nullptr || PTarget->isDead())
+    {
+        return SpellCastResult::NoTarget;
+    }
+
+    if (PTrust->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(PAbility->getID()), std::chrono::seconds(0)))
+    {
+        return SpellCastResult::NotReady;
+    }
+
+    auto* controller = dynamic_cast<CTrustController*>(PTrust->PAI->GetController());
+    if (controller == nullptr)
+    {
+        return SpellCastResult::Busy;
+    }
+
+    return controller->Ability(PTarget->entityId(), PAbility->getID()) ? SpellCastResult::Cast : SpellCastResult::Busy;
+}
+
+void reportAbilityResult(CCharEntity* PChar, CTrustEntity* PTrust, const std::string& abilityName, const SpellCastResult result, const uint16 abilityId)
+{
+    const sol::optional<sol::table> xiTable = ::lua["xi"].get<sol::optional<sol::table>>();
+    if (!xiTable)
+    {
+        return;
+    }
+
+    const sol::optional<sol::table> squadTable = (*xiTable)["squad"].get<sol::optional<sol::table>>();
+    if (!squadTable)
+    {
+        return;
+    }
+
+    sol::protected_function handler = (*squadTable)["onAbilityCommand"];
+    if (!handler.valid())
+    {
+        return;
+    }
+
+    const auto outcome = handler(CLuaBaseEntity(PChar), CLuaBaseEntity(PTrust), abilityName, spellResultName(result), abilityId);
+    if (!outcome.valid())
+    {
+        const sol::error err = outcome;
+        ShowError("[SQUAD] ability command handler failed: %s", err.what());
+    }
+}
+
+// Lua: SquadUseAbility(player, mate, abilityId) -> result name (used to try again while the mate is busy)
+auto squadUseAbility(CLuaBaseEntity* player, CLuaBaseEntity* mate, const uint16 abilityId) -> std::string
+{
+    auto* PChar  = player != nullptr ? dynamic_cast<CCharEntity*>(player->GetBaseEntity()) : nullptr;
+    auto* PTrust = toSquadMate(mate);
+    if (PChar == nullptr || PTrust == nullptr || PTrust->isDead())
+    {
+        return "busy";
+    }
+
+    return spellResultName(trySquadAbility(PChar, PTrust, ability::GetAbility(abilityId)));
+}
+
+// Party chat named a job ability (or "2hr"): the first mate who can uses it ("all" = everyone who can)
+void handleAbilityChat(CCharEntity* PChar, const std::vector<CTrustEntity*>& askedMates, const bool everyone, const std::string& name)
+{
+    const bool twoHour  = isTwoHourWord(name);
+    CAbility*  PNamed   = twoHour ? nullptr : findAbilityByName(name);
+    if (!twoHour && PNamed == nullptr)
+    {
+        return; // just chat
+    }
+
+    const auto rank = [](const SpellCastResult r)
+    {
+        return r == SpellCastResult::NotReady ? 4 : r == SpellCastResult::NoTarget ? 3 : r == SpellCastResult::Busy ? 2 : 1;
+    };
+
+    bool            anyUsed        = false;
+    SpellCastResult worstFailure   = SpellCastResult::Unknown;
+    CTrustEntity*   failureSpeaker = askedMates.front();
+    CAbility*       failureAbility = PNamed;
+
+    for (auto* PTrust : askedMates)
+    {
+        CAbility* PAbility = twoHour ? ability::GetTwoHourAbility(PTrust->GetMJob()) : PNamed;
+        if (PAbility == nullptr)
+        {
+            continue;
+        }
+
+        const auto result = trySquadAbility(PChar, PTrust, PAbility);
+        if (result == SpellCastResult::Cast || result == SpellCastResult::Busy)
+        {
+            // busy: Lua tries again for a few seconds, so this mate has taken the request
+            anyUsed = true;
+            reportAbilityResult(PChar, PTrust, PAbility->getName(), result, PAbility->getID());
+            if (!everyone)
+            {
+                return;
+            }
+        }
+        else if (rank(result) > rank(worstFailure) || failureAbility == nullptr)
+        {
+            worstFailure   = result;
+            failureSpeaker = PTrust;
+            failureAbility = PAbility;
+        }
+    }
+
+    if (!anyUsed && failureAbility != nullptr)
+    {
+        reportAbilityResult(PChar, failureSpeaker, failureAbility->getName(), worstFailure, failureAbility->getID());
+    }
+}
+
+// Typing a spell name in party chat (optionally "all" or a squad mate's name first) makes squad mates cast it.
+// The chat message itself is never blocked.
+void handleSpellChat(CCharEntity* PChar, CBasicPacket& packet)
+{
+    if (PChar->PTrusts.empty())
+    {
+        return;
+    }
+
+    const auto* chat = packet.as<GP_CLI_COMMAND_CHAT_STD>();
+    if (chat->Kind != static_cast<uint8_t>(GP_CLI_COMMAND_CHAT_STD_KIND::Party))
+    {
+        return;
+    }
+
+    const std::size_t total = static_cast<std::size_t>(chat->header.size) * 4;
+    if (total <= 6)
+    {
+        return;
+    }
+
+    const std::size_t length = std::min<std::size_t>(total - 6, sizeof(chat->Str));
+    std::string       text(reinterpret_cast<const char*>(chat->Str), length);
+    text = text.substr(0, text.find('\0'));
+
+    if (text.empty() || text[0] == '!' || text[0] == '/')
+    {
+        return;
+    }
+
+    // Auto-translate phrases arrive as raw bytes (FD 02 02 xx xx FD). The game's own decoder turns them into plain English text,
+    // so {Cure IV} works exactly like typing Cure IV.
+    const bool hadAutoTranslate = text.find('\xFD') != std::string::npos;
+    if (hadAutoTranslate)
+    {
+        text = autotranslate::replaceBytes(text);
+    }
+
+    // Brackets and colons are not part of a spell name ("{Utsusemi: Ichi}" -> "utsusemi ichi"); apostrophes disappear ("Mage's Ballad")
+    {
+        std::string cleaned;
+        for (const unsigned char c : text)
+        {
+            if (c == '\'')
+            {
+                continue;
+            }
+
+            const bool symbol = c == '{' || c == '}' || c == '[' || c == ']' || c == '(' || c == ')' || c == '<' || c == '>' || c == ':' || c == ';' || c == ',' || c == '"';
+            cleaned += symbol ? ' ' : static_cast<char>(c);
+        }
+        text = cleaned;
+    }
+
+    // lower case, without trailing punctuation, split into words
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c)
+                   { return static_cast<char>(std::tolower(c)); });
+    while (!text.empty() && (text.back() == '.' || text.back() == '!' || text.back() == '?' || text.back() == ' '))
+    {
+        text.pop_back();
+    }
+
+    std::vector<std::string> words;
+    std::istringstream       stream(text);
+    for (std::string word; stream >> word;)
+    {
+        words.emplace_back(word);
+    }
+
+    if (words.empty() || words.size() > 6)
+    {
+        return;
+    }
+
+    // The squad mates that are out and alive
+    std::vector<CTrustEntity*> mates;
+    for (auto* PTrust : PChar->PTrusts)
+    {
+        if (PTrust != nullptr && !PTrust->isDead() && squadEntities.contains(PTrust->id))
+        {
+            mates.emplace_back(PTrust);
+        }
+    }
+
+    if (mates.empty())
+    {
+        return;
+    }
+
+    // Optional first word: "all" (everyone who can) or one squad mate's name
+    bool                       everyone   = false;
+    std::vector<CTrustEntity*> askedMates = mates;
+    if (words.size() > 1)
+    {
+        if (words[0] == "all")
+        {
+            everyone = true;
+            words.erase(words.begin());
+        }
+        else
+        {
+            for (auto* PTrust : mates)
+            {
+                std::string name = PTrust->packetName;
+                std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c)
+                               { return static_cast<char>(std::tolower(c)); });
+                if (name == words[0])
+                {
+                    askedMates = { PTrust };
+                    words.erase(words.begin());
+                    break;
+                }
+            }
+        }
+    }
+
+    std::string spellName;
+    for (const auto& word : words)
+    {
+        spellName += spellName.empty() ? word : "_" + word;
+    }
+
+    const auto spellId = spell::lookupIdByName(spellName);
+    if (hadAutoTranslate)
+    {
+        ShowInfo("[SQUAD] auto-translate in party chat read as '%s' -> %s", spellName.c_str(), spellId.has_value() ? "spell found" : "no spell with that name");
+    }
+
+    if (!spellId.has_value())
+    {
+        handleAbilityChat(PChar, askedMates, everyone, spellName);
+        return;
+    }
+
+    // Ask in order. One cast is enough unless "all" was said. If nobody can, report the most useful reason
+    // (not ready beats no target beats busy beats "I do not know that spell").
+    const auto rank = [](const SpellCastResult r)
+    {
+        return r == SpellCastResult::NotReady ? 4 : r == SpellCastResult::NoTarget ? 3 : r == SpellCastResult::Busy ? 2 : 1;
+    };
+
+    bool            anyCast        = false;
+    SpellCastResult worstFailure   = SpellCastResult::Unknown;
+    CTrustEntity*   failureSpeaker = askedMates.front();
+
+    for (auto* PTrust : askedMates)
+    {
+        const auto result = trySquadCast(PChar, PTrust, spellId.value());
+        if (result == SpellCastResult::Cast)
+        {
+            anyCast = true;
+            reportSpellResult(PChar, PTrust, spellName, result);
+            if (!everyone)
+            {
+                return;
+            }
+        }
+        else if (rank(result) > rank(worstFailure))
+        {
+            worstFailure   = result;
+            failureSpeaker = PTrust;
+        }
+    }
+
+    if (!anyCast)
+    {
+        reportSpellResult(PChar, failureSpeaker, spellName, worstFailure);
+    }
+}
+
+void unlockSquadItem(const uint32 charId, const uint32 itemId)
+{
+    db::preparedStmt("INSERT IGNORE INTO squad_unlock (charid, itemid) VALUES (?, ?)", charId, itemId);
+}
+
+auto getSquadUnlocks(const uint32 charId) -> sol::table
+{
+    auto result = ::lua.create_table();
+
+    const auto rset = db::preparedStmt("SELECT itemid FROM squad_unlock WHERE charid = ?", charId);
+    FOR_DB_MULTIPLE_RESULTS(rset)
+    {
+        result[static_cast<int>(rset->get<uint16>("itemid"))] = true;
+    }
+
+    return result;
+}
+
+void deleteSquadMate(const uint32 charId, const uint32 slot)
+{
+    db::preparedStmt("DELETE FROM squad_equip WHERE squad_id IN (SELECT id FROM squad_mate WHERE charid = ? AND slot = ?)", charId, slot);
+    db::preparedStmt("DELETE FROM squad_job WHERE squad_id IN (SELECT id FROM squad_mate WHERE charid = ? AND slot = ?)", charId, slot);
+    db::preparedStmt("DELETE FROM squad_mate WHERE charid = ? AND slot = ?", charId, slot);
+}
+
+} // namespace
+
+class SquadModule : public CPPModule
+{
+    // The game only lets you trade with NPCs and monsters, so a trade to a squad mate would be ignored.
+    // We catch it here and hand the offered items to Lua (xi.squad.onTrade), which decides what to do with them.
+    auto OnIncomingPacket(MapSession* session, CCharEntity* PChar, CBasicPacket& packet) -> bool override
+    {
+        const auto type = static_cast<unsigned>(packet.getType());
+
+        if (type == 0x0B5)
+        {
+            forwardPartyChat(PChar, packet);
+            handleSpellChat(PChar, packet);
+            return false; // the chat message always goes through
+        }
+
+        // Trade packets are rare, so log them: it shows which kind of trade the client starts with a squad mate
+        if (type == 0x032 || type == 0x033 || type == 0x034 || type == 0x036)
+        {
+            ShowInfo("[SQUAD] trade packet 0x%03X from %s", type, PChar->getName());
+        }
+
+        if (type == 0x032)
+        {
+            // A player-style trade request. The game only answers these for real players.
+            const auto* request = packet.as<GP_CLI_COMMAND_TRADE_REQ>();
+            const auto* PTarget = PChar->GetEntity(request->ActIndex, TYPE_TRUST);
+            ShowInfo("[SQUAD] player-style trade request to index %u: %s", static_cast<unsigned>(request->ActIndex), PTarget != nullptr ? "that is a trust" : "not a trust");
+            return false;
+        }
+
+        if (type != 0x036)
+        {
+            return false;
+        }
+
+        const auto* transfer = packet.as<GP_CLI_COMMAND_ITEM_TRANSFER>();
+
+        auto* PTrust = dynamic_cast<CTrustEntity*>(PChar->GetEntity(transfer->ActIndex, TYPE_TRUST));
+        if (PTrust == nullptr)
+        {
+            ShowInfo("[SQUAD] 0x036 trade to index %u (id %u): no trust found there, passing it on", static_cast<unsigned>(transfer->ActIndex), static_cast<unsigned>(transfer->UniqueNo));
+            return false;
+        }
+
+        const auto   known   = squadEntities.find(PTrust->id);
+        const uint32 squadId = known != squadEntities.end() ? known->second : PTrust->GetLocalVar("SQUAD_ID");
+
+        // Your own squad mates, or those of someone in your party (the dualbox character trading to the main
+        // character's squad); the gear then joins the owner's collection (xi.squad.onTrade uses the trust's master).
+        const bool partyMateOwner = PTrust->PMaster != nullptr && PTrust->PMaster != PChar && PChar->PParty != nullptr &&
+                                    PTrust->PMaster->objtype == TYPE_PC && PTrust->PMaster->PParty == PChar->PParty;
+        if (PTrust->id != transfer->UniqueNo || (PTrust->PMaster != PChar && !partyMateOwner) || squadId == 0)
+        {
+            ShowInfo("[SQUAD] 0x036 trade to trust %s (shown as '%s'): not one of your squad mates (id match %i, yours %i, squad id %u, in squad list %i), passing it on",
+                     PTrust->getName(), PTrust->packetName.c_str(), PTrust->id == transfer->UniqueNo ? 1 : 0, PTrust->PMaster == PChar ? 1 : 0,
+                     static_cast<unsigned>(squadId), known != squadEntities.end() ? 1 : 0);
+            return false; // not one of our squad mates: let the game handle it
+        }
+
+        PTrust->SetLocalVar("SQUAD_ID", squadId);
+
+        const sol::optional<sol::table> xiTable = ::lua["xi"].get<sol::optional<sol::table>>();
+        if (!xiTable)
+        {
+            return false;
+        }
+
+        const sol::optional<sol::table> squadTable = (*xiTable)["squad"].get<sol::optional<sol::table>>();
+        if (!squadTable)
+        {
+            return false;
+        }
+
+        sol::protected_function handler = (*squadTable)["onTrade"];
+        if (!handler.valid())
+        {
+            ShowInfo("[SQUAD] trade to a squad mate, but xi.squad.onTrade is not defined");
+            return false;
+        }
+
+        auto  items   = ::lua.create_table();
+        int   count   = 1;
+        auto* storage = PChar->getStorage(LOC_INVENTORY);
+
+        for (uint8 i = 0; i < transfer->ItemNum && i < 10; ++i)
+        {
+            const uint8  invSlot  = transfer->PropertyItemIndexTbl[i];
+            const uint32 quantity = transfer->ItemNumTbl[i];
+
+            const CItem* PItem = storage->GetItem(invSlot);
+            if (PItem == nullptr || quantity == 0 || PItem->isBusy())
+            {
+                continue;
+            }
+
+            auto offer        = ::lua.create_table();
+            offer["itemId"]   = static_cast<int>(PItem->getID());
+            offer["slot"]     = static_cast<int>(invSlot);
+            offer["quantity"] = std::min<uint32>(quantity, PItem->getQuantity());
+            items[count++]    = offer;
+        }
+
+        ShowInfo("[SQUAD] trade to squad mate %s: %i item(s) offered, calling xi.squad.onTrade", PTrust->getName(), count - 1);
+
+        const auto result = handler(CLuaBaseEntity(PChar), CLuaBaseEntity(PTrust), items);
+        if (!result.valid())
+        {
+            const sol::error err = result;
+            ShowError("[SQUAD] trade handler failed: %s", err.what());
+        }
+
+        return true;
+    }
+
+    void OnInit() override
+    {
+        TracyZoneScoped;
+
+        // The first non-passive trust of each main job becomes that job's template. Prefer a trust that
+        // actually has usable weapon skills: Lhu Mhakaracca (the first BST trust) points at a skill list
+        // with no rows, while Aamr has axe weapon skills, so without this a squad BST would get TP settings
+        // with no skills behind them. The subquery counts real rows because a non-zero list id can be empty.
+        const auto rset = db::preparedStmt("SELECT sl.spellid AS spellid, mp.mJob AS mjob, mp.name AS name, "
+                                           "mp.skill_list_id AS skill_list_id, "
+                                           "(SELECT COUNT(*) FROM mob_skill_lists msl WHERE msl.skill_list_id = mp.skill_list_id) AS skill_count "
+                                           "FROM spell_list sl INNER JOIN mob_pools mp ON mp.poolid = sl.spellid + 5000 "
+                                           "WHERE sl.spellid >= 896 ORDER BY sl.spellid");
+
+        std::map<int, uint16> templateSkillCounts;
+
+        FOR_DB_MULTIPLE_RESULTS(rset)
+        {
+            const auto spellId    = rset->get<uint32>("spellid");
+            const auto job        = static_cast<int>(rset->get<uint8>("mjob"));
+            const auto name       = rset->get<std::string>("name");
+            const auto skillCount = rset->get<uint16>("skill_count");
+
+            if (!isPassiveTemplate(name))
+            {
+                const auto existing = jobTemplates.find(job);
+                if (existing == jobTemplates.end() || (templateSkillCounts[job] == 0 && skillCount != 0))
+                {
+                    jobTemplates[job]         = spellId;
+                    templateSkillCounts[job]  = skillCount;
+                }
+            }
+        }
+
+        // There is no Summoner trust in the data at all (no trust pool with mJob 15), so a squad SMN would
+        // normally fail with "no trust template found". Cornelia (trust 1002) has no spell list and no
+        // weapon-skill list, so it is a clean body template: the squad record supplies the SMN job, level
+        // and equipment, and the avatar comes from the normal pet data. A caster trust here would also leak
+        // its own spell list onto the Summoner.
+        if (jobTemplates.find(15) == jobTemplates.end())
+        {
+            jobTemplates.emplace(15, 1002); // Cornelia
+        }
+
+        // Blue Mage (16) has no trust either; Corsair (17) and Puppetmaster (18) normally do (Luzaf / Qultada,
+        // Nashmeira), but an era database may not carry them. The same clean body template covers all three.
+        for (const int toauJob : { 16, 17, 18 })
+        {
+            if (jobTemplates.find(toauJob) == jobTemplates.end())
+            {
+                jobTemplates.emplace(toauJob, 1002); // Cornelia
+            }
+        }
+
+        ShowInfo("[SQUAD] Loaded trust templates for %zu jobs", jobTemplates.size());
+
+        ::lua.set_function("SpawnSquadMate", spawnSquadMate);
+        ::lua.set_function("SquadUseAbility", squadUseAbility);
+        ::lua.set_function("GetSquad", getSquad);
+        ::lua.set_function("SaveSquadMate", saveSquadMate);
+        ::lua.set_function("SetSquadJob", setSquadJob);
+        ::lua.set_function("AddSquadExp", addSquadExp);
+        ::lua.set_function("GetSquadExpNeeded", getSquadExpNeeded);
+        ::lua.set_function("DeleteSquadMate", deleteSquadMate);
+        ::lua.set_function("SetSquadEquip", setSquadEquip);
+        ::lua.set_function("FindSquadItem", findSquadItem);
+        ::lua.set_function("GetSquadItemInfo", getSquadItemInfo);
+        ::lua.set_function("BuildStarterGear", buildStarterGear);
+        ::lua.set_function("SquadSpawnPet", squadSpawnPet);
+        ::lua.set_function("SquadHasPet", squadHasPet);
+        ::lua.set_function("SquadPetAttack", squadPetAttack);
+        ::lua.set_function("SquadNewSpells", squadNewSpells);
+        ::lua.set_function("UnlockSquadItem", unlockSquadItem);
+        ::lua.set_function("GetSquadUnlocks", getSquadUnlocks);
+    }
+};
+
+REGISTER_CPP_MODULE(SquadModule);
