@@ -14,3 +14,4 @@ lua/squad_greetings_data.lua
 lua/bots_config.lua
 lua/crowds_config.lua
 lua/era_exp_config.lua
+lua/crowds_chat_ai.lua
