@@ -33,6 +33,7 @@
 #include "common/utils.h"
 
 #include "map/ai/ai_container.h"
+#include "map/ai/states/magic_state.h"
 #include "map/entities/char_entity.h"
 #include "map/lua/lua_base_entity.h"
 #include "map/map_session.h"
@@ -312,6 +313,12 @@ void stepMovement(Bot* b, float dt)
 {
     CCharEntity* PChar = charOf(b);
     if (!PChar || !PChar->loc.zone || PChar->isDead())
+    {
+        return;
+    }
+
+    // moving cancels a spell: a bot that is casting (a cure on you, say) stands still until the spell is out
+    if (PChar->PAI && PChar->PAI->IsCurrentState<CMagicState>())
     {
         return;
     }
