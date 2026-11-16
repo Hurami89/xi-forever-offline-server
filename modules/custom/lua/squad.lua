@@ -2214,6 +2214,13 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         for _, mate in ipairs(squad) do
             say(player, string.format('squadpanel:delay|%d|%d', mate.slot, player:getCharVar('SQUAD_DELAY_' .. mate.id)))
         end
+        -- (servermenu 1.12) cd|<slot>|<seconds before this mate can be called again> (only mates who are away and still waiting)
+        for _, mate in ipairs(squad) do
+            local left = isSummoned(player, mate.id) and 0 or cooldownLeft(player, mate)
+            if left > 0 then
+                say(player, string.format('squadpanel:cd|%d|%d', mate.slot, left))
+            end
+        end
         for _, mate in ipairs(squad) do
             local wsList = '-'
             for _, trust in ipairs(squadTrusts(player)) do
