@@ -1232,6 +1232,7 @@ local function syncCap(player)
 end
 
 local resyncSquad -- defined after callMate
+local zoneOut = {} -- [player id] = { [squad id] = last seen out (os.time()), mh = true while in your Mog House }: called again after zoning
 local restTick    -- defined after callMate
 
 -- The squad in "call all" order (!squad order; char var SQUAD_ORDER holds the slots as digits, e.g. 312)
@@ -1753,6 +1754,13 @@ local function callMate(player, mate)
 
     -- Every AI tick, fighting or not (COMBAT_TICK only fires while you fight): resting with you, and following your level
     trust:addListener('TICK', 'SQUAD_IDLE', function(mobArg)
+        local owner = mobArg:getMaster()
+        if owner ~= nil and mobArg:isAlive() then -- (who is out, for the call back after zoning)
+            local seen = zoneOut[owner:getID()] or {}
+            zoneOut[owner:getID()] = seen
+            seen[mobArg:getLocalVar('SQUAD_ID')] = os.time()
+        end
+
         campTick(mobArg)
         if restTick ~= nil then
             restTick(mobArg)
@@ -2546,6 +2554,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
     end
 
     if action == 'dismiss' then
+        zoneOut[player:getID()] = nil
         player:clearTrusts()
         chatSend('CTX', player:getZoneName(), player:getMainLvl(), 0, '', player:getName(), player:getRace())
         say(player, 'Your trusts and squad mates have been dismissed.')
@@ -4250,6 +4259,41 @@ grantSquadExp = function(master, mate, squadId, gain)
         end
     end
 end
+
+-- Zoning takes the Trusts away (the game's rule): the mates who were out come back by themselves in the new area, a
+-- moment after you arrive, without the call timer. Through your Mog House (no Trusts inside) they wait for the next area.
+m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
+    local result = super(player, firstLogin, zoning)
+    local seen = zoneOut[player:getID()]
+    if not zoning or firstLogin or seen == nil then
+        return result
+    end
+
+    if player:inMogHouse() then
+        seen.mh = true
+        return result
+    end
+
+    zoneOut[player:getID()] = nil
+    local now = os.time()
+    local back = {}
+    for _, mate in ipairs(orderedSquad(player, GetSquad(player:getID()))) do
+        local at = seen[mate.id]
+        if at ~= nil and (seen.mh or now - at <= 60) then
+            back[#back + 1] = mate
+        end
+    end
+
+    for index, mate in ipairs(back) do
+        player:timer(3000 + (index - 1) * CALL_GAP_MS, function(entity)
+            if not entity:inMogHouse() and not isSummoned(entity, mate.id) then
+                callMate(entity, mate)
+            end
+        end)
+    end
+
+    return result
+end)
 
 m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
     -- the squad mates who share this kill: in your party, alive, in the zone and within 100 yalms of the monster
