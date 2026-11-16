@@ -4251,13 +4251,19 @@ m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
         shared[key] = value
     end
 
-    shared.partySize = (tonumber(data.partySize) or 1) + #sharing
+    -- (user's rule) below level 12 the mates don't split the exp: you get your solo share and so does each mate
+    local splitFromLevel = 12
+    local splitting = member:getMainLvl() >= splitFromLevel
+    if splitting then
+        shared.partySize = (tonumber(data.partySize) or 1) + #sharing
+    end
+
     -- read before your own share uses the ring up, so the mates still get it on the kill that ends it
     local ring = member:getStatusEffect(xi.effect.DEDICATION)
     shared.ringPower = ring and ring:getPower() or nil
     for _, entry in ipairs(sharing) do
         local level = entry.mate:getMainLvl()
-        if level > (shared.highestMemberLevel or 0) then
+        if splitting and level > (shared.highestMemberLevel or 0) then
             shared.highestMemberLevel = level
             shared.highestMemberTNL   = GetSquadExpNeeded(level)
         end
