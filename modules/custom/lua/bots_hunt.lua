@@ -458,7 +458,7 @@ local function fightTurn(bot, h, target)
     else
         -- the attack is sent again (every 3 s) until the server really has the bot engaged: a refused packet
         -- (it was resting, stunned, asleep ...) used to leave it next to the monster doing nothing for the whole fight
-        if h.attacking ~= target:getID() or (not bot:isEngaged() and now() >= (h.attackAt or 0)) then
+        if not (xi.bots.isCasting and xi.bots.isCasting(bot)) and (h.attacking ~= target:getID() or (not bot:isEngaged() and now() >= (h.attackAt or 0))) then
             h.attackAt = now() + 3
             BotHeal(id, false)
             h.attacking = BotAttack(id, target) and target:getID() or nil

@@ -35,6 +35,14 @@ local m = Module:new('bot_players') -- (module names need 5+ letters)
 
 xi.bots = xi.bots or {}
 
+-- an attack (or stand-up) packet while casting cancels the spell, so a casting bot is left alone until it is out
+xi.bots.isCasting = function(bot)
+    local ok, action = pcall(function()
+        return bot:getCurrentAction()
+    end)
+    return ok and action == xi.action.MAGIC_CASTING
+end
+
 -- (bots.cpp registers BotList & co. AFTER the Lua modules load, so this is checked when a command is used)
 local function moduleBuilt()
     return type(BotList) == 'function'
@@ -414,7 +422,7 @@ think = function(bot, token)
             else
                 -- (the attack is sent again until the server really has it engaged: a refused packet used to
                 --  leave the bot standing next to the monster, sure it was already fighting)
-                if st.attacking ~= target:getID() or (not bot:isEngaged() and os.time() >= (st.attackAt or 0)) then
+                if not xi.bots.isCasting(bot) and (st.attacking ~= target:getID() or (not bot:isEngaged() and os.time() >= (st.attackAt or 0))) then
                     st.attackAt = os.time() + 3
                     BotHeal(id, false)
                     st.attacking = BotAttack(id, target) and target:getID() or nil
