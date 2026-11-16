@@ -405,6 +405,12 @@ local function partyBots(bot)
 end
 
 local function healTurn(bot, h)
+    -- a bot that is casting (or has just started a cure) is busy: returning false here let the rest step sit it down,
+    -- which interrupted the cure, so a hurt healer stood up, cast, sat, cast... forever (wildthing, 2026-11-16)
+    if now() < (h.healBusy or 0) or (xi.bots.isCasting and xi.bots.isCasting(bot)) then
+        return true
+    end
+
     local job = jobOf(bot)
     if not HEALERS[job] or now() < (h.castWait or 0) then
         return false
@@ -426,6 +432,7 @@ local function healTurn(bot, h)
         BotHeal(bot:getID(), false) -- (stands up first: the server refuses a spell from someone who is resting)
         BotCast(bot:getID(), spell, worst)
         h.castWait = now() + 4
+        h.healBusy = now() + 2   -- until the cast shows up as the bot's current action
         return true
     end
 
