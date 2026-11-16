@@ -1782,12 +1782,15 @@ restTick = function(mob)
     end
 
     mob:setLocalVar('SQUAD_REST_AT', now + REST_EVERY_SEC)
+    -- 10% of the max, but never less than a resting player of that level gets (a low-level mate has little MP,
+    -- and 10% of 20 MP was 2 a tick)
+    local lvl = mob:getMainLvl()
     if mob:getHP() < mob:getMaxHP() then
-        mob:addHP(math.max(1, math.floor(mob:getMaxHP() * REST_HP_PERCENT / 100)))
+        mob:addHP(math.max(10 + lvl, math.floor(mob:getMaxHP() * REST_HP_PERCENT / 100)))
     end
 
     if mob:getMaxMP() > 0 and mob:getMP() < mob:getMaxMP() then
-        mob:addMP(math.max(1, math.floor(mob:getMaxMP() * REST_MP_PERCENT / 100)))
+        mob:addMP(math.max(12 + math.floor(lvl / 2), math.floor(mob:getMaxMP() * REST_MP_PERCENT / 100)))
     end
 end
 
@@ -2716,6 +2719,14 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
             end
         end
 
+        return
+    elseif action == 'pose' and player:getGMLevel() > 0 then
+        -- (GM test: which animation id shows a sitting mate in the game client, e.g. 33 healing, 47 sit)
+        local id = tonumber(arg1) or 0
+        for _, trust in ipairs(squadTrusts(player)) do
+            trust:setAnimation(id)
+        end
+        say(player, 'Squad mates set to animation ' .. id .. ' (0 stands them up).')
         return
     elseif action == 'setlevel' then
         if player:getGMLevel() == 0 then
