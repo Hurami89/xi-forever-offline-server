@@ -682,6 +682,29 @@ bool squadSpawnPet(CLuaBaseEntity* mate, const int petId)
     return PTrust->PPet != nullptr;
 }
 
+// One squad mate leaves (the Squad window's per-mate Dismiss, !squad dismiss <slot>): the same as releasing a Trust
+// by talking to it, without the 2 s wait. The others stay out.
+bool squadDismissMate(CLuaBaseEntity* mate)
+{
+    auto* PTrust = toSquadMate(mate);
+    if (PTrust == nullptr || PTrust->released())
+    {
+        return false;
+    }
+
+    auto* PChar = dynamic_cast<CCharEntity*>(PTrust->PMaster);
+    if (PChar == nullptr)
+    {
+        return false;
+    }
+
+    PTrust->setReleased(true);
+    PTrust->animation = xi::Animation::Death; // (the Trust's own leaving effect)
+    PTrust->updatemask |= UPDATE_HP;
+    PChar->RemoveTrust(PTrust);
+    return true;
+}
+
 bool squadHasPet(CLuaBaseEntity* mate)
 {
     const auto* PTrust = toSquadMate(mate);
@@ -1504,6 +1527,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("BuildStarterGear", buildStarterGear);
         ::lua.set_function("SquadSpawnPet", squadSpawnPet);
         ::lua.set_function("SquadHasPet", squadHasPet);
+        ::lua.set_function("SquadDismissMate", squadDismissMate);
         ::lua.set_function("SquadPetAttack", squadPetAttack);
         ::lua.set_function("SquadNewSpells", squadNewSpells);
         ::lua.set_function("UnlockSquadItem", unlockSquadItem);

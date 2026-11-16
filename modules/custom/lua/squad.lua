@@ -237,7 +237,7 @@ local function usage(player)
     say(player, '!squad equip <slot> <item name or id> [equip slot]   |   !squad unequip <slot> <equip slot or all>')
     say(player, '!squad gear <slot>   (gear is saved per job; equip slots: head body hands legs feet main sub range ammo neck waist ear1 ear2 ring1 ring2 back)')
     say(player, '!squad rename <slot> <name>   |   !squad delete <slot>')
-    say(player, '!squad call [slot or all]   |   !squad dismiss   |   !squad food   (what they have eaten)')
+    say(player, '!squad call [slot or all]   |   !squad dismiss [slot]   |   !squad food   (what they have eaten)')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
     say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
@@ -2214,9 +2214,10 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         for _, mate in ipairs(squad) do
             say(player, string.format('squadpanel:delay|%d|%d', mate.slot, player:getCharVar('SQUAD_DELAY_' .. mate.id)))
         end
-        -- (servermenu 1.12) cd|<slot>|<seconds before this mate can be called again> (only mates who are away and still waiting)
+        -- (servermenu 1.12) cd|<slot>|<seconds before this mate can be called again>: a mate who is away waits that long; for a
+        -- mate who is out (1.13) it is how long before a dismiss and call works straight away
         for _, mate in ipairs(squad) do
-            local left = isSummoned(player, mate.id) and 0 or cooldownLeft(player, mate)
+            local left = cooldownLeft(player, mate)
             if left > 0 then
                 say(player, string.format('squadpanel:cd|%d|%d', mate.slot, left))
             end
@@ -2557,6 +2558,26 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         c.puller, c.nextPull = mate.id, os.time() + 2
         say(player, string.format('%s pulls. Monsters level %d-%d within %d yalms of camp, one at a time when everyone is ready.',
             mate.name, math.max(1, player:getMainLvl() + CAMP_LEVELS[1]), player:getMainLvl() + CAMP_LEVELS[2], campRange(player)))
+        return
+    end
+
+    if action == 'dismiss' and arg1 ~= nil and string.lower(arg1) ~= 'all' then
+        -- one mate leaves, the others stay (needs the squad.cpp of v0.1.27: SquadDismissMate)
+        local mate = findMate(squad, tonumber(arg1) or 0)
+        local trust = mate and summonedMate(player, mate.id)
+        if mate == nil then
+            say(player, 'No squad mate in that slot. Use !squad to list them.')
+        elseif trust == nil then
+            say(player, string.format('%s is not out.', mate.name))
+        elseif SquadDismissMate == nil then
+            say(player, 'Dismissing one mate needs the newer server: press UPDATE in the launcher. (!squad dismiss sends everyone off.)')
+        elseif SquadDismissMate(trust) then
+            if zoneOut[player:getID()] then
+                zoneOut[player:getID()][mate.id] = nil
+            end
+            say(player, string.format('%s has been dismissed.', mate.name))
+        end
+
         return
     end
 
