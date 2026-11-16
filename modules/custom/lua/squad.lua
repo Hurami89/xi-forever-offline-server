@@ -4412,6 +4412,11 @@ xi.squad.profileFor = function(mainJob, mainLvl, subJob, subLvl)
     function recorder:addGambit(target, condition, action)
         self.list[#self.list + 1] = { target = target, condition = condition, action = action }
     end
+    -- the job profiles also tune the mate itself (setTrustTPSkillSettings and the like): nothing to record for a bot,
+    -- so any other method is a quiet no-op instead of an error that cut the bot's list short
+    setmetatable(recorder, { __index = function()
+        return function() return 0 end
+    end })
 
     local savedBehavior, savedSwitches, savedLevel = activeBehavior, activeSwitches, profileLevel
     activeBehavior, activeSwitches = nil, nil
