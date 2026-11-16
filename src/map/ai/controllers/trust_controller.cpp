@@ -309,6 +309,12 @@ auto CTrustController::DoNonCombatTick(const timer::time_point tick) -> Task<voi
 {
     TracyZoneScoped;
 
+    // Busy casting or shooting: stand still until it's out (walking after the player interrupts the spell)
+    if (POwner->PAI->IsCurrentState<CMagicState>() || POwner->PAI->IsCurrentState<CRangeState>())
+    {
+        co_return;
+    }
+
     auto* PTrust  = static_cast<CTrustEntity*>(POwner);
     auto* PMaster = static_cast<CCharEntity*>(POwner->PMaster);
 
@@ -396,6 +402,12 @@ auto CTrustController::DoNonCombatTick(const timer::time_point tick) -> Task<voi
 auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
 {
     TracyZoneScoped;
+
+    // Busy casting or shooting: stand still until it's out (walking after the player interrupts the spell)
+    if (POwner->PAI->IsCurrentState<CMagicState>() || POwner->PAI->IsCurrentState<CRangeState>())
+    {
+        co_return;
+    }
 
     auto*      PMaster              = static_cast<CCharEntity*>(POwner->PMaster);
 
