@@ -1726,7 +1726,7 @@ end
 -- Summon cooldown: after a squad mate is called with !squad call, that mate cannot be called again for
 -- CALL_COOLDOWN_SEC (each mate has their own timer, kept across logouts). Following your level, zoning and the Squad
 -- menu's "Apply now" (!squad reapply) re-call mates without the cooldown.
-local CALL_COOLDOWN_SEC = 10 * 60
+local CALL_COOLDOWN_SEC = 5 * 60
 
 local function cooldownLeft(player, mate)
     local calledAt = player:getCharVar('SQUAD_CALLED_' .. mate.id)
