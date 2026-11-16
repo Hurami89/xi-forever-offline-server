@@ -179,8 +179,10 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
             {
                 mainWeapon->setSkillType(weapon->getSkillType());
                 mainWeapon->setDamage(weapon->getDamage());
-                mainWeapon->setDelay(weapon->getDelay());
-                mainWeapon->setBaseDelay(weapon->getDelay());
+                // setDelay takes the item's delay (1/60 s) and converts it to ms itself; getDelay() is already
+                // in ms, so passing it converted twice: 4000 ms became 65 s, and the mate swung once a fight
+                mainWeapon->setDelay(weapon->getBaseDelay());
+                mainWeapon->setBaseDelay(weapon->getBaseDelay());
                 mainWeapon->setMaxHit(weapon->getHitCount() > 0 ? weapon->getHitCount() : static_cast<uint8>(1));
 
                 if (mainWeapon->getDelay() > 0)

@@ -513,10 +513,11 @@ local function jobLevel(mate, job)
     return info and info.level or 1
 end
 
--- Main level is the main job's own level. The sub job unlocks at SUB_UNLOCK_LEVEL and works like retail:
+-- Main level is the main job's own level. The sub job works once YOU have support jobs (your quest, or main level
+-- SUB_UNLOCK_LEVEL), at any mate level, like retail:
 -- its level is half the main level, but never higher than the sub job's own level.
 -- cap: the highest main level allowed (level sync to your character); nil = the mate's own level
-local function levelsFor(mate, cap)
+local function levelsFor(mate, cap, player)
     local main = jobLevel(mate, mate.mjob)
     if cap ~= nil and cap >= 1 and main > cap then
         main = cap
@@ -524,7 +525,15 @@ local function levelsFor(mate, cap)
     local sub = 0
     local subLevel = 0
 
-    if mate.sjob ~= 0 and mate.sjob ~= mate.mjob and main >= SUB_UNLOCK_LEVEL then
+    local unlocked = main >= SUB_UNLOCK_LEVEL
+    if not unlocked and player ~= nil then
+        local ok, has = pcall(function()
+            return player:hasJob(0) or player:getMainLvl() >= SUB_UNLOCK_LEVEL -- (bit 0 of the unlocked jobs: support jobs)
+        end)
+        unlocked = ok and has
+    end
+
+    if mate.sjob ~= 0 and mate.sjob ~= mate.mjob and unlocked then
         sub = mate.sjob
         subLevel = math.max(1, math.min(jobLevel(mate, sub), math.floor(main / 2)))
     end
@@ -532,8 +541,8 @@ local function levelsFor(mate, cap)
     return main, sub, subLevel
 end
 
-local function describe(mate)
-    local main, sub, subLevel = levelsFor(mate)
+local function describe(mate, player)
+    local main, sub, subLevel = levelsFor(mate, nil, player)
     local subText = sub ~= 0 and string.format('/%s%d', jobNames[sub], subLevel) or ''
     local race = mate.race > 0 and mate.race or 1 -- a mate with no race chosen is a Hume male
     local look = ' - ' .. raceNames[race] .. ' face ' .. (mate.face + 1)
@@ -1632,7 +1641,7 @@ local function callMate(player, mate)
     end
 
     local cap = syncCap(player)
-    local main, sub, subLevel = levelsFor(mate, cap)
+    local main, sub, subLevel = levelsFor(mate, cap, player)
     local synced = main < jobLevel(mate, mate.mjob)
 
     ensureStarterGear(player, mate)
@@ -1954,7 +1963,7 @@ end
 
 local function save(player, mate)
     SaveSquadMate(player:getID(), mate.slot, mate)
-    say(player, 'Saved: ' .. describe(mate) .. '  (dismiss and call them again to apply)')
+    say(player, 'Saved: ' .. describe(mate, player) .. '  (dismiss and call them again to apply)')
 end
 
 commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
@@ -1976,7 +1985,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         end
 
         for _, mate in ipairs(squad) do
-            say(player, describe(mate))
+            say(player, describe(mate, player))
         end
 
         return
@@ -2091,7 +2100,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         -- For the in-game Squad panel addon, which reads these lines and hides them from the chat log:
         --   squadpanel:<slot>|<name>|<main job>|<main level>|<sub job or ->|<sub level>|<role>|<mode>|<1 if the mate is out now>|<switch mask>
         for _, mate in ipairs(squad) do
-            local main, sub, subLevel = levelsFor(mate)
+            local main, sub, subLevel = levelsFor(mate, nil, player)
             local role, mode = decodeBehavior(player:getCharVar('SQUAD_AI_' .. mate.id))
             say(player, string.format('squadpanel:%d|%s|%s|%d|%s|%d|%s|%s|%d|%d', mate.slot, mate.name, jobNames[mate.mjob] or '???', main,
                 sub ~= 0 and jobNames[sub] or '-', subLevel, role, mode, isSummoned(player, mate.id) and 1 or 0,
@@ -2141,13 +2150,13 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
             return
         end
 
-        local main, sub, subLevel = levelsFor(mate)
+        local main, sub, subLevel = levelsFor(mate, nil, player)
         local role, mode         = decodeBehavior(player:getCharVar('SQUAD_AI_' .. mate.id))
         local live               = summonedMate(player, mate.id)
         local clean              = function(text) return tostring(text or '?'):gsub('|', '/') end
 
         say(player, string.format('squadsheet:hdr|%s|%s|%d|%s|%d|%s|%s|%s|%d', clean(mate.name), jobNames[mate.mjob] or '???', main,
-            sub ~= 0 and jobNames[sub] or '-', subLevel, role, mode, raceNames[mate.race] or '?', switchesOf(player, mate.id)))
+            sub ~= 0 and jobNames[sub] or ((mate.sjob ~= 0 and mate.sjob ~= mate.mjob) and jobNames[mate.sjob] or '-'), subLevel, role, mode, raceNames[mate.race] or '?', switchesOf(player, mate.id))) -- (a support job set but not active yet: level 0)
 
         local jobs = {}
         for job = 1, 18 do
@@ -2516,6 +2525,40 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
     end
 
     -- Everything below works on one slot: !squad <action> <slot> ...
+    if action == 'diag' then
+        -- what each mate out is doing right now (for bug reports): engaged, AI state, target, effects
+        for _, trust in ipairs(squadTrusts(player)) do
+            local ok, line = pcall(function()
+                local t = trust:getTarget()
+                local effects = {}
+                for _, e in ipairs(trust:getStatusEffects() or {}) do
+                    effects[#effects + 1] = tostring(e:getEffectType())
+                end
+                local walking = trust:isFollowingPath()
+                if arg1 == 'clear' then
+                    trust:clearPath() -- (test: does a mate swing again once its path is dropped?)
+                end
+                return string.format('%s lv%d: engaged %s, action %d, target %s %.1f yalms, walking %s, distance mod %d, TP %d, effects [%s]%s',
+                    trust:getPacketName(), trust:getMainLvl(), tostring(trust:isEngaged()), trust:getCurrentAction(),
+                    t and t:getName() or 'none', t and trust:checkDistance(t) or -1, tostring(walking),
+                    trust:getMobMod(xi.mobMod.TRUST_DISTANCE), trust:getTP(), table.concat(effects, ' '), arg1 == 'clear' and ' (path cleared)' or '')
+            end)
+            say(player, ok and line or ('diag failed: ' .. tostring(line)))
+            print('[squad] diag ' .. (ok and line or tostring(line)))
+        end
+        return
+    end
+
+    if action == 'pose' and player:getGMLevel() > 0 then
+        -- (GM test: which animation id shows a sitting mate in the game client, e.g. 33 healing, 47 sit)
+        local id = tonumber(arg1) or 0
+        for _, trust in ipairs(squadTrusts(player)) do
+            trust:setAnimation(id)
+        end
+        say(player, 'Squad mates set to animation ' .. id .. ' (0 stands them up).')
+        return
+    end
+
     local mate = findMate(squad, tonumber(arg1) or 0)
     if mate == nil then
         usage(player)
@@ -2719,14 +2762,6 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
             end
         end
 
-        return
-    elseif action == 'pose' and player:getGMLevel() > 0 then
-        -- (GM test: which animation id shows a sitting mate in the game client, e.g. 33 healing, 47 sit)
-        local id = tonumber(arg1) or 0
-        for _, trust in ipairs(squadTrusts(player)) do
-            trust:setAnimation(id)
-        end
-        say(player, 'Squad mates set to animation ' .. id .. ' (0 stands them up).')
         return
     elseif action == 'setlevel' then
         if player:getGMLevel() == 0 then
