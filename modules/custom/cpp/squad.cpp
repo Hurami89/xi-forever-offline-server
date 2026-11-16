@@ -209,6 +209,9 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
 
 void limitWeaponSkills(CTrustEntity* PTrust, uint16 onlyWs = 0); // below: weapon skills like a player's
 
+// Every weapon skill each squad mate could use when it was called (before a chosen one narrows the list), for the menu
+std::map<uint32, std::vector<uint16>> squadWeaponSkills;
+
 auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::optional<CLuaBaseEntity>
 {
     if (master == nullptr || master->GetBaseEntity() == nullptr || master->GetBaseEntity()->objtype != TYPE_PC)
@@ -345,6 +348,15 @@ void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
         kept += (kept.empty() ? "" : ", ") + ws->getName();
     }
 
+    {
+        auto& usable = squadWeaponSkills[PTrust->id];
+        usable.clear();
+        for (const auto& s : skills)
+        {
+            usable.push_back(s.skill_id);
+        }
+    }
+
     // The player chose one weapon skill for this mate: keep only it, if the mate can use it now (else keep them all)
     if (onlyWs != 0)
     {
@@ -364,6 +376,35 @@ void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
     }
 
     ShowInfo("[SQUAD] %s: weapon skills like a player's (skill type %u): %s", PTrust->getName(), static_cast<unsigned>(weaponType), kept.empty() ? "none yet" : kept.c_str());
+}
+
+// GetSquadWeaponSkills(mate) -> names of the weapon skills this called mate can use, like "Raging_Axe" (for the menu)
+auto getSquadWeaponSkills(CLuaBaseEntity* mate) -> sol::table
+{
+    auto out = ::lua.create_table();
+    if (mate == nullptr || mate->GetBaseEntity() == nullptr)
+    {
+        return out;
+    }
+
+    const auto found = squadWeaponSkills.find(mate->GetBaseEntity()->id);
+    if (found == squadWeaponSkills.end())
+    {
+        return out;
+    }
+
+    int index = 1;
+    for (const auto id : found->second)
+    {
+        if (auto* ws = battleutils::GetWeaponSkill(id))
+        {
+            std::string name = ws->getName();
+            std::replace(name.begin(), name.end(), ' ', '_');
+            out[index++] = name;
+        }
+    }
+
+    return out;
 }
 
 auto getSquad(const uint32 charId) -> sol::table
@@ -1455,6 +1496,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("SetSquadJob", setSquadJob);
         ::lua.set_function("AddSquadExp", addSquadExp);
         ::lua.set_function("GetSquadExpNeeded", getSquadExpNeeded);
+        ::lua.set_function("GetSquadWeaponSkills", getSquadWeaponSkills);
         ::lua.set_function("DeleteSquadMate", deleteSquadMate);
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);

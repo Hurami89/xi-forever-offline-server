@@ -231,6 +231,7 @@ local function usage(player)
     say(player, '!squad look <slot> <race> <face 1-16>   races: humem humef elvm elvf tarum taruf mithra galka (once: the look is for good)')
     say(player, '!squad size <slot> small | medium | large   (once: the size is for good)')
     say(player, '!squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]   - when and which weapon skill a mate uses')
+    say(player, '!squad range <slot> melee | mid | far | auto   - how far a mate stands from the monster')
     say(player, '!squad give <item name or id>   - give an item to your squad once; every mate can then wear it')
     say(player, '!squad unlocked   - show what your squad has been given')
     say(player, '!squad equip <slot> <item name or id> [equip slot]   |   !squad unequip <slot> <equip slot or all>')
@@ -2138,6 +2139,33 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         end
 
         say(player, string.format('squadpanel:camp|%d|%d|%d|%d', c and 1 or 0, pullerSlot, c and c.paused and 1 or 0, c and c.pulls or 0))
+
+        -- (servermenu 1.10) engage timing, and per mate: opt|<slot>|<size 0-3>|<ws TP, 0 = chain>|<chosen WS or ->|<range 0-3>|<usable WS, comma list or ->
+        say(player, string.format('squadpanel:engage|%d', player:getCharVar('TrustEngageType') == 1 and 1 or 0))
+        for _, mate in ipairs(squad) do
+            local wsList = '-'
+            for _, trust in ipairs(squadTrusts(player)) do
+                if trust:getLocalVar('SQUAD_ID') == mate.id and GetSquadWeaponSkills then
+                    local ok, names = pcall(GetSquadWeaponSkills, trust)
+                    if ok and type(names) == 'table' and #names > 0 then
+                        -- the strongest last; a chat line holds about 200 characters, so the weakest are left out if needed
+                        local kept = {}
+                        for i = #names, 1, -1 do
+                            if #table.concat(kept, ',') + #names[i] > 150 then
+                                break
+                            end
+                            table.insert(kept, 1, names[i])
+                        end
+                        wsList = table.concat(kept, ',')
+                    end
+                end
+            end
+
+            local chosen = player:getCharVar('SQUAD_WS_' .. mate.id)
+            say(player, string.format('squadpanel:opt|%d|%d|%d|%s|%d|%s', mate.slot, player:getCharVar('SQUAD_SIZE_' .. mate.id),
+                player:getCharVar('SQUAD_WSTP_' .. mate.id), chosen > 0 and wsName(chosen):gsub(' ', '_') or '-',
+                player:getCharVar('SQUAD_RANGE_' .. mate.id), wsList))
+        end
         -- (servermenu 1.8) what the puller goes for, and the kinds of monster around the camp
         if c then
             say(player, 'squadpanel:campwant|' .. (c.want or '-'))
@@ -2789,6 +2817,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         player:setCharVar('SQUAD_SIZE_' .. mate.id, 0)
         player:setCharVar('SQUAD_WSTP_' .. mate.id, 0)
         player:setCharVar('SQUAD_WS_' .. mate.id, 0)
+        player:setCharVar('SQUAD_RANGE_' .. mate.id, 0)
         chatSend('DELETE', mate.name)
         DeleteSquadMate(charId, mate.slot)
         say(player, string.format('Deleted %s.', mate.name))
@@ -2873,6 +2902,19 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         player:setCharVar(lookVar, 1)
         say(player, string.format('%s\'s look is now set for good.', mate.name))
         chatSend('UPDATE', mate.name, 'race', race)
+    elseif action == 'range' then
+        -- How far this mate stands from the monster: !squad range <slot> melee | mid | far | auto (auto = its job's own)
+        local choices = { auto = 0, melee = 1, mid = 2, far = 3 }
+        local choice = choices[string.lower(arg2 or '')]
+        if choice == nil then
+            say(player, '!squad range <slot> melee | mid | far | auto   - how far this mate stands from the monster')
+            return
+        end
+
+        player:setCharVar('SQUAD_RANGE_' .. mate.id, choice)
+        say(player, string.format('%s now fights %s. Dismiss and call them again to apply it.', mate.name,
+            ({ [0] = 'at its job\'s usual distance', 'up close', 'from mid range (6 yalms)', 'from long range (12 yalms)' })[choice]))
+        return
     elseif action == 'ws' then
         -- When this mate weapon skills, and which one: !squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]
         local when = string.lower(arg2 or '')
@@ -2888,7 +2930,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         local wsId = 0
         local wanted = string.lower(arg3 or 'best')
         if wanted ~= 'best' then
-            wsId = xi.weaponskill and xi.weaponskill[string.upper(wanted)] or nil
+            -- "Tachi:_Enpi", "ascetic's_fury" -> TACHI_ENPI, ASCETICS_FURY (the enum's spelling)
+            local key = string.upper(wanted):gsub("'", ''):gsub('[^%w]+', '_'):gsub('^_+', ''):gsub('_+$', '')
+            wsId = xi.weaponskill and xi.weaponskill[key] or nil
             if wsId == nil then
                 say(player, string.format('No weapon skill called "%s" (use underscores for spaces, e.g. raging_axe).', arg3))
                 return
@@ -3812,6 +3856,14 @@ local function squadSpawn(mob)
         if mob:getMobMod(xi.mobMod.TRUST_DISTANCE) == 0 then
             mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MID_RANGE)
         end
+    end
+
+    -- Combat distance the player chose for this mate (!squad range): 1 melee, 2 mid range, 3 long range; 0 = its job's own
+    local rangeMaster = mob:getMaster()
+    local rangeChoice = rangeMaster and rangeMaster:getCharVar('SQUAD_RANGE_' .. mob:getLocalVar('SQUAD_ID')) or 0
+    if rangeChoice >= 1 and rangeChoice <= 3 then
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, ({ xi.trust.movementType.MELEE, xi.trust.movementType.MID_RANGE,
+            xi.trust.movementType.LONG_RANGE })[rangeChoice])
     end
 
     activeBehavior = nil
