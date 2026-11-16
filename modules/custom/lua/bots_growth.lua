@@ -407,21 +407,56 @@ local function huntHoursTo(level)
     return h
 end
 
-local function headStartLimit()
-    local limit = GetServerVariable('[Bots]HeadStart')
-    if limit == 0 and BotList then
-        for id in pairs(BotList() or {}) do
-            limit = math.max(limit, id)
-        end
-
-        if limit > 0 then
-            SetServerVariable('[Bots]HeadStart', limit)
-            print(string.format('[bots] head start: the %d bots up to id %d get a few months of history at their next log in',
-                (function() local n = 0 for _ in pairs(BotList() or {}) do n = n + 1 end return n end)(), limit))
-        end
+-- Which bots get the head start. Two ways in:
+--   [Bots]HeadStart     the first roster (2026-11-07, the dev server): the highest bot id it covers. No longer set on its own.
+--   [Bots]HeadStartAll  the launcher's one-time "Bot head start" switch (2026-11-16). The PLAY with the switch on arms it
+--                       ([Bots]HeadStartArmed = 1, kept for good). While the roster is still filling up to its starting
+--                       size, every bot that logs in gets it; once it is full the highest id is recorded and the window
+--                       closes: bots up to that id still get it at their next log in, bots that join later start at 1.
+local function headStartSwitch()
+    local ok, c = pcall(function()
+        package.loaded['modules/custom/lua/bots_config'] = nil
+        return require('modules/custom/lua/bots_config')
+    end)
+    if ok and type(c) == 'table' then
+        return c.head_start == true, math.max(0, tonumber(c.roster) or 100)
     end
 
-    return limit
+    return false, 100
+end
+
+local function headStartLimit()
+    local limit = GetServerVariable('[Bots]HeadStart')
+    local armed = GetServerVariable('[Bots]HeadStartArmed')
+    local switch, roster = headStartSwitch()
+    if armed == 0 and switch then
+        SetServerVariable('[Bots]HeadStartArmed', 1)
+        armed = 1
+        print('[bots] head start switched on: the starting roster gets a few months of history at their next log in')
+    end
+
+    if armed == 0 then
+        return limit
+    end
+
+    local all = GetServerVariable('[Bots]HeadStartAll')
+    if all == 0 then
+        local count, top = 0, 0
+        for id in pairs((BotList and BotList()) or {}) do
+            count = count + 1
+            top = math.max(top, id)
+        end
+
+        if count < roster then
+            return math.huge -- (still filling up: everyone who logs in gets it)
+        end
+
+        all = math.max(top, 1)
+        SetServerVariable('[Bots]HeadStartAll', all)
+        print(string.format('[bots] head start: the %d bots up to id %d get a few months of history at their next log in', count, top))
+    end
+
+    return math.max(limit, all)
 end
 
 -- combat and magic skills of its main job near the cap for its level (it skilled up on the way)

@@ -13,5 +13,6 @@ lua/squad_greetings_data.lua
 # rewritten by the launcher on every launch from each player's settings
 lua/bots_config.lua
 lua/crowds_config.lua
+lua/squad_config.lua
 lua/era_exp_config.lua
 lua/crowds_chat_ai.lua

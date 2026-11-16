@@ -1773,9 +1773,17 @@ local function callMate(player, mate)
 end
 
 -- Summon cooldown: after a squad mate is called with !squad call, that mate cannot be called again for
--- CALL_COOLDOWN_SEC (each mate has their own timer, kept across logouts). Following your level, zoning and the Squad
--- menu's "Apply now" (!squad reapply) re-call mates without the cooldown.
-local CALL_COOLDOWN_SEC = 5 * 60
+-- the call timer (each mate has their own timer, kept across logouts): the launcher's "Squad call timer" (squad_config.lua,
+-- minutes, 0-30, default 5). Following your level, a mate's level up, zoning and the Squad menu's "Apply now"
+-- (!squad reapply) re-call mates without the cooldown.
+local function callCooldownSec()
+    local ok, c = pcall(function()
+        package.loaded['modules/custom/lua/squad_config'] = nil
+        return require('modules/custom/lua/squad_config')
+    end)
+    local minutes = ok and type(c) == 'table' and tonumber(c.call_cooldown_min) or 5
+    return math.max(0, math.min(30, minutes)) * 60
+end
 
 local function cooldownLeft(player, mate)
     local calledAt = player:getCharVar('SQUAD_CALLED_' .. mate.id)
@@ -1783,7 +1791,7 @@ local function cooldownLeft(player, mate)
         return 0
     end
 
-    return math.max(0, calledAt + CALL_COOLDOWN_SEC - os.time())
+    return math.max(0, calledAt + callCooldownSec() - os.time())
 end
 
 local function callWithCooldown(player, mate)
@@ -1863,27 +1871,32 @@ restTick = function(mob)
     end
 end
 
--- Called from each mate's tick: when your level no longer matches the level the squad came out at, call everyone again
+-- Called from each mate's tick: when your level no longer matches the level the squad came out at, or a mate who is out
+-- levelled up (SQUAD_RELEVEL = their new level, set by grantSquadExp), call everyone again once the fight is over
 resyncSquad = function(mob)
-    if not SYNC_TO_PLAYER then
-        return
-    end
-
     local master = mob:getMaster()
     if master == nil or master:getObjType() ~= xi.objType.PC then
         return
     end
 
     local cap = master:getMainLvl()
-    if mob:getLocalVar('SQUAD_CAP') == cap then
-        return
+    local relevel = mob:getLocalVar('SQUAD_RELEVEL')
+    if relevel > 0 and (SYNC_TO_PLAYER and math.min(relevel, cap) or relevel) == mob:getMainLvl() then
+        mob:setLocalVar('SQUAD_RELEVEL', 0) -- (synced below their new level: nothing would change)
+        relevel = 0
     end
 
-    -- your level changed, but would this mate's? (a mate below both levels stays as it is)
-    local own = mob:getLocalVar('SQUAD_OWN')
-    if own > 0 and math.min(own, cap) == mob:getMainLvl() then
-        mob:setLocalVar('SQUAD_CAP', cap)
-        return
+    if relevel == 0 then
+        if not SYNC_TO_PLAYER or mob:getLocalVar('SQUAD_CAP') == cap then
+            return
+        end
+
+        -- your level changed, but would this mate's? (a mate below both levels stays as it is)
+        local own = mob:getLocalVar('SQUAD_OWN')
+        if own > 0 and math.min(own, cap) == mob:getMainLvl() then
+            mob:setLocalVar('SQUAD_CAP', cap)
+            return
+        end
     end
 
     local now = os.time()
@@ -1920,7 +1933,11 @@ resyncSquad = function(mob)
     end
 
     master:clearTrusts()
-    say(master, string.format('Your squad matches your level (%d).', cap))
+    if relevel > 0 then
+        say(master, string.format('%s comes back at level %d.', mob:getPacketName(), relevel))
+    else
+        say(master, string.format('Your squad matches your level (%d).', cap))
+    end
     for index, mate in ipairs(again) do
         master:timer(index * CALL_GAP_MS, function(entity)
             callMate(entity, mate)
@@ -4212,7 +4229,10 @@ grantSquadExp = function(master, mate, squadId, gain)
     local outcome = AddSquadExp(squadId, mate:getMainJob(), gain, MAX_LEVEL)
     if outcome.gained > 0 then
         local name = mate:getPacketName()
-        master:printToPlayer(string.format('%s reaches level %d! (call them again to apply it)', name, outcome.level))
+        master:printToPlayer(string.format('%s reaches level %d!', name, outcome.level))
+        if mate:getObjType() == xi.objType.TRUST then
+            mate:setLocalVar('SQUAD_RELEVEL', outcome.level) -- (resyncSquad calls them back at it once the fight is over)
+        end
         chatSend('UPDATE', name, 'level', outcome.level)
         if dialogue.speakOnLevelUp then
             speak(master, name, 'levelup', { level = outcome.level, job = jobTitles[mate:getMainJob()] or '' })
