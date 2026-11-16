@@ -698,8 +698,9 @@ auto spellResultName(const SpellCastResult result) -> const char*
     }
 }
 
-// Asks one squad mate to cast a spell: beneficial spells go on the player, attack and debuff spells on their enemy
-auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellId) -> SpellCastResult
+// Asks one squad mate to cast a spell: beneficial spells go on the player (or on the party member named in the chat,
+// e.g. "Kasumi cure Momo"), attack and debuff spells on their enemy
+auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellId, CBattleEntity* PNamed = nullptr) -> SpellCastResult
 {
     CSpell* PSpell = spell::GetSpell(spellId);
     if (PSpell == nullptr || !spell::CanUseSpell(PTrust, PSpell))
@@ -716,12 +717,23 @@ auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellI
             PTarget = PTrust->GetBattleTarget();
         }
     }
+    else if (PNamed != nullptr)
+    {
+        // someone else than the caster needs a spell that may go on party members (not a self-only spell like Utsusemi)
+        const bool partySpell = (PSpell->getValidTarget() & (TARGET_PLAYER_PARTY | TARGET_PLAYER_ALLIANCE)) != 0;
+        if (PNamed != PTrust && !partySpell)
+        {
+            return SpellCastResult::NoTarget;
+        }
+
+        PTarget = PNamed;
+    }
     else
     {
         PTarget = PChar;
     }
 
-    if (PTarget == nullptr || PTarget->isDead())
+    if (PTarget == nullptr || PTarget->isDead() || PTarget->getZone() != PTrust->getZone())
     {
         return SpellCastResult::NoTarget;
     }
@@ -1110,13 +1122,66 @@ void handleSpellChat(CCharEntity* PChar, CBasicPacket& packet)
         }
     }
 
-    std::string spellName;
-    for (const auto& word : words)
+    const auto joinSpell = [](const std::vector<std::string>& list)
     {
-        spellName += spellName.empty() ? word : "_" + word;
-    }
+        std::string out;
+        for (const auto& word : list)
+        {
+            out += out.empty() ? word : "_" + word;
+        }
+        return out;
+    };
 
-    const auto spellId = spell::lookupIdByName(spellName);
+    std::string spellName = joinSpell(words);
+    auto        spellId   = spell::lookupIdByName(spellName);
+
+    // Optional target at the end: "cure momo", "cure on momo", "protect me": a party member (you, a squad mate, another
+    // player or bot in your party). Only used when the words before it are a spell and the whole text is not one.
+    CBattleEntity* PNamed = nullptr;
+    if (!spellId.has_value() && words.size() > 1)
+    {
+        const std::string last  = words.back();
+        CBattleEntity*    found = nullptr;
+        if (last == "me" || last == "myself")
+        {
+            found = PChar;
+        }
+        else
+        {
+            PChar->ForPartyWithTrusts([&](CBattleEntity* PMember)
+            {
+                if (found != nullptr || PMember == nullptr)
+                {
+                    return;
+                }
+
+                std::string name = PMember->packetName.empty() ? PMember->getName() : PMember->packetName;
+                std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c)
+                               { return static_cast<char>(std::tolower(c)); });
+                if (name == last)
+                {
+                    found = PMember;
+                }
+            });
+        }
+
+        if (found != nullptr)
+        {
+            std::vector<std::string> rest(words.begin(), words.end() - 1);
+            if (rest.size() > 1 && rest.back() == "on")
+            {
+                rest.pop_back();
+            }
+
+            const auto namedSpell = spell::lookupIdByName(joinSpell(rest));
+            if (namedSpell.has_value())
+            {
+                spellName = joinSpell(rest);
+                spellId   = namedSpell;
+                PNamed    = found;
+            }
+        }
+    }
     if (hadAutoTranslate)
     {
         ShowInfo("[SQUAD] auto-translate in party chat read as '%s' -> %s", spellName.c_str(), spellId.has_value() ? "spell found" : "no spell with that name");
@@ -1141,7 +1206,7 @@ void handleSpellChat(CCharEntity* PChar, CBasicPacket& packet)
 
     for (auto* PTrust : askedMates)
     {
-        const auto result = trySquadCast(PChar, PTrust, spellId.value());
+        const auto result = trySquadCast(PChar, PTrust, spellId.value(), PNamed);
         if (result == SpellCastResult::Cast)
         {
             anyCast = true;
