@@ -229,6 +229,8 @@ local function usage(player)
     say(player, '!squad job <slot> <job>   |   !squad sub <slot> <job or none>')
     say(player, '!squad levels <slot>   - their job levels (mates level up by fighting with you)')
     say(player, '!squad look <slot> <race> <face 1-16>   races: humem humef elvm elvf tarum taruf mithra galka (once: the look is for good)')
+    say(player, '!squad size <slot> small | medium | large   (once: the size is for good)')
+    say(player, '!squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]   - when and which weapon skill a mate uses')
     say(player, '!squad give <item name or id>   - give an item to your squad once; every mate can then wear it')
     say(player, '!squad unlocked   - show what your squad has been given')
     say(player, '!squad equip <slot> <item name or id> [equip slot]   |   !squad unequip <slot> <equip slot or all>')
@@ -236,6 +238,7 @@ local function usage(player)
     say(player, '!squad rename <slot> <name>   |   !squad delete <slot>')
     say(player, '!squad call [slot or all]   |   !squad dismiss   |   !squad food   (what they have eaten)')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
+    say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
     say(player, '!squad sw <slot> <melee|ranged|ja|magic|all> <on|off>   - stop one kind of action, e.g. stop a healer from meleeing')
     say(player, '!squad lore <slot>   - write (or rewrite) that mate\'s backstory')
     say(player, '!squad chat [on|off|test]   - in-character party chat with your mates')
@@ -857,7 +860,20 @@ end
 local function skillchainRoles(player)
     local melee = {}
     for _, trust in ipairs(squadTrusts(player)) do
-        if trust:isAlive() and SC_MELEE[trust:getMainJob()] then
+        local ownTp = trust:getLocalVar('SQUAD_WSTP') -- set with !squad ws <slot> <tp>: this mate keeps its own timing
+        if trust:isAlive() and ownTp > 0 then
+            local role = 100 + math.floor(ownTp / 100)
+            if trust:getLocalVar('SQUAD_SC_ROLE') ~= role then
+                trust:setLocalVar('SQUAD_SC_ROLE', role)
+                pcall(function()
+                    if ownTp >= 1500 then
+                        trust:setTrustTPSkillSettings(ai.tp.CLOSER_UNTIL_TP, ai.s.HIGHEST, ownTp)
+                    else
+                        trust:setTrustTPSkillSettings(ai.tp.ASAP, ai.s.HIGHEST, 0) -- (the game's lowest is 1000 TP)
+                    end
+                end)
+            end
+        elseif trust:isAlive() and SC_MELEE[trust:getMainJob()] then
             melee[#melee + 1] = trust
         end
     end
@@ -1663,6 +1679,8 @@ local function callMate(player, mate)
         template = mate.template,
         race     = mate.race > 0 and mate.race or 1,
         face     = mate.face,
+        size     = player:getCharVar('SQUAD_SIZE_' .. mate.id), -- 0 = not chosen, 1-3 = small / medium / large
+        ws       = player:getCharVar('SQUAD_WS_' .. mate.id),   -- 0 = every weapon skill it can use, else only this one
         equip    = outfit,
     })
 
@@ -1673,6 +1691,7 @@ local function callMate(player, mate)
 
     trust:renameEntity(mate.name, true)
     trust:setLocalVar('SQUAD_ID', mate.id) -- make sure the tag is there after spawning
+    trust:setLocalVar('SQUAD_WSTP', player:getCharVar('SQUAD_WSTP_' .. mate.id)) -- its own weapon skill timing (!squad ws)
     -- The party list was sent while the mate still had its template's name (the last one called kept showing "Shantotto"):
     -- send the party list again now, and once more a moment later, so it shows the new name.
     player:reloadParty()
@@ -2549,6 +2568,24 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         return
     end
 
+    if action == 'engage' then
+        -- When mates join a fight. The game reads the char var TrustEngageType (trust_controller.cpp): 0 = retail (you
+        -- engage AND swing), 1 = as soon as you engage. Set here directly; the core !trustengage command is GM-only.
+        local wanted = string.lower(arg1 or '')
+        if wanted == 'first' or wanted == 'on' or wanted == '1' then
+            player:setCharVar('TrustEngageType', 1)
+            say(player, 'Your squad now joins the fight as soon as you engage (draw your weapon), without waiting for your first swing.')
+        elseif wanted == 'normal' or wanted == 'off' or wanted == '0' then
+            player:setCharVar('TrustEngageType', 0)
+            say(player, 'Your squad now joins the fight after your first swing, like retail trusts.')
+        else
+            local now = player:getCharVar('TrustEngageType') == 1 and 'first (as soon as you engage)' or 'normal (after your first swing)'
+            say(player, '!squad engage first | normal   - when your mates join a fight. Now: ' .. now)
+        end
+
+        return
+    end
+
     if action == 'pose' and player:getGMLevel() > 0 then
         -- (GM test: which animation id shows a sitting mate in the game client, e.g. 33 healing, 47 sit)
         local id = tonumber(arg1) or 0
@@ -2749,6 +2786,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         return
     elseif action == 'delete' then
         player:setCharVar('SQUAD_LOOK_' .. mate.id, 0)
+        player:setCharVar('SQUAD_SIZE_' .. mate.id, 0)
+        player:setCharVar('SQUAD_WSTP_' .. mate.id, 0)
+        player:setCharVar('SQUAD_WS_' .. mate.id, 0)
         chatSend('DELETE', mate.name)
         DeleteSquadMate(charId, mate.slot)
         say(player, string.format('Deleted %s.', mate.name))
@@ -2833,6 +2873,53 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         player:setCharVar(lookVar, 1)
         say(player, string.format('%s\'s look is now set for good.', mate.name))
         chatSend('UPDATE', mate.name, 'race', race)
+    elseif action == 'ws' then
+        -- When this mate weapon skills, and which one: !squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]
+        local when = string.lower(arg2 or '')
+        local tp = tonumber(when)
+        if when ~= 'chain' and (tp == nil or tp < 1000 or tp > 3000) then
+            local nowTp, nowWs = player:getCharVar('SQUAD_WSTP_' .. mate.id), player:getCharVar('SQUAD_WS_' .. mate.id)
+            say(player, '!squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]   e.g. !squad ws 1 1000 raging_axe')
+            say(player, string.format('%s now: %s, %s.', mate.name, nowTp > 0 and ('at ' .. nowTp .. ' TP') or 'skillchains with the party',
+                nowWs > 0 and wsName(nowWs) or 'its best weapon skill'))
+            return
+        end
+
+        local wsId = 0
+        local wanted = string.lower(arg3 or 'best')
+        if wanted ~= 'best' then
+            wsId = xi.weaponskill and xi.weaponskill[string.upper(wanted)] or nil
+            if wsId == nil then
+                say(player, string.format('No weapon skill called "%s" (use underscores for spaces, e.g. raging_axe).', arg3))
+                return
+            end
+        end
+
+        tp = when == 'chain' and 0 or math.floor(tp)
+        player:setCharVar('SQUAD_WSTP_' .. mate.id, tp)
+        player:setCharVar('SQUAD_WS_' .. mate.id, wsId)
+        say(player, string.format('%s will use %s %s. Dismiss and call them again to apply it.', mate.name,
+            wsId > 0 and wsName(wsId) or 'its best weapon skill',
+            tp > 0 and ('at ' .. tp .. ' TP' .. (tp < 1500 and ' (as soon as it has 1000)' or '')) or 'to skillchain with the party'))
+        return
+    elseif action == 'size' then
+        -- Body size, like a player's at character creation. Picked once (part of the look); a GM may still change it.
+        local sizes = { small = 1, s = 1, medium = 2, m = 2, large = 3, l = 3 }
+        local size = sizes[string.lower(arg2 or '')]
+        if size == nil then
+            say(player, '!squad size <slot> small | medium | large   (once: the size is for good)')
+            return
+        end
+
+        local sizeVar = 'SQUAD_SIZE_' .. mate.id
+        if player:getCharVar(sizeVar) > 0 and player:getGMLevel() == 0 then
+            say(player, string.format('%s\'s size is already set for good.', mate.name))
+            return
+        end
+
+        player:setCharVar(sizeVar, size)
+        say(player, string.format('%s is now %s, for good. Dismiss and call them again to see it.', mate.name, ({ 'small', 'medium', 'large' })[size]))
+        return
     elseif action == 'rename' then
         if not validName(arg2) then
             say(player, 'Name must be 3-15 letters.')

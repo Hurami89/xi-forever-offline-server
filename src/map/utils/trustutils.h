@@ -46,6 +46,7 @@ struct SquadSpec
     // hands 0x3000, legs 0x4000, feet 0x5000, main 0x6000, sub 0x7000, ranged 0x8000. 0 = nothing shown in that slot.
     bool   hasLook{ false };
     uint8  face{ 0 };
+    uint8  bodySize{ 0 }; // 0 = not chosen (the client's default), 1-3 = small / medium / large (sent as 0-2, like a player's)
     uint16 lookHead{ 0 };
     uint16 lookBody{ 0 };
     uint16 lookHands{ 0 };

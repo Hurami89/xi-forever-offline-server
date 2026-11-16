@@ -629,4 +629,10 @@ void CEntityUpdatePacket::updateWith(CBaseEntity* PEntity, ENTITYUPDATE type, ui
         const uint8 gateId = static_cast<CBattleEntity*>(PEntity)->StatusEffectContainer->GetConfrontationSubPower() & 0x0F;
         packet->Flags2.b   = (packet->Flags2.b & 0x0F) | (gateId << 4);
     }
+
+    // XI: Forever Offline: a squad mate whose body size was chosen (small / medium / large) shows it, like a player
+    if (packet->SendFlg.General && PEntity->objtype == TYPE_TRUST && PEntity->GetLocalVar("SQUAD_SIZE") > 0)
+    {
+        packet->Flags1.GraphSize = PEntity->modelSize;
+    }
 }

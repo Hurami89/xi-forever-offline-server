@@ -420,8 +420,13 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
             PTrust->look.main   = spec->lookMain;
             PTrust->look.sub    = spec->lookSub;
             PTrust->look.ranged = spec->lookRanged;
+            if (spec->bodySize >= 1 && spec->bodySize <= 3)
+            {
+                PTrust->modelSize = static_cast<uint8>(spec->bodySize - 1); // sent as the body size in entity updates
+            }
         }
         PTrust->SetLocalVar("SQUAD_ID", spec->squadId);
+        PTrust->SetLocalVar("SQUAD_SIZE", spec->bodySize);
     }
     else
     {

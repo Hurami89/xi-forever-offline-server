@@ -37,6 +37,7 @@
 //
 
 #include "common/database.h"
+#include <algorithm>
 #include "map/ability.h"
 #include "map/recast_container.h"
 #include "map/ai/ai_container.h"
@@ -206,7 +207,7 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
     PTrust->updatemask |= UPDATE_HP;
 }
 
-void limitWeaponSkills(CTrustEntity* PTrust); // below: weapon skills like a player's
+void limitWeaponSkills(CTrustEntity* PTrust, uint16 onlyWs = 0); // below: weapon skills like a player's
 
 auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::optional<CLuaBaseEntity>
 {
@@ -224,6 +225,7 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
     const int id     = spec.get_or("id", 0);
     const int race   = spec.get_or("race", 0);
     const int face   = spec.get_or("face", 0);
+    const int size   = spec.get_or("size", 0); // body size 1-3 (small / medium / large), 0 = not chosen
     int       templ  = spec.get_or("template", 0);
 
     if (mJob < 1 || mJob > 22 || mLevel < 1 || mLevel > 99)
@@ -259,6 +261,7 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
     {
         squadSpec.hasLook    = true;
         squadSpec.face       = static_cast<uint8>(std::clamp(face, 0, 15));
+        squadSpec.bodySize   = static_cast<uint8>(std::clamp(size, 0, 3));
         squadSpec.lookHead   = outfit.head;
         squadSpec.lookBody   = outfit.body;
         squadSpec.lookHands  = outfit.hands;
@@ -292,7 +295,8 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
         applyEquipment(PTrust, *equip);
     }
 
-    limitWeaponSkills(PTrust);
+    // "ws" = a weapon skill the player chose for this mate (!squad ws): it then uses only that one, when it can
+    limitWeaponSkills(PTrust, static_cast<uint16>(std::clamp(spec.get_or("ws", 0), 0, 0xFFFF)));
 
     return CLuaBaseEntity(PTrust);
 }
@@ -300,7 +304,7 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
 // Weapon skills like a player's (squad 1.16): a Trust gets every move on its template's list from level 1, including
 // Trust-only moves. A squad mate instead gets exactly the player weapon skills for the weapon in its main hand that its
 // job may use, that need no quest, and that its skill in that weapon has reached (its skills are the max for job and level).
-void limitWeaponSkills(CTrustEntity* PTrust)
+void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
 {
     auto* controller = dynamic_cast<CTrustController*>(PTrust->PAI->GetController());
     if (controller == nullptr || controller->m_GambitsContainer == nullptr)
@@ -339,6 +343,24 @@ void limitWeaponSkills(CTrustEntity* PTrust)
         skill.valid_targets = battleutils::isValidSelfTargetWeaponskill(id) ? TARGET_SELF : TARGET_ENEMY;
         skills.push_back(skill);
         kept += (kept.empty() ? "" : ", ") + ws->getName();
+    }
+
+    // The player chose one weapon skill for this mate: keep only it, if the mate can use it now (else keep them all)
+    if (onlyWs != 0)
+    {
+        const auto chosen = std::find_if(skills.begin(), skills.end(), [onlyWs](const gambits::TrustSkill_t& s)
+                                         { return s.skill_id == onlyWs; });
+        if (chosen != skills.end())
+        {
+            const gambits::TrustSkill_t only = *chosen;
+            skills.clear();
+            skills.push_back(only);
+            kept = "only " + battleutils::GetWeaponSkill(onlyWs)->getName() + " (chosen)";
+        }
+        else
+        {
+            kept += " (the chosen weapon skill is not usable yet: weapon or skill level)";
+        }
     }
 
     ShowInfo("[SQUAD] %s: weapon skills like a player's (skill type %u): %s", PTrust->getName(), static_cast<unsigned>(weaponType), kept.empty() ? "none yet" : kept.c_str());
