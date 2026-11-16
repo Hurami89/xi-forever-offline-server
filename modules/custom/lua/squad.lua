@@ -225,10 +225,10 @@ local jobList = 'WAR MNK WHM BLM RDM THF PLD DRK BST BRD RNG SAM NIN DRG SMN'
 
 local function usage(player)
     say(player, '!squad - list your squad mates')
-    say(player, '!squad new <name> <job> [level]   e.g. !squad new Bob WAR 75')
+    say(player, '!squad new <name> <job>   e.g. !squad new Bob WAR   (new mates start at level 1)')
     say(player, '!squad job <slot> <job>   |   !squad sub <slot> <job or none>')
-    say(player, '!squad levels <slot>   |   !squad setlevel <slot> <job> <level>')
-    say(player, '!squad look <slot> <race> <face 1-16>   races: humem humef elvm elvf tarum taruf mithra galka')
+    say(player, '!squad levels <slot>   - their job levels (mates level up by fighting with you)')
+    say(player, '!squad look <slot> <race> <face 1-16>   races: humem humef elvm elvf tarum taruf mithra galka (once: the look is for good)')
     say(player, '!squad give <item name or id>   - give an item to your squad once; every mate can then wear it')
     say(player, '!squad unlocked   - show what your squad has been given')
     say(player, '!squad equip <slot> <item name or id> [equip slot]   |   !squad unequip <slot> <equip slot or all>')
@@ -2232,10 +2232,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
     if action == 'new' then
         local name = arg1
         local job = parseJob(arg2)
-        local level = tonumber(arg3) or player:getMainLvl()
+        -- New mates start at level 1 and level up by fighting with you (a GM may still give a level, for testing)
+        local level = (player:getGMLevel() > 0 and tonumber(arg3)) or 1
 
         if not validName(name) then
-            say(player, 'Name must be 3-15 letters. Example: !squad new Bob WAR 75')
+            say(player, 'Name must be 3-15 letters. Example: !squad new Bob WAR')
             return
         elseif job == nil then
             say(player, 'Unknown job. Jobs: ' .. jobList)
@@ -2701,6 +2702,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
 
         return
     elseif action == 'delete' then
+        player:setCharVar('SQUAD_LOOK_' .. mate.id, 0)
         chatSend('DELETE', mate.name)
         DeleteSquadMate(charId, mate.slot)
         say(player, string.format('Deleted %s.', mate.name))
@@ -2716,6 +2718,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
 
         return
     elseif action == 'setlevel' then
+        if player:getGMLevel() == 0 then
+            say(player, 'Squad mates level up by fighting with you, like any character.')
+            return
+        end
+
         local job = parseJob(arg2)
         local level = tonumber(arg3)
         if job == nil or level == nil then
@@ -2768,8 +2775,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
             return
         end
 
+        -- A look is picked once (in game or in the launcher, which sets the same var); a GM may still change it
+        local lookVar = 'SQUAD_LOOK_' .. mate.id
+        if player:getCharVar(lookVar) == 1 and player:getGMLevel() == 0 then
+            say(player, string.format('%s\'s look is already set for good.', mate.name))
+            return
+        end
+
         mate.race = race
         mate.face = math.floor(face) - 1
+        player:setCharVar(lookVar, 1)
+        say(player, string.format('%s\'s look is now set for good.', mate.name))
         chatSend('UPDATE', mate.name, 'race', race)
     elseif action == 'rename' then
         if not validName(arg2) then
