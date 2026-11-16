@@ -225,7 +225,7 @@ local jobList = 'WAR MNK WHM BLM RDM THF PLD DRK BST BRD RNG SAM NIN DRG SMN'
 
 local function usage(player)
     say(player, '!squad - list your squad mates')
-    say(player, '!squad new <name> <job>   e.g. !squad new Bob WAR   (new mates start at level 1)')
+    say(player, '!squad new <name> <job> [level]   e.g. !squad new Bob WAR 10   (a new mate starts at up to level 12, not above yours)')
     say(player, '!squad job <slot> <job>   |   !squad sub <slot> <job or none>')
     say(player, '!squad levels <slot>   - their job levels (mates level up by fighting with you)')
     say(player, '!squad look <slot> <race> <face 1-16>   races: humem humef elvm elvf tarum taruf mithra galka (once: the look is for good)')
@@ -1140,6 +1140,7 @@ local STARTER_MARK = 255
 
 -- How long to wait between squad mates when they are all called at once (milliseconds)
 local CALL_GAP_MS = 1500
+NEW_MATE_MAX_LEVEL = 12   -- (global: this file is near Lua's 200-local limit) the highest level a new mate may start at
 
 -- The basic level 1 sets come from squad_starter_gear.lua (build_starter_gear.py writes it from your database): the game's own
 -- weapon for each job plus plain level 1 armor, never rare/ex or event items. If the file is missing the old picker is used.
@@ -2337,8 +2338,16 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
     if action == 'new' then
         local name = arg1
         local job = parseJob(arg2)
-        -- New mates start at level 1 and level up by fighting with you (a GM may still give a level, for testing)
-        local level = (player:getGMLevel() > 0 and tonumber(arg3)) or 1
+        -- A new mate may start at a level up to 12 (and never above your own main level), so a mate made later
+        -- can catch up a little; after that they level up by fighting with you. A GM may give any level, for testing.
+        local wanted = math.floor(tonumber(arg3) or 1)
+        local level = wanted
+        if player:getGMLevel() == 0 then
+            level = math.max(1, math.min(wanted, NEW_MATE_MAX_LEVEL, player:getMainLvl()))
+            if wanted > level then
+                say(player, string.format('New mates start at level %d at most (up to %d, and not above your own level).', level, NEW_MATE_MAX_LEVEL))
+            end
+        end
 
         if not validName(name) then
             say(player, 'Name must be 3-15 letters. Example: !squad new Bob WAR')
