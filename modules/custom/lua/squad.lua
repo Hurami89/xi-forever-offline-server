@@ -240,6 +240,10 @@ local function usage(player)
     say(player, '!squad call [slot or all]   |   !squad dismiss   |   !squad food   (what they have eaten)')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
     say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
+    say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
+    say(player, '!squad follow close | normal | far   - how closely your mates follow you')
+    say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
+    say(player, '!squad camp rest on | off   - mates sit and rest at camp while the pull is out')
     say(player, '!squad sw <slot> <melee|ranged|ja|magic|all> <on|off>   - stop one kind of action, e.g. stop a healer from meleeing')
     say(player, '!squad lore <slot>   - write (or rewrite) that mate\'s backstory')
     say(player, '!squad chat [on|off|test]   - in-character party chat with your mates')
@@ -1229,6 +1233,30 @@ end
 local resyncSquad -- defined after callMate
 local restTick    -- defined after callMate
 
+-- The squad in "call all" order (!squad order; char var SQUAD_ORDER holds the slots as digits, e.g. 312)
+local function orderedSquad(player, list)
+    local code = player:getCharVar('SQUAD_ORDER')
+    local out = {}
+    for k, mate in ipairs(list) do
+        out[k] = mate
+    end
+
+    if code <= 0 then
+        return out
+    end
+
+    local rank, i = {}, 0
+    for d in tostring(code):gmatch('%d') do
+        i = i + 1
+        rank[tonumber(d)] = rank[tonumber(d)] or i
+    end
+
+    table.sort(out, function(a, b)
+        return (rank[a.slot] or (100 + a.slot)) < (rank[b.slot] or (100 + b.slot))
+    end)
+    return out
+end
+
 -----------------------------------
 -- Squad chat (Ollama sidecar): in-character party chat and generated backstories.
 -- The Python sidecar in <kit>/squad-chat owns the character sheets, memory and the model. The kit folder comes from
@@ -1791,6 +1819,17 @@ restTick = function(mob)
 
     local sitting = mob:getAnimation() == xi.animation.HEALING
     local resting = master:getAnimation() == xi.animation.HEALING and not mob:isEngaged() and not master:isEngaged()
+
+    -- At camp (unless !squad camp rest off): rest between fights while the pull is out, until full again
+    local c = camps[master:getID()]
+    if not resting and c and c.zone == master:getZoneID() and master:getCharVar('SQUAD_CAMP_NOREST') == 0 and not mob:isEngaged() and
+        mob:getLocalVar('SQUAD_PULL_PHASE') == 0
+    then
+        local p = mob:getPos()
+        local hurt = mob:getHP() < mob:getMaxHP() or (mob:getMaxMP() > 0 and mob:getMP() < mob:getMaxMP())
+        resting = hurt and math.sqrt((p.x - c.x) ^ 2 + (p.z - c.z) ^ 2) <= 8
+    end
+
     if not resting then
         if sitting then
             mob:setAnimation(xi.animation.NONE)
@@ -1986,7 +2025,7 @@ local function save(player, mate)
     say(player, 'Saved: ' .. describe(mate, player) .. '  (dismiss and call them again to apply)')
 end
 
-commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
+commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
     local charId = player:getID()
     if action ~= 'panel' and action ~= 'sheet' then
         print(string.format('[squad] %s: !squad %s %s %s', player:getName(), tostring(action or ''), tostring(arg1 or ''), tostring(arg2 or '')))
@@ -2142,6 +2181,13 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
 
         -- (servermenu 1.10) engage timing, and per mate: opt|<slot>|<size 0-3>|<ws TP, 0 = chain>|<chosen WS or ->|<range 0-3>|<usable WS, comma list or ->
         say(player, string.format('squadpanel:engage|%d', player:getCharVar('TrustEngageType') == 1 and 1 or 0))
+        -- (servermenu 1.11) adv|<follow 0 normal, 1 close, 2 far>|<camp rest 1 on>|<call order, slots, or ->  and  delay|<slot>|<seconds>
+        local orderCode = player:getCharVar('SQUAD_ORDER')
+        say(player, string.format('squadpanel:adv|%d|%d|%s', player:getCharVar('SQUAD_FOLLOW'), player:getCharVar('SQUAD_CAMP_NOREST') == 1 and 0 or 1,
+            orderCode > 0 and tostring(orderCode) or '-'))
+        for _, mate in ipairs(squad) do
+            say(player, string.format('squadpanel:delay|%d|%d', mate.slot, player:getCharVar('SQUAD_DELAY_' .. mate.id)))
+        end
         for _, mate in ipairs(squad) do
             local wsList = '-'
             for _, trust in ipairs(squadTrusts(player)) do
@@ -2398,6 +2444,15 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
             else
                 say(player, string.format('Pull range is %d yalms. Change it with !squad camp range <%d-%d>.', campRange(player), CAMP_RANGE_LIMITS[1], CAMP_RANGE_LIMITS[2]))
             end
+        elseif what == 'rest' then
+            -- mates sit and rest at camp while the pull is out (char var SQUAD_CAMP_NOREST: 0 = on, the default; 1 = off)
+            local on = string.lower(arg2 or '')
+            if on == 'on' or on == 'off' then
+                player:setCharVar('SQUAD_CAMP_NOREST', on == 'off' and 1 or 0)
+            end
+
+            say(player, player:getCharVar('SQUAD_CAMP_NOREST') == 1 and 'At camp your mates stay standing between fights (!squad camp rest on to change).'
+                or 'At camp your mates sit and rest between fights while the pull is out (!squad camp rest off to change).')
         elseif what == 'pause' or what == 'resume' then
             local c = camps[charId]
             if c then
@@ -2479,7 +2534,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
 
         if arg1 == nil or string.lower(arg1) == 'all' then
             -- One at a time, a moment apart. Several characters appearing in the very same instant can leave the last ones undressed.
-            for index, mate in ipairs(squad) do
+            for index, mate in ipairs(orderedSquad(player, squad)) do
                 if index == 1 then
                     callWithCooldown(player, mate)
                 else
@@ -2505,7 +2560,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
     -- The Squad menu's "Apply now": the mates who are out come back with their new settings (no cooldown)
     if action == 'reapply' then
         local out = {}
-        for _, mate in ipairs(squad) do
+        for _, mate in ipairs(orderedSquad(player, squad)) do
             if isSummoned(player, mate.id) then
                 out[#out + 1] = mate
             end
@@ -2593,6 +2648,66 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
             say(player, ok and line or ('diag failed: ' .. tostring(line)))
             print('[squad] diag ' .. (ok and line or tostring(line)))
         end
+        return
+    end
+
+    if action == 'follow' then
+        -- How closely mates follow you out of combat (trust_controller.cpp reads SQUAD_FOLLOW: 0 normal, 1 close, 2 far)
+        local styles = { normal = 0, close = 1, near = 1, far = 2, loose = 2 }
+        local style = styles[string.lower(arg1 or '')]
+        if style == nil then
+            local now = ({ [0] = 'normal', 'close', 'far' })[player:getCharVar('SQUAD_FOLLOW')] or 'normal'
+            say(player, '!squad follow close | normal | far   - how closely your mates follow you. Now: ' .. now)
+            return
+        end
+
+        player:setCharVar('SQUAD_FOLLOW', style)
+        say(player, 'Your mates now follow you ' .. ({ [0] = 'at the normal distance.', 'close behind.', 'from further back.' })[style])
+        return
+    end
+
+    if action == 'order' then
+        -- Who "call all" brings out first: !squad order 3 1 2  (slots not listed come after, in slot order)
+        local words = {}
+        local given = { arg1, arg2, arg3, arg4 }
+        for i = 1, 4 do
+            for w in tostring(given[i] or ''):gmatch('[^%s,]+') do
+                words[#words + 1] = w
+            end
+        end
+
+        if words[1] and string.lower(words[1]) == 'reset' then
+            player:setCharVar('SQUAD_ORDER', 0)
+            say(player, '"Call all" brings your mates out in slot order again.')
+            return
+        end
+
+        local code, seen = '', {}
+        for _, w in ipairs(words) do
+            local slot = tonumber(w)
+            if slot and slot >= 1 and slot <= 9 and findMate(squad, slot) and not seen[slot] then
+                seen[slot] = true
+                code = code .. slot
+            end
+        end
+
+        if code == '' then
+            local names = {}
+            for _, mate in ipairs(orderedSquad(player, squad)) do
+                names[#names + 1] = mate.slot .. ' ' .. mate.name
+            end
+
+            say(player, '!squad order <slots, e.g. 3 1 2> | reset   - who "call all" brings out first. Now: ' .. table.concat(names, ', '))
+            return
+        end
+
+        player:setCharVar('SQUAD_ORDER', tonumber(code))
+        local names = {}
+        for _, mate in ipairs(orderedSquad(player, squad)) do
+            names[#names + 1] = mate.name
+        end
+
+        say(player, '"Call all" order: ' .. table.concat(names, ', ') .. '. Dismiss and call everyone to use it now.')
         return
     end
 
@@ -2818,6 +2933,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         player:setCharVar('SQUAD_WSTP_' .. mate.id, 0)
         player:setCharVar('SQUAD_WS_' .. mate.id, 0)
         player:setCharVar('SQUAD_RANGE_' .. mate.id, 0)
+        player:setCharVar('SQUAD_DELAY_' .. mate.id, 0)
         chatSend('DELETE', mate.name)
         DeleteSquadMate(charId, mate.slot)
         say(player, string.format('Deleted %s.', mate.name))
@@ -2902,6 +3018,20 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3)
         player:setCharVar(lookVar, 1)
         say(player, string.format('%s\'s look is now set for good.', mate.name))
         chatSend('UPDATE', mate.name, 'race', race)
+    elseif action == 'delay' then
+        -- Seconds this mate waits after you engage before joining (trust_controller.cpp reads local var SQUAD_ENGAGE_DELAY, ms)
+        local secs = tonumber(arg2 or '')
+        if secs == nil or secs < 0 or secs > 10 then
+            say(player, string.format('!squad delay <slot> <0-10>   - seconds %s waits before joining a fight. Now: %d', mate.name,
+                player:getCharVar('SQUAD_DELAY_' .. mate.id)))
+            return
+        end
+
+        secs = math.floor(secs)
+        player:setCharVar('SQUAD_DELAY_' .. mate.id, secs)
+        say(player, string.format('%s %s. Dismiss and call them again to apply it.', mate.name,
+            secs == 0 and 'joins fights right away' or ('waits ' .. secs .. (secs == 1 and ' second' or ' seconds') .. ' before joining a fight')))
+        return
     elseif action == 'range' then
         -- How far this mate stands from the monster: !squad range <slot> melee | mid | far | auto (auto = its job's own)
         local choices = { auto = 0, melee = 1, mid = 2, far = 3 }
@@ -3856,6 +3986,12 @@ local function squadSpawn(mob)
         if mob:getMobMod(xi.mobMod.TRUST_DISTANCE) == 0 then
             mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MID_RANGE)
         end
+    end
+
+    -- Engage delay the player chose for this mate (!squad delay), in ms for trust_controller.cpp
+    local delayMaster = mob:getMaster()
+    if delayMaster then
+        mob:setLocalVar('SQUAD_ENGAGE_DELAY', delayMaster:getCharVar('SQUAD_DELAY_' .. mob:getLocalVar('SQUAD_ID')) * 1000)
     end
 
     -- Combat distance the player chose for this mate (!squad range): 1 melee, 2 mid range, 3 long range; 0 = its job's own

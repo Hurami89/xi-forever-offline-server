@@ -442,12 +442,17 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
             }
         }
 
-        if (PFight != nullptr)
+        if (PFight != nullptr && EngageDelayPassed(PFight))
         {
             POwner->PAI->Internal_Engage(EntityId(PFight));
         }
         else
         {
+            if (PFight == nullptr)
+            {
+                m_EngageWaitTarget = 0;
+            }
+
             CampHold(camp);
         }
 
@@ -480,7 +485,15 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
 
     if (PMaster->PAI->IsEngaged() && trustEngageCondition && POwner->GetModelId() != modelID_Cornelia)
     {
-        POwner->PAI->Internal_Engage(PMaster->battleTarget());
+        // FFXI Offline squad: a mate with an engage delay (!squad delay) waits that long after you engage, e.g. so the tank gets hate first
+        if (EngageDelayPassed(PMaster->GetBattleTarget()))
+        {
+            POwner->PAI->Internal_Engage(PMaster->battleTarget());
+        }
+    }
+    else
+    {
+        m_EngageWaitTarget = 0;
     }
 
     const uint8          currentPartyPos = GetPartyPosition();
@@ -491,9 +504,13 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
     // First trust follows master more closely than other trusts follow each other
     const bool isFirstTrust = (currentPartyPos == 0);
 
-    const float declumpDistance = isFirstTrust ? 1.0f : 1.5f; // Too close, need to move away
-    const float followMax       = isFirstTrust ? 2.0f : 3.5f; // Maximum follow distance before moving closer
-    const float followTarget    = isFirstTrust ? 1.5f : 3.0f; // Ideal follow distance
+    // FFXI Offline squad: !squad follow close | normal | far (char var SQUAD_FOLLOW 1 / 0 / 2) for squad mates
+    const int32 followStyle = POwner->GetLocalVar("SQUAD_ID") != 0 ? charutils::GetCharVar(PMaster, "SQUAD_FOLLOW") : 0;
+    const float followScale = followStyle == 1 ? 0.7f : (followStyle == 2 ? 1.8f : 1.0f);
+
+    const float declumpDistance = (isFirstTrust ? 1.0f : 1.5f) * std::min(followScale, 1.0f); // Too close, need to move away
+    const float followMax       = (isFirstTrust ? 2.0f : 3.5f) * followScale;                 // Maximum follow distance before moving closer
+    const float followTarget    = (isFirstTrust ? 1.5f : 3.0f) * followScale;                 // Ideal follow distance
 
     // Handle formation movement based on distance thresholds
     if (currentDistance < declumpDistance)
@@ -560,6 +577,24 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
 }
 
 // camp: stand on its own spot around the camp (one per party slot)
+// FFXI Offline squad: true once this mate's engage delay (local var SQUAD_ENGAGE_DELAY, ms) has passed for this monster
+auto CTrustController::EngageDelayPassed(const CBattleEntity* PTarget) -> bool
+{
+    const uint32 delayMs = POwner->GetLocalVar("SQUAD_ENGAGE_DELAY");
+    if (delayMs == 0 || PTarget == nullptr)
+    {
+        return true;
+    }
+
+    if (m_EngageWaitTarget != PTarget->id)
+    {
+        m_EngageWaitTarget = PTarget->id;
+        m_EngageWaitSince  = m_Tick;
+    }
+
+    return m_Tick - m_EngageWaitSince >= std::chrono::milliseconds(delayMs);
+}
+
 void CTrustController::CampHold(const position_t& camp)
 {
     const float angle = static_cast<float>(GetPartyPosition()) * 2.0f * 3.14159265f / 5.0f;
