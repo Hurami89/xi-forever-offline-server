@@ -3813,52 +3813,86 @@ end)
 -- monster earns experience for their own main job, worked out with their own level.
 -- Levels gained are saved right away; they apply the next time the mate is called.
 -----------------------------------
--- Your exp ring (or Dedication food) gives YOU a bonus until its cap runs out. A mate's exp is worked out through your character,
--- which would use up that cap once per mate. So the ring is set aside while a mate's exp is calculated and put back exactly as it
--- was, and your ring lasts as long as it would for a player on their own.
-local MATES_GET_DEDICATION = false -- false: mates get no ring bonus. true: mates get it too, for free, without using up your ring.
-local warnedNoSetPower     = false
+-- Squad mates earn exp like real party members (user's rule, 2026-11-16):
+--   - they count in the party split, for you and for them (2 people = 60% each, 3 = 45%... the era table), and the highest
+--     level in the party sets the share, the same as any party;
+--   - they get your bonuses too (exp ring / Dedication, Signet, Rhapsodies, gear and food), since their exp is worked out
+--     through your character. The ring's bonus is added for them without using up your ring: they see a copy of it.
+-- Raise the Rates tab's exp rate for faster leveling; the default stays the Treasures of Aht Urhgan era values.
+local warnedProxy = false
+
+-- Your character as the exp calculation sees it for a mate: everything is yours, except that the Dedication (ring) effect is
+-- a copy whose cap never runs out and which is never removed.
+local function memberForMate(master, ringPower)
+    local fakeDedication = nil
+    if ringPower ~= nil then
+        local power = ringPower
+        fakeDedication =
+        {
+            getPower    = function() return power end,
+            getSubPower = function() return 1000000000 end,
+            setSubPower = function() end,
+        }
+    end
+
+    return setmetatable({}, {
+        __index = function(_, key)
+            if key == 'getStatusEffect' then
+                return function(_, effect, ...)
+                    if effect == xi.effect.DEDICATION then
+                        return fakeDedication
+                    end
+
+                    return master:getStatusEffect(effect, ...)
+                end
+            elseif key == 'delStatusEffect' then
+                return function(_, effect, ...)
+                    if effect == xi.effect.DEDICATION then
+                        return false
+                    end
+
+                    return master:delStatusEffect(effect, ...)
+                end
+            end
+
+            local value = master[key]
+            if type(value) == 'function' then
+                return function(_, ...)
+                    return value(master, ...)
+                end
+            end
+
+            return value
+        end,
+    })
+end
 
 local function calcForMate(calc, master, mob, mateData)
+    local ok, result = pcall(calc, memberForMate(master, mateData.ringPower), mob, mateData)
+    if ok then
+        return result
+    end
+
+    if not warnedProxy then
+        warnedProxy = true
+        print('[squad] mate exp through the player copy failed (' .. tostring(result) .. '); using the plain calculation')
+    end
+
+    -- fallback: your own character; with a ring on, the mate gets no ring bonus and your ring's cap is put back afterwards
     local dedication = master:getStatusEffect(xi.effect.DEDICATION)
-    if dedication == nil then
-        return calc(master, mob, mateData)
-    end
-
-    local power    = dedication:getPower()
-    local subPower = dedication:getSubPower()
-
-    local zeroed = false
-    if not MATES_GET_DEDICATION then
-        zeroed = pcall(dedication.setPower, dedication, 0) -- no bonus, so nothing is used up
-        if not zeroed and not warnedNoSetPower then
-            warnedNoSetPower = true
-            print('[squad] this server cannot zero a Dedication bonus - mates will share it without using up your ring')
-        end
-    end
-
-    if not zeroed then
-        dedication:setSubPower(1000000000) -- an endless cap, so nothing is used up
-    end
-
-    local ok, result = pcall(calc, master, mob, mateData)
-
-    -- put the ring back exactly as it was
+    local subPower   = dedication and dedication:getSubPower()
+    local ok2, result2 = pcall(calc, master, mob, mateData)
     local current = master:getStatusEffect(xi.effect.DEDICATION)
-    if current ~= nil then
-        if zeroed then
-            pcall(current.setPower, current, power)
-        end
-
+    if dedication ~= nil and current ~= nil then
         current:setSubPower(subPower)
     end
 
-    if not ok then
-        print('[squad] exp calculation failed for a mate: ' .. tostring(result))
+    if not ok2 then
+        print('[squad] exp calculation failed for a mate: ' .. tostring(result2))
         return nil
     end
 
-    return result
+    return result2
 end
 
 local grantSquadExp
@@ -3914,23 +3948,53 @@ grantSquadExp = function(master, mate, squadId, gain)
 end
 
 m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
-    local result = super(member, mob, data)
+    -- the squad mates who share this kill: in your party, alive, in the zone and within 100 yalms of the monster
+    local sharing = {}
+    if member:getObjType() == xi.objType.PC then
+        for _, mate in pairs(member:getPartyWithTrusts()) do
+            if mate:getObjType() == xi.objType.TRUST then
+                local squadId = mate:getLocalVar('SQUAD_ID')
+                if
+                    squadId > 0 and
+                    mate:isAlive() and
+                    mate:getZoneID() == mob:getZoneID() and
+                    mate:checkDistance(mob) < 100
+                then
+                    table.insert(sharing, { mate = mate, squadId = squadId })
+                end
+            end
+        end
+    end
+
+    if #sharing == 0 then
+        return super(member, mob, data)
+    end
+
+    -- the party as the game would see it with the mates in it: more people share, and the highest level sets the share
+    local shared = {}
+    for key, value in pairs(data) do
+        shared[key] = value
+    end
+
+    shared.partySize = (tonumber(data.partySize) or 1) + #sharing
+    -- read before your own share uses the ring up, so the mates still get it on the kill that ends it
+    local ring = member:getStatusEffect(xi.effect.DEDICATION)
+    shared.ringPower = ring and ring:getPower() or nil
+    for _, entry in ipairs(sharing) do
+        local level = entry.mate:getMainLvl()
+        if level > (shared.highestMemberLevel or 0) then
+            shared.highestMemberLevel = level
+            shared.highestMemberTNL   = GetSquadExpNeeded(level)
+        end
+    end
+
+    local result = super(member, mob, shared)
     if result == nil then
         return result
     end
 
-    for _, mate in pairs(member:getPartyWithTrusts()) do
-        if mate:getObjType() == xi.objType.TRUST then
-            local squadId = mate:getLocalVar('SQUAD_ID')
-            if
-                squadId > 0 and
-                mate:isAlive() and
-                mate:getZoneID() == mob:getZoneID() and
-                mate:checkDistance(mob) < 100
-            then
-                awardSquadExp(super, member, mate, mob, data, squadId)
-            end
-        end
+    for _, entry in ipairs(sharing) do
+        awardSquadExp(super, member, entry.mate, mob, shared, entry.squadId)
     end
 
     return result
