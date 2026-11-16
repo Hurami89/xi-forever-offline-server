@@ -1214,8 +1214,19 @@ class BotsModule : public CPPModule
         ::lua.set_function("BotAttackOff", [](uint32 charId) -> bool
                            { return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::AttackOff, nullptr, 0); });
 
+        // A spell is interrupted when the caster "started moving" (CMagicState reads m_lastMoveDistance, which only a
+        // position packet updates). A bot sends position packets only while it walks, so after it stopped the last
+        // step's distance stayed there and every spell it began was interrupted at once, even standing still
+        // (ChazDingle, delukard). It is standing (stepMovement stops it while it casts), so that distance is 0 now.
         ::lua.set_function("BotCast", [](uint32 charId, uint32 spellId, const sol::object& target) -> bool
-                           { return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::CastMagic, targetOf(target), spellId); });
+                           {
+                               if (CCharEntity* PChar = charOf(botOf(charId)))
+                               {
+                                   PChar->m_lastMoveDistance = 0.0f;
+                               }
+
+                               return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::CastMagic, targetOf(target), spellId);
+                           });
 
         ::lua.set_function("BotWeaponSkill", [](uint32 charId, uint32 wsId, const sol::object& target) -> bool
                            { return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::Weaponskill, targetOf(target), wsId); });
