@@ -16,7 +16,7 @@
 -----------------------------------
 require('modules/module_utils')
 -----------------------------------
-local m = Module:new('coop')
+local m = Module:new('coop_visits') -- (module names need 5+ letters: 'coop' failed to load)
 
 xi = xi or {}
 xi.coop = xi.coop or {}

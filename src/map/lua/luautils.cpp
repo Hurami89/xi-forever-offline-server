@@ -1045,7 +1045,20 @@ void LoadLuaObjectFromFile(const std::string& filename, bool overwriteCurrentEnt
         return;
     }
 
-    if (!std::filesystem::exists(filename))
+    // (XI: Forever Offline) the name is UTF-8 (item names like "hume_\u2642_mannequin"): read as UTF-8, never through the
+    // Windows code page, which threw "No mapping for the Unicode character" on PCs with an Asian system locale and
+    // stopped the map server at "loading items". A name that still can't be checked counts as "no script".
+    bool fileExists = false;
+    try
+    {
+        fileExists = std::filesystem::exists(std::filesystem::path(reinterpret_cast<const char8_t*>(filename.c_str())));
+    }
+    catch (const std::exception&)
+    {
+        fileExists = false;
+    }
+
+    if (!fileExists)
     {
         ShowTrace("luautils::LoadLuaObjectFromFile: Tried to load file but it does not exist: %s", filename);
         return;
