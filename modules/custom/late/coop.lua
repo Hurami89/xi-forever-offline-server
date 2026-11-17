@@ -4,8 +4,10 @@
 -- The launcher's CO-OP page brings a friend's character into this world on a guest account (launcher_passport.py puts
 -- the character variable COOP_GUEST = 1 on it) and takes it home again later. This script is the server's small part:
 --   * a visitor is told where it is and how to go home when it logs in;
---   * a visitor cannot use the commands that belong to the owner of the world (!bots on/off/online..., !crowd ...)
---     and cannot use !squad yet (squad mates stay home in this version);
+--   * a visitor cannot use the commands that belong to the owner of the world (!bots on/off/online..., !crowd ...);
+--   * a visitor's squad mates come with it (the launcher copies them over) and !squad works for them, but with a
+--     visitor in the party each player's squad is its own (xi.coop.ownMate), and a visitor's squad stays out of the
+--     owner's AI squad chat (xi.coop.isGuestMate; squad.lua asks);
 --   * lines the launcher writes to modules/custom/lua/coop_in.txt ("<time>|<number>|SAY|<text>") are shown to
 --     everyone within a few seconds ("... is visiting this world", "This world closes in a minute"); a line
 --     "<time>|<number>|BOTS|<n>" changes how many bot players are online, like !bots online <n>.
@@ -49,6 +51,54 @@ xi.coop.isGuest = function(player)
     return player ~= nil and player:getObjType() == xi.objType.PC and player:getCharVar('COOP_GUEST') == 1
 end
 
+-- A squad mate of a visitor? (asked on every tick of a mate, so the answer is kept on the mate: 1 = yes, 2 = no)
+xi.coop.isGuestMate = function(mob)
+    local known = mob:getLocalVar('COOP_MATE')
+    if known == 0 then
+        local master = mob:getMaster()
+        if master == nil then
+            master = GetPlayerByID(mob:getLocalVar('MASTER_ID'))
+        end
+
+        if master == nil then
+            return false
+        end
+
+        known = xi.coop.isGuest(master) and 1 or 2
+        mob:setLocalVar('COOP_MATE', known)
+    end
+
+    return known == 1
+end
+
+-- Is a visitor among the players of this player's party?
+local function visitorInParty(player)
+    for _, member in pairs(player:getParty()) do
+        if xi.coop.isGuest(member) then
+            return true
+        end
+    end
+
+    return false
+end
+
+-- May this player count that squad mate as its own (pay it exp, move it with !squad camp, name it in squad chat)?
+-- Its own mates: always. Someone else's: as before co-op (yes: a second character of the owner's shares the squad),
+-- unless a visitor is in the party: then every squad belongs to its own player only, so each mate is paid once
+-- whoever else is in the party. Any error counts as "yes", the way it was before.
+xi.coop.ownMate = function(player, mate)
+    local ok, result = pcall(function()
+        local master = mate:getMaster()
+        if master == nil or player == nil or master:getID() == player:getID() then
+            return true
+        end
+
+        return not (xi.coop.isGuest(player) or xi.coop.isGuest(master) or visitorInParty(player))
+    end)
+
+    return not ok or result
+end
+
 -- what a visitor may still do with the owner's commands (everything else in them changes the world)
 local allowed =
 {
@@ -56,15 +106,18 @@ local allowed =
     crowd = { [''] = true, status = true },
 }
 
--- asked for by the squad panel and menu addons every few seconds: closed to a visitor without a word
-local quiet =
+-- commands a visitor uses like anyone else, apart from these actions (each with the line the visitor is told)
+local closed =
 {
-    squad = { panel = true, sheet = true },
+    squad =
+    {
+        chat = 'Your squad mates fight here, but their AI chat stays home: this world\'s squad chat belongs to its owner.',
+        lore = 'Your squad mates fight here, but their AI chat stays home: this world\'s squad chat belongs to its owner.',
+    },
 }
 
 local refusal =
 {
-    squad = 'Squad mates cannot travel yet: yours are waiting for you at home.',
     bots  = 'Only the owner of this world can change its bot players.',
     crowd = 'Only the owner of this world can change its crowds.',
 }
@@ -76,13 +129,18 @@ xi.coop.blockGuest = function(player, command, action)
     end
 
     action = string.lower(tostring(action or ''))
-    local list = allowed[command]
-    if list and list[action] then
+    if closed[command] then
+        if closed[command][action] then
+            tell(player, closed[command][action])
+            return true
+        end
+
         return false
     end
 
-    if quiet[command] and quiet[command][action] then
-        return true
+    local list = allowed[command]
+    if list and list[action] then
+        return false
     end
 
     tell(player, refusal[command] or 'Visitors cannot use that command in a friend\'s world.')
@@ -169,6 +227,11 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
             player:timer(5000, function(playerArg)
                 tell(playerArg, string.format('You are visiting %s. Everything you earn here goes home with you.', config.world))
                 tell(playerArg, 'To go home: log out, then press COME HOME in your launcher.')
+                -- its squad came along (GetSquad is squad.cpp's; without the squad module there is nothing to say)
+                local ok, squad = pcall(function() return GetSquad(playerArg:getID()) end)
+                if ok and type(squad) == 'table' and #squad > 0 then
+                    tell(playerArg, 'Your squad mates came with you: !squad call brings them out. Joining a party sends them off, so call them again after.')
+                end
             end)
         end
     end

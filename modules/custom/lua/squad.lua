@@ -664,7 +664,7 @@ end
 local function squadTrusts(player)
     local out = {}
     for _, member in pairs(player:getPartyWithTrusts()) do
-        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 then
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and xi.squad.mine(player, member) then
             out[#out + 1] = member
         end
     end
@@ -1283,6 +1283,28 @@ local CHAT_ACTIVE = rawget(_G, '__SQUAD_TEST') == nil
 xi = xi or {}
 xi.squad = xi.squad or {}
 
+-- Co-op (modules/custom/late/coop.lua): a friend's character visiting this world brings its own squad. With a visitor
+-- in the party each player's squad is its own (camp, pulls, exp), and a visitor's squad never talks to this world's
+-- squad-chat sidecar, which knows one leader: the owner. In a world without visitors both answers below are always
+-- "mine" and "not a visitor", so nothing changes there. (Kept on xi.squad: no room for more file-level locals.)
+xi.squad.mine = function(player, mate)
+    local coop = rawget(xi, 'coop')
+    if type(coop) ~= 'table' or type(coop.ownMate) ~= 'function' then
+        return true
+    end
+
+    return coop.ownMate(player, mate)
+end
+
+xi.squad.visitor = function(player)
+    local coop = rawget(xi, 'coop')
+    if type(coop) ~= 'table' or type(coop.isGuest) ~= 'function' then
+        return false
+    end
+
+    return coop.isGuest(player) == true
+end
+
 local function chatClean(text)
     text = tostring(text or '')
     text = string.gsub(text, '[\r\n\t]', ' ')
@@ -1291,6 +1313,10 @@ local function chatClean(text)
 end
 
 local function chatSend(kind, ...)
+    if xi.squad.chatMuted == true then -- (a visitor's !squad command is running: see the end of the command)
+        return false
+    end
+
     local parts = { kind }
     for i = 1, select('#', ...) do
         parts[#parts + 1] = chatClean(select(i, ...))
@@ -1322,7 +1348,7 @@ end
 local function chatActiveNames(player)
     local names = {}
     for _, member in pairs(player:getPartyWithTrusts()) do
-        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and member:isAlive() then
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and member:isAlive() and xi.squad.mine(player, member) then
             names[#names + 1] = member:getPacketName()
         end
     end
@@ -1332,7 +1358,7 @@ end
 
 local function chatHasActive(player)
     for _, member in pairs(player:getPartyWithTrusts()) do
-        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and member:isAlive() then
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and member:isAlive() and xi.squad.mine(player, member) then
             return true
         end
     end
@@ -1470,7 +1496,7 @@ local function chatFight(player)
 
     local mates = {}
     for _, member in pairs(player:getPartyWithTrusts()) do
-        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and member:isAlive() then
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and member:isAlive() and xi.squad.mine(player, member) then
             local name = member:getPacketName()
             local hp, mp = chatPercent(member, 'getHP', 'getMaxHP'), chatPercent(member, 'getMP', 'getMaxMP')
             mates[#mates + 1] = string.format('%s:%d:%d', name, hp, mp)
@@ -1549,7 +1575,7 @@ end
 
 -- a bot player said something in your party (bots.lua): the mates hear it
 xi.squad.onBotSay = function(player, botName, text)
-    if player == nil or not chatEnabled(player) or not chatHasActive(player) then
+    if player == nil or xi.squad.visitor(player) or not chatEnabled(player) or not chatHasActive(player) then
         return
     end
 
@@ -1632,6 +1658,12 @@ local function chatTick(mob)
         return
     end
 
+    -- co-op: a visitor's mates leave the chat bridge to the owner's (before the poll is counted as done)
+    local coop = rawget(xi, 'coop')
+    if type(coop) == 'table' and type(coop.isGuestMate) == 'function' and coop.isGuestMate(mob) then
+        return
+    end
+
     chatNextPoll = now + CHAT_POLL_SEC
 
     local master = mob:getMaster()
@@ -1651,7 +1683,7 @@ end
 
 -- Called by squad.cpp for every party-chat line (after auto-translate is decoded).
 xi.squad.onPartyChat = function(player, text)
-    if not chatEnabled(player) or not chatHasActive(player) then
+    if xi.squad.visitor(player) or not chatEnabled(player) or not chatHasActive(player) then
         return
     end
 
@@ -2073,11 +2105,6 @@ local function save(player, mate)
 end
 
 commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
-    -- co-op: a visitor from a friend's world cannot use the owner's commands (modules/custom/late/coop.lua)
-    if xi.coop and xi.coop.blockGuest and xi.coop.blockGuest(player, 'squad', action) then
-        return
-    end
-
     local charId = player:getID()
     if action ~= 'panel' and action ~= 'sheet' then
         print(string.format('[squad] %s: !squad %s %s %s', player:getName(), tostring(action or ''), tostring(arg1 or ''), tostring(arg2 or '')))
@@ -3206,6 +3233,29 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
     save(player, mate)
 end
 
+-- Co-op: a visitor from a friend's world uses !squad for its own squad like anyone else, except that nothing it does
+-- goes to this world's squad-chat sidecar (chatSend is silent while its command runs), and the two actions that are
+-- about the sidecar are refused with a line (modules/custom/late/coop.lua: xi.coop.blockGuest).
+do
+    local run = commandObj.onTrigger
+    commandObj.onTrigger = function(player, action, ...)
+        if not xi.squad.visitor(player) then
+            return run(player, action, ...)
+        end
+
+        if type(xi.coop.blockGuest) == 'function' and xi.coop.blockGuest(player, 'squad', action) then
+            return
+        end
+
+        xi.squad.chatMuted = true
+        local ok, err = pcall(run, player, action, ...)
+        xi.squad.chatMuted = nil
+        if not ok then
+            error(err, 0)
+        end
+    end
+end
+
 xi.module.registerCommand('squad', commandObj)
 
 -----------------------------------
@@ -4302,7 +4352,10 @@ grantSquadExp = function(master, mate, squadId, gain)
         if mate:getObjType() == xi.objType.TRUST then
             mate:setLocalVar('SQUAD_RELEVEL', outcome.level) -- (resyncSquad calls them back at it once the fight is over)
         end
-        chatSend('UPDATE', name, 'level', outcome.level)
+        if not xi.squad.visitor(master) then
+            chatSend('UPDATE', name, 'level', outcome.level)
+        end
+
         if dialogue.speakOnLevelUp then
             speak(master, name, 'levelup', { level = outcome.level, job = jobTitles[mate:getMainJob()] or '' })
         end
@@ -4408,7 +4461,10 @@ m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
     end
 
     for _, entry in ipairs(sharing) do
-        awardSquadExp(super, member, entry.mate, mob, shared, entry.squadId)
+        -- co-op: with a visitor in the party a mate is paid through its own player's share, not once per player
+        if xi.squad.mine(member, entry.mate) then
+            awardSquadExp(super, member, entry.mate, mob, shared, entry.squadId)
+        end
     end
 
     return result
@@ -4420,7 +4476,7 @@ local function activeMates(master)
     for _, mate in pairs(master:getPartyWithTrusts()) do
         if mate:getObjType() == xi.objType.TRUST then
             local squadId = mate:getLocalVar('SQUAD_ID')
-            if squadId > 0 and mate:isAlive() and mate:getZoneID() == master:getZoneID() then
+            if squadId > 0 and mate:isAlive() and mate:getZoneID() == master:getZoneID() and xi.squad.mine(master, mate) then
                 table.insert(out, { mate = mate, squadId = squadId })
             end
         end
