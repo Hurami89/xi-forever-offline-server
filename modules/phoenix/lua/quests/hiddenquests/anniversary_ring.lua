@@ -6,6 +6,7 @@
 require('modules/module_utils')
 -----------------------------------
 local m = Module:new('anniversary_ring')
+local GIVEN_VAR = '[AnniRing]Given'
 
 local introEvents =
 {
@@ -35,8 +36,8 @@ m:addOverride('xi.server.onServerStart', function()
                     local firstViewing = quest:getVar(player, 'nations') == 0
                     local result       = baseHandler(player, csid, option, npc)
 
-                    if firstViewing then
-                        npcUtil.giveItem(player, xi.item.ANNIVERSARY_RING)
+                    if firstViewing and player:getCharVar(GIVEN_VAR) == 0 and npcUtil.giveItem(player, xi.item.ANNIVERSARY_RING) then
+                        player:setCharVar(GIVEN_VAR, 1)
                     end
 
                     return result
@@ -45,3 +46,33 @@ m:addOverride('xi.server.onServerStart', function()
         end
     end)
 end)
+
+-- Everyone gets the ring once, cutscene watched or skipped (XI: Forever Offline, 2026-11-17): at log in or after a
+-- zone, a character that never had it is handed one. A brand-new character waits until after the opening
+-- cutscene, which gives it the usual way; a full bag tries again next time.
+m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
+    local result = super(player, firstLogin, zoning)
+    if BotIsBot and BotIsBot(player:getID()) then
+        return result
+    end
+
+    if player:getCharVar(GIVEN_VAR) ~= 0 then
+        return result
+    end
+
+    if player:hasItem(xi.item.ANNIVERSARY_RING) then
+        player:setCharVar(GIVEN_VAR, 1)
+    elseif firstLogin and xi.settings.main.NEW_CHARACTER_CUTSCENE == 1 then
+        return result -- (the opening cutscene hands it out; skipped, it comes at the next zone or log in)
+    else
+        player:timer(3000, function(p)
+            if p:getCharVar(GIVEN_VAR) == 0 and not p:hasItem(xi.item.ANNIVERSARY_RING) and npcUtil.giveItem(p, xi.item.ANNIVERSARY_RING) then
+                p:setCharVar(GIVEN_VAR, 1)
+            end
+        end)
+    end
+
+    return result
+end)
+
+return m

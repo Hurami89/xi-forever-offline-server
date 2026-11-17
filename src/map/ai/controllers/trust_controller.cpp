@@ -36,6 +36,7 @@
 #include "mob_spell_container.h"
 
 #include <algorithm>
+#include <optional>
 #include <cmath>
 
 namespace
@@ -239,7 +240,49 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
 
             PTrust->PAI->PathFind->LookAt(PTarget->loc.p);
 
-            switch (const int16 movementDistance = PTrust->getMobMod(xi::MobMod::TrustDistance))
+            // (squad thieves) local var SQUAD_FLANK, set by squad.lua: 1 = get behind the target for Sneak Attack,
+            // 2 = stand right behind the party member the target is fighting, for Trick Attack. While the mate is on
+            // its way there, the usual melee spacing below waits.
+            bool flanking = false;
+            if (const int32 flank = PTrust->GetLocalVar("SQUAD_FLANK"); flank != 0 && PTrust->GetSpeed() > 0)
+            {
+                std::optional<position_t> spot;
+                if (flank == 1 && !behind(PTrust->loc.p, PTarget->loc.p, 64))
+                {
+                    spot = nearPosition(PTarget->loc.p, RoamDistance * 0.8f, 3.14159265f);
+                }
+                else if (flank == 2)
+                {
+                    CBattleEntity* PTank = PTarget->GetBattleTarget();
+                    if (PTank != nullptr && PTank != PTrust && !PTank->isDead())
+                    {
+                        const float apart = distance(PTank->loc.p, PTarget->loc.p);
+                        if (apart > 0.5f && apart < 3.5f)
+                        {
+                            position_t p = PTank->loc.p;
+                            const float k = 0.7f / apart;
+                            p.x += (PTank->loc.p.x - PTarget->loc.p.x) * k;
+                            p.z += (PTank->loc.p.z - PTarget->loc.p.z) * k;
+                            spot = p;
+                        }
+                    }
+                }
+
+                if (spot && distance(PTrust->loc.p, *spot) > 0.6f)
+                {
+                    flanking = true;
+                    if (PTrust->PAI->PathFind->PathTo(*spot, PATHFLAG_RUN))
+                    {
+                        PTrust->PAI->PathFind->FollowPath(m_Tick);
+                    }
+                    else
+                    {
+                        PTrust->PAI->PathFind->StepTo(*spot, false);
+                    }
+                }
+            }
+
+            switch (const int16 movementDistance = flanking ? static_cast<int16>(TRUST_MOVEMENT_TYPE::NON_COMBAT) : PTrust->getMobMod(xi::MobMod::TrustDistance))
             {
                 case TRUST_MOVEMENT_TYPE::NO_MOVE:
                 {
@@ -286,9 +329,9 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
                 }
             }
 
-            if (!PTrust->PAI->PathFind->IsFollowingPath())
+            if (!PTrust->PAI->PathFind->IsFollowingPath() && PTrust->GetLocalVar("SQUAD_FLANK") == 0)
             {
-                Declump(PMaster, PTarget);
+                Declump(PMaster, PTarget); // (not a thief holding its spot behind the target or behind the tank)
             }
         }
 

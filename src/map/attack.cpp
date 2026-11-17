@@ -535,7 +535,7 @@ void CAttack::ProcessDamage()
     if (settings::get<bool>("map.ENABLE_AUTO_ATTACK_LUA"))
     {
         // Sneak attack.
-        if (m_attacker->GetMJob() == xi::Job::THF && m_isFirstSwing && m_attacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::SneakAttack) &&
+        if ((m_attacker->GetMJob() == xi::Job::THF || m_attacker->GetSJob() == xi::Job::THF) && m_isFirstSwing && m_attacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::SneakAttack) &&
             (behind(m_attacker->loc.p, m_victim->loc.p, 64) || m_attacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Hide) ||
              m_victim->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Doubt)))
         {
@@ -543,7 +543,7 @@ void CAttack::ProcessDamage()
         }
 
         // Trick attack.
-        if (m_attacker->GetMJob() == xi::Job::THF && m_isFirstSwing && m_attackRound->GetTAEntity() != nullptr)
+        if ((m_attacker->GetMJob() == xi::Job::THF || m_attacker->GetSJob() == xi::Job::THF) && m_isFirstSwing && m_attackRound->GetTAEntity() != nullptr)
         {
             m_isTA = true;
         }
@@ -593,7 +593,7 @@ void CAttack::ProcessDamage()
     }
 
     // Sneak attack.
-    if (m_attacker->GetMJob() == xi::Job::THF && m_isFirstSwing && m_attacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::SneakAttack) &&
+    if ((m_attacker->GetMJob() == xi::Job::THF || m_attacker->GetSJob() == xi::Job::THF) && m_isFirstSwing && m_attacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::SneakAttack) &&
         (behind(m_attacker->loc.p, m_victim->loc.p, 64) || m_attacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Hide) ||
          m_victim->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Doubt)))
     {
@@ -602,7 +602,7 @@ void CAttack::ProcessDamage()
     }
 
     // Trick attack.
-    if (m_attacker->GetMJob() == xi::Job::THF && m_isFirstSwing && m_attackRound->GetTAEntity() != nullptr)
+    if ((m_attacker->GetMJob() == xi::Job::THF || m_attacker->GetSJob() == xi::Job::THF) && m_isFirstSwing && m_attackRound->GetTAEntity() != nullptr)
     {
         m_bonusBasePhysicalDamage += static_cast<float>(m_attacker->AGI()) * (1.0f + std::max(m_attacker->getMod(xi::Mod::TRICK_ATK_AGI) / 100.0f, 0.f));
         m_isTA = true;

@@ -1305,6 +1305,23 @@ xi.squad.visitor = function(player)
     return coop.isGuest(player) == true
 end
 
+-- Exp: is this the player a mate earns through? A mate is paid once per kill (and once per finished page), on its own
+-- player's share, the way a player in the party is. Before 2026-11-17 every player-type member near the kill paid
+-- every mate again: double with a second character in the party, more with bot players.
+xi.squad.pays = function(player, mate)
+    local ownerId = 0
+    local master = mate:getMaster()
+    if type(master) == 'userdata' or type(master) == 'table' then -- (an entity; the stand-in tests use tables)
+        ownerId = master:getID()
+    end
+
+    if ownerId == 0 then
+        ownerId = mate:getLocalVar('MASTER_ID')
+    end
+
+    return ownerId ~= 0 and ownerId == player:getID()
+end
+
 local function chatClean(text)
     text = tostring(text or '')
     text = string.gsub(text, '[\r\n\t]', ' ')
@@ -1802,6 +1819,9 @@ local function callMate(player, mate)
         end
         if resyncSquad ~= nil then
             resyncSquad(mobArg)
+        end
+        if squadThiefTick ~= nil and mobArg:isAlive() and mobArg:getMaster() ~= nil then
+            pcall(squadThiefTick, mobArg)
         end
         chatTick(mobArg)
     end)
@@ -3773,8 +3793,52 @@ jobs[jobIds.RDM] =
     end,
 }
 
--- Thief: plain melee for now (the template's Despoil is not available in this era)
+-- Thief: Sneak Attack and Trick Attack are handled by squadThiefTick below (main THF or /THF), the rest is melee
 jobs[jobIds.THF] = {}
+
+-- Squad thieves (main or sub THF), every tick: Sneak Attack from behind the target, Trick Attack from behind
+-- whoever the target is fighting. SQUAD_FLANK tells the trust controller where to stand (1 behind the target,
+-- 2 behind the tank); it is cleared once the hit lands or the fight ends. (global: squad.lua is at the local limit)
+function squadThiefTick(mob)
+    local lvl = 0
+    if mob:getMainJob() == jobIds.THF then
+        lvl = mob:getMainLvl()
+    elseif mob:getSubJob() == jobIds.THF then
+        lvl = mob:getSubLvl()
+    end
+
+    local flank  = 0
+    local target = mob:isEngaged() and mob:getTarget() or nil
+    if lvl >= 15 and target ~= nil and target:isAlive() then
+        local tank     = target:getTarget()
+        local tanking  = tank ~= nil and tank:getID() == mob:getID() -- (the target faces us: no getting behind it)
+        local otherTank = tank ~= nil and not tanking and tank:isAlive()
+        local now      = os.time()
+        local tryJA    = now - mob:getLocalVar('SQUAD_THF_T') >= 3
+
+        if mob:hasStatusEffect(xi.effect.SNEAK_ATTACK) then
+            flank = tanking and 0 or 1
+        elseif mob:hasStatusEffect(xi.effect.TRICK_ATTACK) then
+            flank = (otherTank and mob:checkDistance(target) <= 4) and 2 or 0 -- (too far to swing from there: go in)
+        elseif not tanking and not mob:hasRecast(xi.recast.ABILITY, 64) then -- Sneak Attack ready
+            flank = 1
+            if tryJA and mob:isBehind(target) and mob:checkDistance(target) < 4 then
+                mob:setLocalVar('SQUAD_THF_T', now)
+                SquadUseAbility(mob:getMaster(), mob, xi.jobAbility.SNEAK_ATTACK)
+            end
+        elseif lvl >= 30 and otherTank and not mob:hasRecast(xi.recast.ABILITY, 66) then -- Trick Attack ready
+            flank = 2
+            if tryJA and mob:checkDistance(tank) < 2 and mob:checkDistance(target) <= 4 and target:checkDistance(tank) < target:checkDistance(mob) then
+                mob:setLocalVar('SQUAD_THF_T', now)
+                SquadUseAbility(mob:getMaster(), mob, xi.jobAbility.TRICK_ATTACK)
+            end
+        end
+    end
+
+    if mob:getLocalVar('SQUAD_FLANK') ~= flank then
+        mob:setLocalVar('SQUAD_FLANK', flank)
+    end
+end
 
 -- Paladin: Holy Circle 5, Sentinel 30; Flash and Cure come from the spell list
 jobs[jobIds.PLD] =
@@ -4461,8 +4525,8 @@ m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
     end
 
     for _, entry in ipairs(sharing) do
-        -- co-op: with a visitor in the party a mate is paid through its own player's share, not once per player
-        if xi.squad.mine(member, entry.mate) then
+        -- once per kill: on its own player's share (this runs for every player in the party near the kill)
+        if xi.squad.pays(member, entry.mate) then
             awardSquadExp(super, member, entry.mate, mob, shared, entry.squadId)
         end
     end
@@ -4470,13 +4534,14 @@ m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
     return result
 end)
 
--- Squad mates who are out with this player, alive and in the same zone: { { mate = entity, squadId = n }, ... }
+-- This player's own squad mates who are out, alive and in the same zone: { { mate = entity, squadId = n }, ... }
+-- (page exp: a second character finishing its page does not pay your mates a second time)
 local function activeMates(master)
     local out = {}
     for _, mate in pairs(master:getPartyWithTrusts()) do
         if mate:getObjType() == xi.objType.TRUST then
             local squadId = mate:getLocalVar('SQUAD_ID')
-            if squadId > 0 and mate:isAlive() and mate:getZoneID() == master:getZoneID() and xi.squad.mine(master, mate) then
+            if squadId > 0 and mate:isAlive() and mate:getZoneID() == master:getZoneID() and xi.squad.pays(master, mate) then
                 table.insert(out, { mate = mate, squadId = squadId })
             end
         end

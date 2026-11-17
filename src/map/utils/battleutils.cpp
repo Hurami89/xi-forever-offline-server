@@ -2533,7 +2533,7 @@ auto GetCritHitRate(CBattleEntity* PAttacker, CBattleEntity* PDefender, bool ign
     {
         return 100;
     }
-    else if (dynamic_cast<const CCharEntity*>(PAttacker) != nullptr && (!ignoreSneakTrickAttack) && PAttacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::SneakAttack))
+    else if ((dynamic_cast<const CCharEntity*>(PAttacker) != nullptr || dynamic_cast<const CTrustEntity*>(PAttacker) != nullptr) && (!ignoreSneakTrickAttack) && PAttacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::SneakAttack)) // (squad mates and trusts too, XI: Forever Offline)
     {
         const bool targetDoubted = PAttacker->GetMJob() == xi::Job::THF && PDefender->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Doubt);
         const bool isUnseen      = behind(PAttacker->loc.p, PDefender->loc.p, 64) || PAttacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Hide);
