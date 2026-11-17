@@ -256,7 +256,16 @@ auto CTrustEntity::ValidTarget(CBattleEntity* PInitiator, uint16 targetFlags) ->
 
     if (targetFlags & TARGET_PLAYER_PARTY && PInitiator->allegiance == allegiance && PMaster)
     {
-        return PInitiator->PParty == PMaster->PParty;
+        // FFXI Offline (co-op): a trust has no party of its own, it belongs to its master's. So the squad mate of
+        // another player in the same party is a party member too, and may heal and buff this one. (Stock: only
+        // trusts of the same master, above, so one player's healer never helped another player's squad mates.)
+        const auto* PInitiatorParty = PInitiator->PParty;
+        if (PInitiatorParty == nullptr && PInitiator->objtype == TYPE_TRUST && PInitiator->PMaster != nullptr)
+        {
+            PInitiatorParty = PInitiator->PMaster->PParty;
+        }
+
+        return PInitiatorParty == PMaster->PParty;
     }
 
     return CMobEntity::ValidTarget(PInitiator, targetFlags);

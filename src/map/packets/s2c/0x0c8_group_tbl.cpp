@@ -29,7 +29,7 @@
 #include "enums/party_kind.h"
 #include "utils/zoneutils.h"
 
-GP_SERV_COMMAND_GROUP_TBL::GP_SERV_COMMAND_GROUP_TBL(CParty* PParty, const bool loadTrust)
+GP_SERV_COMMAND_GROUP_TBL::GP_SERV_COMMAND_GROUP_TBL(CParty* PParty, const bool loadTrust, const CCharEntity* PTrustsFor)
 {
     auto& packet = this->data();
 
@@ -83,6 +83,42 @@ GP_SERV_COMMAND_GROUP_TBL::GP_SERV_COMMAND_GROUP_TBL(CParty* PParty, const bool 
             {
                 for (const auto* PTrust : PLeader->PTrusts)
                 {
+                    packet.GroupTbl[i].UniqueNo          = PTrust->id;
+                    packet.GroupTbl[i].ActIndex          = PTrust->targid;
+                    packet.GroupTbl[i].PartyNo           = 0; // Trusts are in main party
+                    packet.GroupTbl[i].PartyLeaderFlg    = 0;
+                    packet.GroupTbl[i].AllianceLeaderFlg = 0;
+                    packet.GroupTbl[i].PartyRFlg         = 0;
+                    packet.GroupTbl[i].AllianceRFlg      = 0;
+                    packet.GroupTbl[i].unknown06         = 0;
+                    packet.GroupTbl[i].unknown07         = 0;
+                    packet.GroupTbl[i].ZoneNo            = static_cast<uint16>(PTrust->getZone());
+                    i++;
+                }
+            }
+        }
+
+        // FFXI Offline (co-op): the trusts (squad mates) of the members other than the leader, when they are in the
+        // zone of the player this packet goes to. Without this only the leader's trusts are party members for
+        // the game client. (CParty::ReloadParty passes PTrustsFor only when such trusts are out.)
+        if (PTrustsFor != nullptr)
+        {
+            const auto* PLeader = PParty->GetLeader();
+            for (const auto* PMember : PParty->members)
+            {
+                const auto* PCharMember = dynamic_cast<const CCharEntity*>(PMember);
+                if (PCharMember == nullptr || PMember == PLeader || PCharMember->getZone() != PTrustsFor->getZone())
+                {
+                    continue;
+                }
+
+                for (const auto* PTrust : PCharMember->PTrusts)
+                {
+                    if (i >= std::size(packet.GroupTbl))
+                    {
+                        break;
+                    }
+
                     packet.GroupTbl[i].UniqueNo          = PTrust->id;
                     packet.GroupTbl[i].ActIndex          = PTrust->targid;
                     packet.GroupTbl[i].PartyNo           = 0; // Trusts are in main party

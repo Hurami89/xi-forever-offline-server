@@ -24,6 +24,7 @@
 #include "base.h"
 
 enum class PartyKind : uint8_t;
+class CCharEntity;
 class CParty;
 
 struct GROUP_TBL
@@ -54,5 +55,7 @@ public:
         GROUP_TBL GroupTbl[20]; // PS2: GroupTbl
     };
 
-    GP_SERV_COMMAND_GROUP_TBL(CParty* PParty, bool loadTrust = false);
+    // FFXI Offline (co-op): PTrustsFor = the player this packet goes to, when members other than the leader have
+    // trusts (squad mates) out; their trusts in that player's zone are then listed after the leader's.
+    GP_SERV_COMMAND_GROUP_TBL(CParty* PParty, bool loadTrust = false, const CCharEntity* PTrustsFor = nullptr);
 };

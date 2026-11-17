@@ -886,6 +886,20 @@ void CParty::ReloadParty()
             trustCount = static_cast<CCharEntity*>(PLeader)->PTrusts.size();
         }
 
+        // FFXI Offline (co-op): do members other than the leader have trusts (squad mates) out? Stock only knows
+        // the leader's, so the squad mates of a second player were in nobody's party list. While only the leader
+        // has trusts out, everything below is sent exactly as before.
+        bool othersHaveTrusts = false;
+        for (const auto* PMember : members)
+        {
+            const auto* PCharMember = dynamic_cast<const CCharEntity*>(PMember);
+            if (PCharMember != nullptr && PMember != PLeader && !PCharMember->PTrusts.empty())
+            {
+                othersHaveTrusts = true;
+                break;
+            }
+        }
+
         // regular party
         for (auto& member : members)
         {
@@ -895,7 +909,7 @@ void CParty::ReloadParty()
             PChar->PLatentEffectContainer->CheckLatentsPartyMembers(members.size(), trustCount);
             PChar->PLatentEffectContainer->CheckLatentsPartyAvatar();
             PChar->ReloadPartyDec();
-            PChar->pushPacket<GP_SERV_COMMAND_GROUP_TBL>(this, PLeader && PChar->getZone() == PLeader->getZone());
+            PChar->pushPacket<GP_SERV_COMMAND_GROUP_TBL>(this, PLeader && PChar->getZone() == PLeader->getZone(), othersHaveTrusts ? PChar : nullptr);
             // auto effects = std::make_unique<GP_SERV_COMMAND_GROUP_EFFECTS>();
             uint8 j = 0;
             for (auto&& memberinfo : info)
@@ -906,8 +920,9 @@ void CParty::ReloadParty()
                     PChar->pushPacket<GP_SERV_COMMAND_GROUP_LIST>(PPartyMember, j, memberinfo.flags, PChar->getZone());
 
                     // Inject the party leader's trusts into the party list
+                    // (FFXI Offline: only while no other member has trusts out; otherwise they are listed below)
                     CBattleEntity* PLeader = GetLeader();
-                    if (PLeader != nullptr)
+                    if (PLeader != nullptr && !othersHaveTrusts)
                     {
                         for (auto* PTrust : static_cast<CCharEntity*>(PLeader)->PTrusts)
                         {
@@ -923,6 +938,37 @@ void CParty::ReloadParty()
                     PChar->pushPacket<GP_SERV_COMMAND_GROUP_LIST>(memberinfo.id, memberinfo.name, memberinfo.flags, j, zoneid);
                 }
                 j++;
+            }
+
+            // FFXI Offline (co-op): another member has trusts (squad mates) out too. Every trust in this player's
+            // zone is then listed once, after the players and in the order of the party table sent above
+            // (GP_SERV_COMMAND_GROUP_TBL): the leader's, then the other members'. Players and trusts together
+            // never pass six (IsFull, and the squad's own check), so the numbers stay within the list.
+            if (othersHaveTrusts)
+            {
+                const auto listTrusts = [&](const CBattleEntity* PMember)
+                {
+                    const auto* PCharMember = dynamic_cast<const CCharEntity*>(PMember);
+                    if (PCharMember == nullptr || PCharMember->getZone() != PChar->getZone())
+                    {
+                        return;
+                    }
+
+                    for (auto* PTrust : PCharMember->PTrusts)
+                    {
+                        PChar->pushPacket<GP_SERV_COMMAND_GROUP_LIST>(PTrust, j);
+                        j++;
+                    }
+                };
+
+                listTrusts(PLeader);
+                for (const auto* PMember : members)
+                {
+                    if (PMember != PLeader)
+                    {
+                        listTrusts(PMember);
+                    }
+                }
             }
         }
     }
