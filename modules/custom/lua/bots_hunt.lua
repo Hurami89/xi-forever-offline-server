@@ -471,7 +471,9 @@ local function fightTurn(bot, h, target)
             h.attacking = BotAttack(id, target) and target:getID() or nil
         end
 
-        BotFollow(id, target, MELEE_STOP)
+        if not (xi.bots.thiefTurn and xi.bots.thiefTurn(bot, target)) then
+            BotFollow(id, target, MELEE_STOP)
+        end
     end
 
     -- the server only lets a character swing at, weapon skill or cast on something it faces

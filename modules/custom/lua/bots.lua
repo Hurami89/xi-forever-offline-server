@@ -43,6 +43,83 @@ xi.bots.isCasting = function(bot)
     return ok and action == xi.action.MAGIC_CASTING
 end
 
+-- Thief bots (THF main or sub, like squad mates): Sneak Attack from behind the monster (THF 15), Trick Attack from
+-- right behind whoever the monster is fighting (THF 30). Called in place of the plain melee follow; returns true
+-- when it moved the bot itself (the caller then skips its BotFollow).
+local thiefSpots = {}
+xi.bots.thiefTurn = function(bot, target)
+    if type(BotMoveTo) ~= 'function' or type(BotAbility) ~= 'function' or target == nil or not target:isAlive() then
+        return false
+    end
+
+    local lvl = 0
+    if bot:getMainJob() == xi.job.THF then
+        lvl = bot:getMainLvl()
+    elseif bot:getSubJob() == xi.job.THF then
+        lvl = bot:getSubLvl()
+    end
+
+    if lvl < 15 or xi.bots.isCasting(bot) then
+        return false
+    end
+
+    local id      = bot:getID()
+    local tank    = target:getTarget()
+    local tanking = tank ~= nil and tank:getID() == id -- (it faces us: no getting behind it)
+    local other   = tank ~= nil and not tanking and tank:isAlive() and tank:getZoneID() == bot:getZoneID()
+    local tp      = target:getPos()
+    local spot, use
+
+    local saReady = not bot:hasRecast(xi.recast.ABILITY, 64)
+    local taReady = lvl >= 30 and not bot:hasRecast(xi.recast.ABILITY, 66)
+    if not tanking and (bot:hasStatusEffect(xi.effect.SNEAK_ATTACK) or saReady) then
+        if bot:isBehind(target) and bot:checkDistance(target) < 3.5 then
+            use = (saReady and not bot:hasStatusEffect(xi.effect.SNEAK_ATTACK)) and xi.jobAbility.SNEAK_ATTACK or nil
+        else
+            local rad = (tp.rot / 256) * 2 * math.pi + math.pi
+            spot = { x = tp.x + math.cos(2 * math.pi - rad) * 1.2, y = tp.y, z = tp.z + math.sin(2 * math.pi - rad) * 1.2 }
+        end
+    elseif other and (bot:hasStatusEffect(xi.effect.TRICK_ATTACK) or taReady) then
+        local kp    = tank:getPos()
+        local apart = math.sqrt((kp.x - tp.x) ^ 2 + (kp.z - tp.z) ^ 2)
+        if apart < 0.5 or apart > 3.5 then
+            return false -- (the tank is not next to it: just fight)
+        end
+
+        local want = { x = kp.x + (kp.x - tp.x) * 0.7 / apart, y = kp.y, z = kp.z + (kp.z - tp.z) * 0.7 / apart }
+        local bp   = bot:getPos()
+        if (bp.x - want.x) ^ 2 + (bp.z - want.z) ^ 2 > 0.6 * 0.6 then
+            spot = want
+        elseif taReady and not bot:hasStatusEffect(xi.effect.TRICK_ATTACK) then
+            use = xi.jobAbility.TRICK_ATTACK
+        end
+    else
+        thiefSpots[id] = nil
+        return false
+    end
+
+    if use then
+        local last = thiefSpots[id]
+        if not last or os.time() - (last.ja or 0) >= 3 then
+            thiefSpots[id] = { ja = os.time() }
+            BotAbility(id, use, bot)
+        end
+        return true -- (standing where it should: stay put)
+    end
+
+    if spot then
+        local last = thiefSpots[id]
+        local moved = not last or not last.x or (last.x - spot.x) ^ 2 + (last.z - spot.z) ^ 2 > 1
+        if moved or not BotIsMoving(id) then
+            thiefSpots[id] = { x = spot.x, z = spot.z, ja = last and last.ja }
+            BotMoveTo(id, spot.x, spot.y, spot.z)
+        end
+        return true
+    end
+
+    return true -- (behind it with Sneak Attack up, or holding the Trick Attack spot)
+end
+
 -- (bots.cpp registers BotList & co. AFTER the Lua modules load, so this is checked when a command is used)
 local function moduleBuilt()
     return type(BotList) == 'function'
@@ -428,7 +505,9 @@ think = function(bot, token)
                     st.attacking = BotAttack(id, target) and target:getID() or nil
                 end
 
-                BotFollow(id, target, MELEE_STOP)
+                if not xi.bots.thiefTurn(bot, target) then
+                    BotFollow(id, target, MELEE_STOP)
+                end
                 -- the server only lets a character swing at (or weapon skill) something it faces
                 if not BotIsMoving(id) then
                     pcall(function()
