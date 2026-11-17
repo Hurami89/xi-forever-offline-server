@@ -26,6 +26,20 @@ require('scripts/globals/npc_util')
 -----------------------------------
 local m = Module:new('crystalboy_quests')
 
+-- Bags (the launcher's "Full bags from the start", storage_config.lua; missing = on). On: every bag opens at 80 at log
+-- in. Off: the classic way, 30 slots and +5 for each Gobbiebag part (the Crystal Boy parts still give their items).
+-- (one table, not more file-level locals: kept small on purpose)
+local bags =
+{
+    full = function()
+        local ok, cfg = pcall(require, 'modules/custom/lua/storage_config')
+        return not (ok and type(cfg) == 'table' and cfg.full_bags == false)
+    end,
+
+    all = { 'INVENTORY', 'MOGSAFE', 'MOGSATCHEL', 'MOGSACK', 'MOGCASE', 'WARDROBE', 'WARDROBE2', 'WARDROBE3', 'WARDROBE4',
+            'WARDROBE5', 'WARDROBE6', 'WARDROBE7', 'WARDROBE8' },
+}
+
 local CRYSTAL_BOY = 8100
 
 -- Rewards for finishing a Recollection (a Game Boy game) in the Crystal Boy, handed over by Bluffnix once per character.
@@ -365,6 +379,20 @@ local function bluffnixPlan(player)
         end
     end
 
+    if not bags.full() then
+        for _, p in ipairs(parts) do
+            if not p.reward then
+                local st = statusOf(player, p)
+                if st == xi.questStatus.QUEST_ACCEPTED or (st == xi.questStatus.QUEST_AVAILABLE and
+                    player:hasCompletedQuest(xi.questLog.JEUNO, questId(p.prev)) and
+                    player:getContainerSize(xi.inv.INVENTORY) == p.size)
+                then
+                    return nil -- (the game's own part answers)
+                end
+            end
+        end
+    end
+
     local pending, done
     for k, p in ipairs(parts) do
         local r = p.recollection and RECOLLECTIONS[p.recollection]
@@ -437,6 +465,7 @@ local function buildSections(quest, p, partNo)
                         player:confirmTrade()
                         quest:complete(player)
                         speak(player, words.finish)
+                        bags.grow(player) -- (classic bags: the part's +5 as well)
                     end
                 else
                     speak(player, words.remind)
@@ -475,25 +504,63 @@ local function buildSections(quest, p, partNo)
     }
 end
 
--- The 80-slot bags this module is built around: the launcher sets START_INVENTORY = 80 for new characters, and a
--- character made before that (30 slots, as the Gobbiebag quests here no longer add space) is brought up to 80 at log in.
--- The Mog Satchel follows once you have one. (Fixed 2026-11-16: a new world had 30-slot bags and no way to grow them.)
-local FULL_BAG = 80
+-- Bags at log in. Full bags (the default): every bag is opened at 80 (inventory, Mog Safe, Satchel, Sack, Case and the
+-- eight Mog Wardrobes; the Mog Locker keeps its rental). Classic: the inventory (and Satchel) get the +5 for every
+-- Gobbiebag part already done, so a character that finished parts while bags were full, or before this, isn't short.
+-- Bags never shrink. (2026-11-17, the user's rule; 2026-11-16: a new world had 30-slot bags and no way to grow them.)
+bags.grow = function(player)
+    local size = player:getContainerSize(xi.inv.INVENTORY)
+    if size <= 0 or size >= 80 then
+        return
+    end
+
+    player:changeContainerSize(xi.inv.INVENTORY, 5)
+    if player:getContainerSize(xi.inv.MOGSATCHEL) > 0 then
+        player:changeContainerSize(xi.inv.MOGSATCHEL, 5)
+    end
+
+    player:printToPlayer(string.format('Your inventory now holds %d items.', player:getContainerSize(xi.inv.INVENTORY)), xi.msg.channel.SYSTEM_3)
+end
+
 m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     local result = super(player, firstLogin, zoning)
     if zoning or (BotIsBot and BotIsBot(player:getID())) then
         return result
     end
 
-    local size = player:getContainerSize(xi.inv.INVENTORY)
-    if size > 0 and size < FULL_BAG then
-        player:changeContainerSize(xi.inv.INVENTORY, FULL_BAG - size)
-        player:printToPlayer(string.format('Your inventory now holds %d items.', FULL_BAG), xi.msg.channel.SYSTEM_3)
-    end
+    if bags.full() then
+        local opened = false
+        for _, name in ipairs(bags.all) do
+            local loc  = xi.inv[name]
+            local size = loc and player:getContainerSize(loc) or 80
+            if size < 80 then
+                player:changeContainerSize(loc, 80 - size)
+                opened = true
+            end
+        end
 
-    local satchel = player:getContainerSize(xi.inv.MOGSATCHEL)
-    if satchel > 0 and satchel < FULL_BAG then
-        player:changeContainerSize(xi.inv.MOGSATCHEL, FULL_BAG - satchel)
+        if opened then
+            player:printToPlayer('Your bags are all open at 80 slots: inventory, Mog Safe, Satchel, Sack, Case and Wardrobes.', xi.msg.channel.SYSTEM_3)
+        end
+    else
+        local done = 0
+        for _, p in ipairs(parts) do
+            if player:hasCompletedQuest(xi.questLog.JEUNO, questId(p.quest)) then
+                done = done + 1
+            end
+        end
+
+        local want = math.min(80, 30 + 5 * done)
+        local size = player:getContainerSize(xi.inv.INVENTORY)
+        if size > 0 and size < want then
+            player:changeContainerSize(xi.inv.INVENTORY, want - size)
+            local satchel = player:getContainerSize(xi.inv.MOGSATCHEL)
+            if satchel > 0 and satchel < want then
+                player:changeContainerSize(xi.inv.MOGSATCHEL, want - satchel)
+            end
+
+            player:printToPlayer(string.format('Your inventory now holds %d items (your Gobbiebag quests).', want), xi.msg.channel.SYSTEM_3)
+        end
     end
 
     return result
@@ -502,10 +569,13 @@ end)
 m:addOverride('xi.server.onServerStart', function()
     super()
 
+    local full = bags.full()
     for partNo, p in ipairs(parts) do
-        xi.module.modifyInteractionEntry('scripts/quests/jeuno/' .. p.file, function(quest)
-            quest.sections = buildSections(quest, p, partNo)
-        end)
+        if full or p.reward then -- (classic bags: parts VI-X stay the game's own bag quests)
+            xi.module.modifyInteractionEntry('scripts/quests/jeuno/' .. p.file, function(quest)
+                quest.sections = buildSections(quest, p, partNo)
+            end)
+        end
     end
 end)
 
