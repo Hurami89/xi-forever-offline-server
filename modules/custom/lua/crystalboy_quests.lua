@@ -475,6 +475,30 @@ local function buildSections(quest, p, partNo)
     }
 end
 
+-- The 80-slot bags this module is built around: the launcher sets START_INVENTORY = 80 for new characters, and a
+-- character made before that (30 slots, as the Gobbiebag quests here no longer add space) is brought up to 80 at log in.
+-- The Mog Satchel follows once you have one. (Fixed 2026-11-16: a new world had 30-slot bags and no way to grow them.)
+local FULL_BAG = 80
+m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
+    local result = super(player, firstLogin, zoning)
+    if zoning or (BotIsBot and BotIsBot(player:getID())) then
+        return result
+    end
+
+    local size = player:getContainerSize(xi.inv.INVENTORY)
+    if size > 0 and size < FULL_BAG then
+        player:changeContainerSize(xi.inv.INVENTORY, FULL_BAG - size)
+        player:printToPlayer(string.format('Your inventory now holds %d items.', FULL_BAG), xi.msg.channel.SYSTEM_3)
+    end
+
+    local satchel = player:getContainerSize(xi.inv.MOGSATCHEL)
+    if satchel > 0 and satchel < FULL_BAG then
+        player:changeContainerSize(xi.inv.MOGSATCHEL, FULL_BAG - satchel)
+    end
+
+    return result
+end)
+
 m:addOverride('xi.server.onServerStart', function()
     super()
 
