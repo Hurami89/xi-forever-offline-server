@@ -911,6 +911,15 @@ void LoadLuaObjectFromFile(const std::string& filename, bool overwriteCurrentEnt
     // throw away warm cache across every zone load. Genuine script *changes* are handled by the
     // filewatcher (see ReloadFilewatchList), which clears the cache when a file is edited.
 
+    // (XI: Forever Offline) no script file has a non-ASCII name, and building a path from one (the mannequin items,
+    // "hume_\u2642_mannequin") goes through the Windows code page and throws on Asian system locales: the map server
+    // stopped at "loading items" (JO). Such a name has no script, so stop here.
+    if (std::ranges::any_of(filename, [](const char c) { return static_cast<unsigned char>(c) >= 0x80; }))
+    {
+        ShowTrace("luautils::LoadLuaObjectFromFile: Skipped non-ASCII file name: %s", filename);
+        return;
+    }
+
     const auto path = std::filesystem::path(filename);
     if (path.empty() || path.extension().empty())
     {

@@ -522,7 +522,7 @@ local function jobLevel(mate, job)
 end
 
 -- Main level is the main job's own level. The sub job works once YOU have support jobs (your quest, or main level
--- SUB_UNLOCK_LEVEL), at any mate level, like retail:
+-- SUB_UNLOCK_LEVEL), or once any of the mate's own jobs has reached SUB_UNLOCK_LEVEL, at any mate level:
 -- its level is half the main level, but never higher than the sub job's own level.
 -- cap: the highest main level allowed (level sync to your character); nil = the mate's own level
 local function levelsFor(mate, cap, player)
@@ -534,6 +534,12 @@ local function levelsFor(mate, cap, player)
     local subLevel = 0
 
     local unlocked = main >= SUB_UNLOCK_LEVEL
+    for _, info in pairs(mate.jobs or {}) do -- (any of the mate's own jobs at 18 or more unlocks it for good, Yache)
+        if not unlocked and type(info) == 'table' and (info.level or 0) >= SUB_UNLOCK_LEVEL then
+            unlocked = true
+        end
+    end
+
     if not unlocked and player ~= nil then
         local ok, has = pcall(function()
             return player:hasJob(0) or player:getMainLvl() >= SUB_UNLOCK_LEVEL -- (bit 0 of the unlocked jobs: support jobs)

@@ -262,6 +262,10 @@ auto validateCharacterName(const std::string& name) -> Maybe<std::string>
         return "Invalid name length.";
     }
 
+    // (XI: Forever Offline) a deleted character (accid 0) no longer holds its name: it is renamed to _<charid> (never a
+    // valid name, so nothing can clash), and the name is free for a new character.
+    db::preparedStmt("UPDATE chars SET charname = CONCAT('_', charid) WHERE charname LIKE ? AND accid = 0", name);
+
     // Check if the name is already in use by another character
     const auto rset0 = db::preparedStmt("SELECT charname FROM chars WHERE charname LIKE ?", name);
     if (!rset0)

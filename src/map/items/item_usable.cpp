@@ -29,6 +29,10 @@ CItemUsable::CItemUsable(uint16 id)
 , m_AnimationTime(0s)
 , m_ActivationTime(0s)
 , m_ReuseDelay(0s)
+// (XI: Forever Offline) a never-used item counts as used long ago. The default was the clock's zero point, which on a
+// steady clock is when the PC booted, so a new Empress Band showed (and enforced) "16 h minus the PC's uptime" of reuse
+// on a home PC. 30 days back is longer than any item's reuse time.
+, m_LastUseTime(timer::now() - std::chrono::hours(24 * 30))
 {
     setType(ITEM_USABLE);
 }
