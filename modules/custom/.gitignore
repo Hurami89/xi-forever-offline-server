@@ -16,3 +16,6 @@ lua/crowds_config.lua
 lua/squad_config.lua
 lua/era_exp_config.lua
 lua/crowds_chat_ai.lua
+# co-op: written by the launcher (this world's name; lines for the players in the game)
+lua/coop_config.lua
+lua/coop_in.txt

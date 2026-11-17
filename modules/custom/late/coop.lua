@@ -1,0 +1,181 @@
+-----------------------------------
+-- Co-op (XI: Forever Offline, 2026-11-16): visitors from a friend's world
+--
+-- The launcher's CO-OP page brings a friend's character into this world on a guest account (launcher_passport.py puts
+-- the character variable COOP_GUEST = 1 on it) and takes it home again later. This script is the server's small part:
+--   * a visitor is told where it is and how to go home when it logs in;
+--   * a visitor cannot use the commands that belong to the owner of the world (!bots on/off/online..., !crowd ...)
+--     and cannot use !squad yet (squad mates stay home in this version);
+--   * lines the launcher writes to modules/custom/lua/coop_in.txt ("<time>|<number>|SAY|<text>") are shown to
+--     everyone within a few seconds ("... is visiting this world", "This world closes in a minute"); a line
+--     "<time>|<number>|BOTS|<n>" changes how many bot players are online, like !bots online <n>.
+-- Nothing here runs for a world that never has visitors, apart from one small file check every few seconds.
+-- Loaded from custom/late (the last line of modules/init.txt). Lua only: a server restart is enough.
+-----------------------------------
+require('modules/module_utils')
+-----------------------------------
+local m = Module:new('coop')
+
+xi = xi or {}
+xi.coop = xi.coop or {}
+
+local IN_FILE = 'modules/custom/lua/coop_in.txt'
+local CHECK_EVERY = 4       -- seconds between looks at the launcher's file
+local FRESH = 90            -- a line older than this many seconds was for an earlier session
+
+local config = { hosting = false, world = 'this world' }
+do
+    local chunk = loadfile('modules/custom/lua/coop_config.lua')      -- written by the launcher at every PLAY
+    if chunk then
+        local ok, value = pcall(chunk)
+        if ok and type(value) == 'table' then
+            config.hosting = value.hosting == true
+            if type(value.world) == 'string' and value.world ~= '' then
+                config.world = value.world
+            end
+        end
+    end
+end
+
+local function tell(player, text)
+    player:printToPlayer(text, xi.msg.channel.SYSTEM_3)
+end
+
+local function isBot(player)
+    return BotIsBot ~= nil and BotIsBot(player:getID())
+end
+
+xi.coop.isGuest = function(player)
+    return player ~= nil and player:getObjType() == xi.objType.PC and player:getCharVar('COOP_GUEST') == 1
+end
+
+-- what a visitor may still do with the owner's commands (everything else in them changes the world)
+local allowed =
+{
+    bots  = { [''] = true, list = true, news = true, where = true, invites = true, parties = true, invite = true, come = true },
+    crowd = { [''] = true, status = true },
+}
+
+-- asked for by the squad panel and menu addons every few seconds: closed to a visitor without a word
+local quiet =
+{
+    squad = { panel = true, sheet = true },
+}
+
+local refusal =
+{
+    squad = 'Squad mates cannot travel yet: yours are waiting for you at home.',
+    bots  = 'Only the owner of this world can change its bot players.',
+    crowd = 'Only the owner of this world can change its crowds.',
+}
+
+-- Called first thing by !squad, !bots and !crowd. True = the command stops here (the visitor has been told why).
+xi.coop.blockGuest = function(player, command, action)
+    if not xi.coop.isGuest(player) then
+        return false
+    end
+
+    action = string.lower(tostring(action or ''))
+    local list = allowed[command]
+    if list and list[action] then
+        return false
+    end
+
+    if quiet[command] and quiet[command][action] then
+        return true
+    end
+
+    tell(player, refusal[command] or 'Visitors cannot use that command in a friend\'s world.')
+    return true
+end
+
+-----------------------------------
+-- Lines from the launcher
+-----------------------------------
+local seen = {}
+local seenCount = 0
+local nextLook = 0
+local watching = {}          -- [character id] = the number of that character's current watch loop
+
+local function readLines(player)
+    local handle = io.open(IN_FILE, 'r')
+    if not handle then
+        return
+    end
+
+    local text = handle:read('*a') or ''
+    handle:close()
+
+    local now = os.time()
+    for line in string.gmatch(text, '[^\r\n]+') do
+        local stamp, _, kind, body = string.match(line, '^(%d+)|(%d+)|(%u+)|(.*)$')
+        if stamp and not seen[line] then
+            seen[line] = true
+            seenCount = seenCount + 1
+            if kind == 'SAY' and body ~= '' and now - tonumber(stamp) <= FRESH then
+                local ok = pcall(function()
+                    player:printToArea(body, xi.msg.channel.SYSTEM_3, xi.msg.area.SYSTEM, '', false)
+                end)
+                if not ok then
+                    tell(player, body)
+                end
+
+                print('[coop] ' .. body)
+            elseif kind == 'BOTS' and now - tonumber(stamp) <= FRESH then
+                -- the owner moved "Bots online right now" on the launcher's CO-OP page
+                if xi.bots and xi.bots.setOnline and xi.bots.setOnline(body) then
+                    print('[coop] bots online at a time: ' .. tostring(body))
+                end
+            end
+        end
+    end
+
+    if seenCount > 400 then
+        seen, seenCount = {}, 0
+        for line in string.gmatch(text, '[^\r\n]+') do
+            seen[line] = true
+            seenCount = seenCount + 1
+        end
+    end
+end
+
+local function watch(player, number)
+    player:timer(CHECK_EVERY * 1000, function(playerArg)
+        if watching[playerArg:getID()] ~= number then
+            return -- a newer loop took over (the character changed area)
+        end
+
+        if os.time() >= nextLook then
+            nextLook = os.time() + CHECK_EVERY - 1
+            local ok, err = pcall(readLines, playerArg)
+            if not ok then
+                print('[coop] could not read ' .. IN_FILE .. ': ' .. tostring(err))
+            end
+        end
+
+        watch(playerArg, number)
+    end)
+end
+
+m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
+    local result = super(player, firstLogin, zoning)
+
+    if player:getObjType() == xi.objType.PC and not isBot(player) then
+        local id = player:getID()
+        watching[id] = (watching[id] or 0) + 1
+        watch(player, watching[id])
+
+        if not zoning and xi.coop.isGuest(player) then
+            player:timer(5000, function(playerArg)
+                tell(playerArg, string.format('You are visiting %s. Everything you earn here goes home with you.', config.world))
+                tell(playerArg, 'To go home: log out, then press COME HOME in your launcher.')
+            end)
+        end
+    end
+
+    return result
+end)
+
+print(string.format('[coop] ready (%s)', config.hosting and ('hosting ' .. config.world) or 'not hosting'))
+
+return m

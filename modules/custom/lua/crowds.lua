@@ -778,6 +778,11 @@ local crowdCommand = {}
 crowdCommand.cmdprops = { permission = 0, parameters = 'sss' } -- single-player server: your own character may use it
 
 crowdCommand.onTrigger = function(player, action, arg1)
+    -- co-op: a visitor from a friend's world cannot use the owner's commands (modules/custom/late/coop.lua)
+    if xi.coop and xi.coop.blockGuest and xi.coop.blockGuest(player, 'crowd', action) then
+        return
+    end
+
     local zone = player:getZone()
     local zoneId = player:getZoneID()
     action = string.lower(action or '')

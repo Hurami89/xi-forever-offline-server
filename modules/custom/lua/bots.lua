@@ -1107,6 +1107,11 @@ local cmd = {}
 cmd.cmdprops = { permission = 0, parameters = 'ssss' }
 
 cmd.onTrigger = function(player, action, a1, a2, a3)
+    -- co-op: a visitor from a friend's world cannot use the owner's commands (modules/custom/late/coop.lua)
+    if xi.coop and xi.coop.blockGuest and xi.coop.blockGuest(player, 'bots', action) then
+        return
+    end
+
     if not moduleBuilt() then
         tell(player, 'The bot module is not built yet: run the rebuild (rebuild.ps1 -Reconfigure), then STOP and PLAY.')
         return
@@ -1380,6 +1385,18 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
 end
 
 xi.module.registerCommand('bots', cmd)
+
+-- co-op: the launcher's CO-OP page lowers (or raises) how many bots are online while friends are visiting, without a
+-- restart (modules/custom/late/coop.lua reads its request). The same as !bots online <n>.
+xi.bots.setOnline = function(n)
+    n = tonumber(n)
+    if not (life and n) then
+        return false
+    end
+
+    life.config().online = math.max(0, math.min(550, math.floor(n)))
+    return true
+end
 
 -----------------------------------
 -- party chat orders: "follow", "stay", "attack", "stop" (from a real player in the bot's party)

@@ -2073,6 +2073,11 @@ local function save(player, mate)
 end
 
 commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
+    -- co-op: a visitor from a friend's world cannot use the owner's commands (modules/custom/late/coop.lua)
+    if xi.coop and xi.coop.blockGuest and xi.coop.blockGuest(player, 'squad', action) then
+        return
+    end
+
     local charId = player:getID()
     if action ~= 'panel' and action ~= 'sheet' then
         print(string.format('[squad] %s: !squad %s %s %s', player:getName(), tostring(action or ''), tostring(arg1 or ''), tostring(arg2 or '')))
