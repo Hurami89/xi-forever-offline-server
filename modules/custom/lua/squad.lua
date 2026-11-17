@@ -1140,6 +1140,9 @@ local STARTER_MARK = 255
 
 -- How long to wait between squad mates when they are all called at once (milliseconds)
 local CALL_GAP_MS = 1500
+RECALL_WAIT_MS = 4000 -- (global: 200-local limit) after sending mates off, wait this long before calling them again: a mate
+                      -- called back at once can show up in plain clothes (the game still has the old one on screen)
+ZONE_WAIT_MS = 7000   -- after zoning: the game is still loading the area for a few seconds
 NEW_MATE_MAX_LEVEL = 12   -- (global: this file is near Lua's 200-local limit) the highest level a new mate may start at
 
 -- The basic level 1 sets come from squad_starter_gear.lua (build_starter_gear.py writes it from your database): the game's own
@@ -1947,7 +1950,7 @@ resyncSquad = function(mob)
         say(master, string.format('Your squad matches your level (%d).', cap))
     end
     for index, mate in ipairs(again) do
-        master:timer(index * CALL_GAP_MS, function(entity)
+        master:timer(RECALL_WAIT_MS + (index - 1) * CALL_GAP_MS, function(entity)
             callMate(entity, mate)
         end)
     end
@@ -2005,6 +2008,18 @@ xi.squad.onAbilityCommand = function(player, trust, abilityName, result, ability
     trust:timer(1000, again)
 end
 
+-- One-of-a-kind gear (squad_copy_items.lua: quest, mission and artifact pieces you can only get once): the squad gets
+-- its own copy and you keep yours. Anything you can buy or get again is taken as before.
+squadCopyItems = nil -- (globals: 200-local limit)
+isRareItem = function(itemId)
+    if squadCopyItems == nil then
+        local ok, list = pcall(require, 'modules/custom/lua/squad_copy_items')
+        squadCopyItems = (ok and type(list) == 'table') and list or {}
+    end
+
+    return squadCopyItems[itemId] ~= nil
+end
+
 xi.squad.onTrade = function(player, trust, items)
     local who = trust:getPacketName()
     -- the squad belongs to the trust's master; the items come from whoever traded (maybe the dualbox character)
@@ -2028,6 +2043,12 @@ xi.squad.onTrade = function(player, trust, items)
             speak(player, who, 'cannotuse')
         elseif unlocked[offer.itemId] then
             speak(player, who, 'alreadyhave', { item = prettyItem(info.name) })
+        elseif isRareItem(offer.itemId) then
+            UnlockSquadItem(owner:getID(), offer.itemId) -- (you keep it: Rare)
+            unlocked[offer.itemId] = true
+            took = took + 1
+            speak(player, who, 'thanks', { item = prettyItem(info.name) })
+            player:printToPlayer(string.format('%s is one of a kind: the squad gets its own and you keep yours.', prettyItem(info.name)))
         elseif player:delItemAt(offer.itemId, 1, xi.inv.INVENTORY, offer.slot) then
             UnlockSquadItem(owner:getID(), offer.itemId)
             unlocked[offer.itemId] = true
@@ -2631,7 +2652,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
 
         player:clearTrusts()
         for index, mate in ipairs(out) do
-            player:timer(index * CALL_GAP_MS, function(entity)
+            player:timer(RECALL_WAIT_MS + (index - 1) * CALL_GAP_MS, function(entity)
                 callMate(entity, mate)
             end)
         end
@@ -2663,6 +2684,12 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
 
         if not player:hasItem(itemId) then
             say(player, string.format('You do not have %s with you.', info.name))
+            return
+        end
+
+        if isRareItem(itemId) then
+            UnlockSquadItem(charId, itemId) -- (you keep it: Rare)
+            say(player, string.format('%s is one of a kind: your squad gets its own and you keep yours. Every squad mate can wear it now.', info.name))
             return
         end
 
@@ -4313,7 +4340,7 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     end
 
     for index, mate in ipairs(back) do
-        player:timer(3000 + (index - 1) * CALL_GAP_MS, function(entity)
+        player:timer(ZONE_WAIT_MS + (index - 1) * CALL_GAP_MS, function(entity)
             if not entity:inMogHouse() and not isSummoned(entity, mate.id) then
                 callMate(entity, mate)
             end

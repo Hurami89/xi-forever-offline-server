@@ -153,9 +153,25 @@ quest.sections =
                         return
                     end
 
+                    if chosenRace(player) == player:getRace() and player:getFreeSlotsCount() < 2 then
+                        -- (XI: Forever Offline) your own race's piece comes with a spare for your squad: room for both
+                        player:printToPlayer('Make room for two items (one is a spare for your squad), then talk to Guttrix again.', xi.msg.channel.SYSTEM_3)
+                        return
+                    end
+
                     if npcUtil.giveItem(player, rseTable[chosenRace(player)][option]) then
                         player:delKeyItem(xi.keyItem.MAGICAL_PATTERN)
                         player:incrementCharVar(gearVar(player), bit.lshift(1, option - 1))
+
+                        -- XI: Forever Offline: your own race's piece comes with a spare to give your squad
+                        -- (trade it to a mate or !squad give). Other races' pieces can be made again, so no spare.
+                        if chosenRace(player) == player:getRace() then
+                            local piece = rseTable[chosenRace(player)][option]
+                            if player:addItem(piece) then
+                                player:messageSpecial(zones[player:getZoneID()].text.ITEM_OBTAINED, piece)
+                                player:printToPlayer('Guttrix: And a spare one, for that squad of yours!', xi.msg.channel.NS_SAY)
+                            end
+                        end
 
                         quest:complete(player)
                         player:addFame(xi.fameArea.SANDORIA, 5)
