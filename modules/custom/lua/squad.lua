@@ -4653,9 +4653,18 @@ local function ruleAction(spec)
     return nil
 end
 
+-- the 2-hour abilities: main job only, so a support job's rules never use them (sparkiie, 2026-11-17). Global:
+-- squad.lua is at the local limit.
+SQUAD_TWO_HOURS = { MIGHTY_STRIKES = true, HUNDRED_FISTS = true, BENEDICTION = true, MANAFONT = true, CHAINSPELL = true,
+    PERFECT_DODGE = true, INVINCIBLE = true, BLOOD_WEAPON = true, FAMILIAR = true, SOUL_VOICE = true, EAGLE_EYE_SHOT = true,
+    MEIKYO_SHISUI = true, MIJIN_GAKURE = true, CALL_WYVERN = true, ASTRAL_FLOW = true, AZURE_LORE = true, WILD_CARD = true,
+    OVERDRIVE = true }
+
 local function applyRules(mob, rules, isSub)
     for _, rule in ipairs(rules) do
-        if type(rule) == 'table' and rule.on ~= false and profileLevel >= (rule.level or 0) then
+        local subTwoHour = isSub and type(rule) == 'table' and type(rule.action) == 'table' and rule.action[1] == 'ja'
+            and SQUAD_TWO_HOURS[tostring(rule.action[2])]
+        if type(rule) == 'table' and rule.on ~= false and profileLevel >= (rule.level or 0) and not subTwoHour then
             local target = ai.t[rule.target]
             if target == nil then
                 print(string.format('[squad] unknown target %s - rule skipped', tostring(rule.target)))

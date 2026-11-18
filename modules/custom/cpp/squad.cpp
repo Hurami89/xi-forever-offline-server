@@ -1175,6 +1175,12 @@ auto trySquadAbility(CCharEntity* PChar, CTrustEntity* PTrust, CAbility* PAbilit
         return SpellCastResult::Unknown;
     }
 
+    // a 2-hour ability belongs to the main job only, never the support job (sparkiie: a WAR/MNK used Hundred Fists)
+    if (PAbility == ability::GetTwoHourAbility(PAbility->getJob()) && PTrust->GetMJob() != PAbility->getJob())
+    {
+        return SpellCastResult::Unknown;
+    }
+
     const uint16   valid   = PAbility->getValidTarget();
     CBattleEntity* PTarget = nullptr;
     if (valid & TARGET_ENEMY)

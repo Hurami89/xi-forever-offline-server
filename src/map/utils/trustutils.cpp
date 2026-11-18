@@ -566,11 +566,27 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
         const auto  mainJob   = PTrust->GetMJob();
         const auto  subJob    = PTrust->GetSJob();
 
+        // (2026-11-17) the trust template's own list only where the mate's jobs really have the spell at their levels: the
+        // template is a Trust NPC's, whose list doesn't follow job levels (sparkiie: a level 39 RDM cast Phalanx II
+        // and Distract). Template-only spells no job of the mate learns are kept as before.
         if (PTrust->m_SpellListContainer != nullptr)
         {
             for (const auto& entry : PTrust->m_SpellListContainer->m_spellList)
             {
-                known->AddSpell(entry.spellId, entry.min_level, entry.max_level);
+                CSpell* PListed = spell::GetSpell(entry.spellId);
+                if (PListed == nullptr)
+                {
+                    continue;
+                }
+
+                const uint8 byMain = PListed->getJob(mainJob);
+                const uint8 bySub  = spec->sJob != 0 ? PListed->getJob(subJob) : 255;
+                const bool  jobOk  = byMain <= mainLevel || bySub <= subLevel;
+                const bool  noJob  = byMain == 255 && bySub == 255;
+                if (jobOk || noJob)
+                {
+                    known->AddSpell(entry.spellId, entry.min_level, entry.max_level);
+                }
             }
         }
 
