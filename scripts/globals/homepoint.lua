@@ -12,15 +12,15 @@ local homepointData =
     [  3] = { group = 1, fee = 1, dest = {     -178,       4,      71,   0, xi.zone.NORTHERN_SAN_DORIA     } }, -- Northern San d'Oria #1
     [  4] = { group = 1, fee = 1, dest = {       10,    -0.2,      95,   0, xi.zone.NORTHERN_SAN_DORIA     } }, -- Northern San d'Oria #2
     [  5] = { group = 1, fee = 1, dest = {       70,    -0.2,      10,   0, xi.zone.NORTHERN_SAN_DORIA     } }, -- Northern San d'Oria #3
-    [  6] = { group = 1, fee = 1, dest = {      -38,      -4,     -63,   0, xi.zone.PORT_SAN_DORIA         } }, -- Port San d'Oria #1
+    [  6] = { group = 1, fee = 1, dest = { -66.077, 4, -104.948, 192, xi.zone.PORT_SAN_DORIA } }, -- Port San d'Oria #1 (XI: Forever Offline: the pre-2015 crystal spot Phoenix uses, 2026-11-18)
     [  7] = { group = 1, fee = 1, dest = {       48,     -12,    -105,   0, xi.zone.PORT_SAN_DORIA         } }, -- Port San d'Oria #2
     [  8] = { group = 1, fee = 1, dest = {       -6,     -13,    -150,   0, xi.zone.PORT_SAN_DORIA         } }, -- Port San d'Oria #3
     [  9] = { group = 2, fee = 1, dest = {       39,       0,     -43,   0, xi.zone.BASTOK_MINES           } }, -- Bastok Mines #1
     [ 10] = { group = 2, fee = 1, dest = {      118,       1,     -58,   0, xi.zone.BASTOK_MINES           } }, -- Bastok Mines #2
-    [ 11] = { group = 2, fee = 1, dest = {     -342,     -10,    -154,   0, xi.zone.BASTOK_MARKETS         } }, -- Bastok Markets #1
+    [ 11] = { group = 2, fee = 1, dest = { -293.791, -10, -102.539, 160, xi.zone.BASTOK_MARKETS } }, -- Bastok Markets #1 (XI: Forever Offline: the pre-2015 crystal spot Phoenix uses, 2026-11-18)
     [ 12] = { group = 2, fee = 1, dest = {     -328,     -12,     -33,   0, xi.zone.BASTOK_MARKETS         } }, -- Bastok Markets #2
     [ 13] = { group = 2, fee = 1, dest = {     -189,      -8,      26,   0, xi.zone.BASTOK_MARKETS         } }, -- Bastok Markets #3
-    [ 14] = { group = 2, fee = 1, dest = {      124,       8,       7,   0, xi.zone.PORT_BASTOK            } }, -- Port Bastok #1
+    [ 14] = { group = 2, fee = 1, dest = { 53.645, 7.5, -28.682, 224, xi.zone.PORT_BASTOK } }, -- Port Bastok #1 (XI: Forever Offline: the pre-2015 crystal spot Phoenix uses, 2026-11-18)
     [ 15] = { group = 2, fee = 1, dest = {       42,     8.5,    -244,   0, xi.zone.PORT_BASTOK            } }, -- Port Bastok #2
     [ 16] = { group = 2, fee = 1, dest = {       46,     -14,     -19,   0, xi.zone.METALWORKS             } }, -- Metalworks #1
     [ 17] = { group = 3, fee = 1, dest = {      -32,      -5,     132,   0, xi.zone.WINDURST_WATERS        } }, -- Windurst Waters #1
@@ -28,7 +28,7 @@ local homepointData =
     [ 19] = { group = 3, fee = 1, dest = {      -72,      -5,     125,   0, xi.zone.WINDURST_WALLS         } }, -- Windurst Walls #1
     [ 20] = { group = 3, fee = 1, dest = {     -212,       0,     -99,   0, xi.zone.WINDURST_WALLS         } }, -- Windurst Walls #2
     [ 21] = { group = 3, fee = 1, dest = {       31,    -6.5,     -40,   0, xi.zone.WINDURST_WALLS         } }, -- Windurst Walls #3
-    [ 22] = { group = 3, fee = 1, dest = {     -188,      -4,     101,   0, xi.zone.PORT_WINDURST          } }, -- Port Windurst #1
+    [ 22] = { group = 3, fee = 1, dest = { -67.980, -4, 110.675, 192, xi.zone.PORT_WINDURST } }, -- Port Windurst #1 (XI: Forever Offline: the pre-2015 crystal spot Phoenix uses, 2026-11-18)
     [ 23] = { group = 3, fee = 1, dest = {     -207,      -8,     210,   0, xi.zone.PORT_WINDURST          } }, -- Port Windurst #2
     [ 24] = { group = 3, fee = 1, dest = {      180,     -12,     226,   0, xi.zone.PORT_WINDURST          } }, -- Port Windurst #3
     [ 25] = { group = 3, fee = 1, dest = {        9,      -2,       0,   0, xi.zone.WINDURST_WOODS         } }, -- Windurst Woods #1

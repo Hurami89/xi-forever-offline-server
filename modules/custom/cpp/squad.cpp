@@ -1056,6 +1056,13 @@ auto squadNewSpells(const int job, const int oldLevel, const int newLevel) -> so
             continue;
         }
 
+        // (2026-11-18) the level-up line only names spells a player could learn: no Trust-only ones without a scroll
+        // (Diaga II), like the known-spell list itself (trustutils)
+        if (PSpell->getSpellGroup() != SPELLGROUP_BLUE && xi::items::lookup(static_cast<uint16>(0x1200 + id)) == nullptr)
+        {
+            continue;
+        }
+
         const int needed = PSpell->getJob(static_cast<xi::Job>(job));
         if (needed > oldLevel && needed <= newLevel)
         {

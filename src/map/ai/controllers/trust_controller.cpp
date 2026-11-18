@@ -821,12 +821,31 @@ void CTrustController::Declump(const CCharEntity* PMaster, const CBattleEntity* 
     TracyZoneScoped;
 
     const uint8 currentPartyPos = GetPartyPosition();
+
+    // XI: Forever Offline (2026-11-18, sparkiie: mates walked circles around the monster). Two close mates both
+    // sidestepped, often the same way round, landed next to the next mate and stepped again, forever. Now only the
+    // mate called later steps aside, and each mate sidesteps at most once every 4 seconds.
+    const auto nowSec = static_cast<uint32>(std::chrono::duration_cast<std::chrono::seconds>(m_Tick.time_since_epoch()).count());
+    if (const uint32 last = POwner->GetLocalVar("DECLUMP_AT"); last != 0 && nowSec - last < 4)
+    {
+        return;
+    }
+
+    bool seenSelf = false;
     for (const auto* POtherTrust : PMaster->PTrusts)
     {
-        if (POtherTrust == POwner || POtherTrust->PAI->PathFind->IsFollowingPath() || distance(POtherTrust->loc.p, POwner->loc.p) >= 1.5f)
+        if (POtherTrust == POwner)
         {
+            seenSelf = true;
             continue;
         }
+
+        if (seenSelf || POtherTrust->PAI->PathFind->IsFollowingPath() || distance(POtherTrust->loc.p, POwner->loc.p) >= 1.5f)
+        {
+            continue; // (a mate called after us steps aside, not us)
+        }
+
+        POwner->SetLocalVar("DECLUMP_AT", nowSec);
 
         // Sidestep relative to the shared target so trusts spread around the enemy rather than away from each other.
         const float moveAmount = xirand::GetRandomNumber(0.0f, 1.5f) * ((currentPartyPos % 2) ? 1.0f : -1.0f);
@@ -843,6 +862,19 @@ void CTrustController::Declump(const CCharEntity* PMaster, const CBattleEntity* 
 void CTrustController::PathOutToDistance(const CBattleEntity* PTarget, const float amount)
 {
     TracyZoneScoped;
+
+    // XI: Forever Offline (2026-11-18, wildthing): a mage keeping its distance who has pulled hate kept running to a new
+    // spot as the monster followed it, so the tank could never get it back. While the monster is on us: stand and cast.
+    if (PTarget->GetBattleTarget() == POwner)
+    {
+        if (POwner->PAI->PathFind->IsFollowingPath())
+        {
+            POwner->PAI->PathFind->Clear();
+        }
+        FaceTarget(PTarget->entityId());
+        m_InTransit = false;
+        return;
+    }
 
     const float currentDistanceToTarget = distance(POwner->loc.p, PTarget->loc.p);
     position_t  target_position         = POwner->loc.p;
