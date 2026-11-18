@@ -958,6 +958,14 @@ think = function(bot, token)
                 end
             end
 
+            -- a Summoner (spells from scrolls on): an avatar fight for a pact it doesn't have yet (bots_pets.lua)
+            if petsMod and petsMod.avatarFights then
+                local okF, won = pcall(petsMod.avatarFights, bot)
+                if okF and won then
+                    diary(bot, 'won the pact with ' .. won .. '!', true)
+                end
+            end
+
             -- a Puppetmaster: automaton attachments it doesn't own yet (bots_pets.lua)
             if petsMod and petsMod.buyAttachments then
                 local okA, n = pcall(petsMod.buyAttachments, bot)

@@ -75,9 +75,39 @@ function D.jugFor(level)
     return fromTiers(JUGS, level)
 end
 
-function D.avatarFor(level)
-    return fromTiers(AVATARS, level)
+function D.avatarFor(level, has)
+    if has == nil then
+        return fromTiers(AVATARS, level)
+    end
+
+    -- (spells from scrolls on, 2026-11-17) only the avatars this summoner has a pact with: has(name) -> true/false.
+    -- Carbuncle is always there.
+    local best
+    for _, tier in ipairs(AVATARS) do
+        if level >= tier[1] then
+            best = tier[2]
+        end
+    end
+
+    local ok = {}
+    for _, name in ipairs(best or {}) do
+        if id(name) and (name == 'CARBUNCLE' or has(name)) then
+            ok[#ok + 1] = name
+        end
+    end
+
+    if #ok == 0 then
+        return id('CARBUNCLE'), 'CARBUNCLE'
+    end
+
+    local name = ok[math.random(1, #ok)]
+    return id(name), name
 end
+
+-- the avatars won through their own fights (not Carbuncle), with the level a summoner is ready for the fight
+D.PACT_FIGHTS = {
+    { 'IFRIT', 20 }, { 'TITAN', 20 }, { 'LEVIATHAN', 20 }, { 'GARUDA', 20 }, { 'SHIVA', 20 }, { 'RAMUH', 20 }, { 'FENRIR', 60 },
+}
 
 local nameOfId
 -- the avatar's name ('IFRIT') for a pet id

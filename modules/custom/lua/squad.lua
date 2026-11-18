@@ -357,7 +357,21 @@ do
         if chosen == 0 then
             local lvl = mob:getMainLvl()
             local okPick, picked = pcall(function()
-                return (job == jobIds.SMN) and petsData.avatarFor(lvl) or petsData.jugFor(lvl)
+                if job == jobIds.SMN then
+                    -- (spells from scrolls on) a squad Summoner has the avatars you have pacts with: you win them in
+                    -- the avatar fights, and the whole squad shares them. Off: every avatar for its level.
+                    local master = mob:getMaster()
+                    if squadScrollsOn() and master and xi.magic and type(xi.magic.spell) == 'table' then
+                        return petsData.avatarFor(lvl, function(name)
+                            local sid = xi.magic.spell[name]
+                            return sid ~= nil and master:hasSpell(sid)
+                        end)
+                    end
+
+                    return petsData.avatarFor(lvl)
+                end
+
+                return petsData.jugFor(lvl)
             end)
             chosen = (okPick and picked and picked ~= 0) and picked or fixed
             mob:setLocalVar('SQUAD_PET_PICK', chosen)

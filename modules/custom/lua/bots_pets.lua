@@ -111,6 +111,29 @@ local function fitAttachments(bot, frame)
     BotSetAttachments(bot:getID(), have, attachCount(pupLevel(bot)))
 end
 
+-- (spells from scrolls on) in town now and then: a Summoner goes and fights for an avatar pact it doesn't have yet,
+-- the way a player does the avatar fights (about 1 in 4 visits once it is ready; the elementals from 20, Fenrir from
+-- 60). Off, it has every avatar for its level. Returns the avatar's name when it won one.
+function Pets.avatarFights(bot)
+    if not (xi.bots and xi.bots.scrollsOn and xi.bots.scrollsOn()) or bot:getMainJob() ~= SMN or not data or not data.PACT_FIGHTS then
+        return nil
+    end
+
+    if math.random() > 0.25 or not (xi.magic and type(xi.magic.spell) == 'table') then
+        return nil
+    end
+
+    for _, fight in ipairs(data.PACT_FIGHTS) do
+        local sid = xi.magic.spell[fight[1]]
+        if sid and bot:getMainLvl() >= fight[2] and not bot:hasSpell(sid) then
+            bot:addSpell(sid, { silentLog = true })
+            return fight[1]:sub(1, 1) .. fight[1]:sub(2):lower()
+        end
+    end
+
+    return nil
+end
+
 -- (switch on) in town now and then (with its gear shopping, bots.lua): a Puppetmaster buys the next attachments on its list it
 -- doesn't own yet, up to its count for its level, when it can spare the gil (about the shop price; keeps half its
 -- gil). They are fitted the next time it calls its automaton. Returns how many it bought.
@@ -201,7 +224,14 @@ function Pets.ensure(bot, st)
             return
         end
 
-        petId = data.avatarFor(lvl)
+        if xi.bots and xi.bots.scrollsOn and xi.bots.scrollsOn() and xi.magic and type(xi.magic.spell) == 'table' then
+            petId = data.avatarFor(lvl, function(name) -- (only the avatars it won a pact with)
+                local sid = xi.magic.spell[name]
+                return sid ~= nil and bot:hasSpell(sid)
+            end)
+        else
+            petId = data.avatarFor(lvl)
+        end
     elseif job == PUP then
         if not automatonReady(bot) then
             st.petNext = t + 3600

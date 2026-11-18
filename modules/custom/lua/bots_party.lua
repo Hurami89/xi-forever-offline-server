@@ -341,6 +341,11 @@ function P.learn(bot)
                 return false
             end
 
+            -- (switch on) avatars other than Carbuncle come from their fights (bots_pets.lua), not by level
+            if on and id >= 297 and id <= 307 then
+                return false
+            end
+
             local a, b = learnLevel(sp, main), learnLevel(sp, sub)
             return (a ~= nil and a <= mlvl and (not on or a < SCROLL_LEVEL))
                 or (b ~= nil and b <= slvl and (not on or b < SCROLL_LEVEL))
