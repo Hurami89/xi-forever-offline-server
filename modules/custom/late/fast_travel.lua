@@ -643,4 +643,18 @@ if OVERRIDE_SURVIVAL_GUIDES then
     end)
 end
 
+-- Classic switch (launcher CONFIG > Rates "Survival Guide teleports", main.ENABLE_SURVIVAL_GUIDE = 0): the guides do
+-- nothing, like before they existed. (Home Point teleports have their own setting, main.HOMEPOINT_TELEPORT, which the
+-- game's Home Point script already reads.)
+if not OVERRIDE_SURVIVAL_GUIDES then
+    m:addOverride('xi.survivalGuide.onTrigger', function(player)
+        if xi.settings.main.ENABLE_SURVIVAL_GUIDE == 0 then
+            tell(player, 'Survival Guide teleports are switched off on this world (classic travel).')
+            return
+        end
+
+        return super(player)
+    end)
+end
+
 return m

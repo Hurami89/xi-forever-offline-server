@@ -244,6 +244,7 @@ local function usage(player)
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
     say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
     say(player, '!squad camp rest on | off   - mates sit and rest at camp while the pull is out')
+    say(player, '!squad camp levels <low> <high> | reset   - monster levels the puller goes for, against yours (e.g. -10 0)')
     say(player, '!squad sw <slot> <melee|ranged|ja|magic|all> <on|off>   - stop one kind of action, e.g. stop a healer from meleeing')
     say(player, '!squad lore <slot>   - write (or rewrite) that mate\'s backstory')
     say(player, '!squad chat [on|off|test]   - in-character party chat with your mates')
@@ -655,6 +656,16 @@ local function campRange(player)
     return CAMP_PULL_RANGE
 end
 local CAMP_LEVELS       = { -6, 2 } -- monster level against yours (easy prey up to a decent challenge)
+-- (!squad camp levels <low> <high>, Velderen) your own window, as levels below/above yours; char vars SQUAD_PULL_LOW /
+-- SQUAD_PULL_HIGH hold offset + 100 (0 = not set, the default window). Global: squad.lua is at the local limit.
+function squadCampLevels(player)
+    local lo, hi = player:getCharVar('SQUAD_PULL_LOW'), player:getCharVar('SQUAD_PULL_HIGH')
+    if lo > 0 and hi > 0 then
+        return lo - 100, hi - 100, true
+    end
+
+    return CAMP_LEVELS[1], CAMP_LEVELS[2], false
+end
 local CAMP_PULL_TIMEOUT = 300       -- seconds before a pull that did not work is given up (a 400 yalm run out and back)
 local CAMP_PULL_GAP     = { 4, 8 }  -- seconds of quiet at camp before the next pull
 local CAMP_READY_HP     = 60        -- everyone at least this much HP (%) before a pull
@@ -800,7 +811,8 @@ local function campPick(player, c)
                 return false
             end
 
-            return ml >= lvl + CAMP_LEVELS[1] and ml <= lvl + CAMP_LEVELS[2]
+            local low, high = squadCampLevels(player)
+            return ml >= lvl + low and ml <= lvl + high
         end)
         if ok and usable then
             local pos = mob:getPos()
@@ -2290,6 +2302,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         local orderCode = player:getCharVar('SQUAD_ORDER')
         say(player, string.format('squadpanel:adv|%d|%d|%s', player:getCharVar('SQUAD_FOLLOW'), player:getCharVar('SQUAD_CAMP_NOREST') == 1 and 0 or 1,
             orderCode > 0 and tostring(orderCode) or '-'))
+        local pullLow, pullHigh, pullOwn = squadCampLevels(player)
+        say(player, string.format('squadpanel:plvl|%d|%d|%d', pullLow, pullHigh, pullOwn and 1 or 0))
         for _, mate in ipairs(squad) do
             say(player, string.format('squadpanel:delay|%d|%d', mate.slot, player:getCharVar('SQUAD_DELAY_' .. mate.id)))
         end
@@ -2564,6 +2578,21 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
                 say(player, string.format('Your puller now goes for monsters up to %d yalms from camp.', math.floor(n)))
             else
                 say(player, string.format('Pull range is %d yalms. Change it with !squad camp range <%d-%d>.', campRange(player), CAMP_RANGE_LIMITS[1], CAMP_RANGE_LIMITS[2]))
+            end
+        elseif what == 'levels' then
+            local low, high = tonumber(arg2 or ''), tonumber(arg3 or '')
+            if string.lower(arg2 or '') == 'reset' then
+                player:setCharVar('SQUAD_PULL_LOW', 0)
+                player:setCharVar('SQUAD_PULL_HIGH', 0)
+                say(player, string.format('Your puller is back to monsters from %d below to %d above your level.', -CAMP_LEVELS[1], CAMP_LEVELS[2]))
+            elseif low and high and low >= -30 and high <= 10 and low <= high then
+                player:setCharVar('SQUAD_PULL_LOW', math.floor(low) + 100)
+                player:setCharVar('SQUAD_PULL_HIGH', math.floor(high) + 100)
+                say(player, string.format('Your puller now goes for monsters from level %+d to %+d against yours (now %d-%d).',
+                    math.floor(low), math.floor(high), math.max(1, player:getMainLvl() + math.floor(low)), player:getMainLvl() + math.floor(high)))
+            else
+                local l, h = squadCampLevels(player)
+                say(player, string.format('Pull levels: %+d to %+d against yours. Change: !squad camp levels <low> <high> (e.g. -10 0, from -30 to +10), or reset.', l, h))
             end
         elseif what == 'rest' then
             -- mates sit and rest at camp while the pull is out (char var SQUAD_CAMP_NOREST: 0 = on, the default; 1 = off)
@@ -2979,7 +3008,35 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         return
     end
 
-    if action == 'equip' then
+    if action == 'gearlist' then
+        -- (servermenu 1.14's gear picker) the given gear this mate can wear in one slot, as panel lines:
+        -- squadpanel:gl|<mate slot>|<equip slot>|<item id>|<level>|<name>, then squadpanel:gle|<mate slot>|<equip slot>|<count>
+        local eq = tonumber(arg2 or '')
+        if eq == nil or eq < 0 or eq > 15 then
+            say(player, 'squadpanel:gle|' .. mate.slot .. '|-1|0')
+            return
+        end
+
+        local mainLevel = levelsFor(mate)
+        local found = {}
+        for itemId in pairs(GetSquadUnlocks(charId) or {}) do
+            local info = GetSquadItemInfo(itemId)
+            if info and info.valid and hasBit(info.slot, eq) and info.level <= mainLevel and hasBit(info.jobs, mate.mjob - 1) then
+                found[#found + 1] = { id = itemId, level = info.level, name = info.name }
+            end
+        end
+
+        table.sort(found, function(x, y)
+            return x.level > y.level or (x.level == y.level and x.name < y.name)
+        end)
+
+        for k = 1, math.min(#found, 40) do
+            say(player, string.format('squadpanel:gl|%d|%d|%d|%d|%s', mate.slot, eq, found[k].id, found[k].level, found[k].name))
+        end
+
+        say(player, string.format('squadpanel:gle|%d|%d|%d', mate.slot, eq, #found))
+        return
+    elseif action == 'equip' then
         local itemId = FindSquadItem(arg2 or '')
         if itemId == 0 then
             say(player, 'Item not found. Use the item name (like bronze_harness) or its id.')

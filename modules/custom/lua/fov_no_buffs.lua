@@ -81,8 +81,33 @@ end
 --   addExp:          held back, then capped and given to you and your squad mates below
 --   addStatusEffect: the random Grounds prowess buffs are not given (the repeat-clear counter is)
 --   messageBasic:    their "prowess" lines are not shown
+-- The stand-in must never reach the engine itself: arguments that are the stand-in (or a table whose origin is the
+-- stand-in, e.g. the Grounds repeat-clear counter's { power = n, origin = player }) are swapped for the real player.
+-- Before this the counter's addStatusEffect failed and the page stopped right after "completed": no reward, and the
+-- page stayed full and never finished.
+local function realArgs(proxy, player, ...)
+    local args = table.pack(...)
+    for i = 1, args.n do
+        local a = args[i]
+        if rawequal(a, proxy) then
+            args[i] = player
+        elseif type(a) == 'table' and getmetatable(a) == nil and rawequal(a.origin, proxy) then
+            local copy = {}
+            for k, v in pairs(a) do
+                copy[k] = v
+            end
+
+            copy.origin = player
+            args[i] = copy
+        end
+    end
+
+    return table.unpack(args, 1, args.n)
+end
+
 local function standIn(player, held)
-    return setmetatable({}, {
+    local proxy = {}
+    return setmetatable(proxy, {
         __index = function(_, key)
             if key == 'addExp' then
                 return function(_, amount)
@@ -94,7 +119,7 @@ local function standIn(player, held)
                         return false
                     end
 
-                    return player:addStatusEffect(effect, ...)
+                    return player:addStatusEffect(effect, realArgs(proxy, player, ...))
                 end
             elseif key == 'messageBasic' then
                 return function(_, msg, ...)
@@ -102,14 +127,14 @@ local function standIn(player, held)
                         return
                     end
 
-                    return player:messageBasic(msg, ...)
+                    return player:messageBasic(msg, realArgs(proxy, player, ...))
                 end
             end
 
             local value = player[key]
             if type(value) == 'function' then
                 return function(_, ...)
-                    return value(player, ...)
+                    return value(player, realArgs(proxy, player, ...))
                 end
             end
 
