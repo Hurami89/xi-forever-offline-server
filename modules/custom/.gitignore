@@ -20,3 +20,7 @@ lua/crowds_chat_ai.lua
 # co-op: written by the launcher (this world's name; lines for the players in the game)
 lua/coop_config.lua
 lua/coop_in.txt
+lua/bots_dialogue_state.txt
+lua/bots_dialogue_state.txt.tmp
+lua/squad_pack_state.txt
+lua/squad_pack_state.txt.tmp

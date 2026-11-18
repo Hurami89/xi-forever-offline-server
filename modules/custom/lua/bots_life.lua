@@ -365,6 +365,10 @@ local function logIn(id, row)
 end
 
 local function logOut(id)
+    if xi and xi.bots and xi.bots.beforeLogout then
+        pcall(xi.bots.beforeLogout, id) -- (it may say bye in its linkshell first: bots_dialogue.lua)
+    end
+
     BotHeal(id, false)
     BotLogout(id)
     sessions[id] = nil

@@ -10,11 +10,23 @@
 -- Bridge files (server/modules/custom/lua): bots_chat_in.txt (requests, one JSON line each) and
 -- bots_chat_out.txt (answers, "<id><TAB><text>" per line). The bots only ever answer: they never start a tell.
 -----------------------------------
+-- Without the AI (AI chatter off, or the helper not answering: 3 misses in a row = off for 10 minutes, then it is
+-- tried again) the bot answers at once with a written line (bots_dialogue.lua) that fits what you said.
+-----------------------------------
 local B = {}
 
 local IN_FILE   = 'modules/custom/lua/bots_chat_in.txt'
 local OUT_FILE  = 'modules/custom/lua/bots_chat_out.txt'
 local WAIT      = 25    -- seconds for the model before the bot answers on its own
+local MISSES    = 3     -- unanswered requests in a row before the AI counts as not there
+local DOWN_FOR  = 600   -- ... for this many seconds, then it is asked again
+
+local dialogueOk, dialogue = pcall(require, 'modules/custom/lua/bots_dialogue')
+if not dialogueOk or type(dialogue) ~= 'table' then
+    dialogue = nil
+end
+
+local misses, downUntil = 0, 0
 local TYPE_CPS  = 7     -- characters per second it "types"
 local PARTY_CHANCE = 0.3 -- party chat that is not addressed to a bot: chance one bot answers
 
@@ -75,20 +87,44 @@ local function parseLine(line)
     return { id = tonumber(id), text = text }
 end
 
+-- is the AI there? (AI chatter on in the launcher, and not missing its last answers)
+local function aiWanted()
+    local ok, c = pcall(require, 'modules/custom/lua/crowds_config')
+    if ok and type(c) == 'table' and c.chat_ai == false then
+        return false
+    end
+
+    return now() >= downUntil
+end
+
 local function request(bot, to, kind, text)
     nextId = nextId + 1
     local facts = info and info(bot) or {}
-    local f = io.open(IN_FILE, 'a')
-    if f then
-        f:write(json({ id = nextId, t = now(), bot = bot:getName(), to = to, kind = kind, text = text, info = facts }) .. '\n')
-        f:close()
+    local ai = aiWanted()
+    if ai then
+        local f = io.open(IN_FILE, 'a')
+        if f then
+            f:write(json({ id = nextId, t = now(), bot = bot:getName(), to = to, kind = kind, text = text, info = facts }) .. '\n')
+            f:close()
+        end
     end
 
-    pending[nextId] = { botId = bot:getID(), bot = bot:getName(), to = to, kind = kind, text = text, deadline = now() + WAIT, facts = facts }
+    pending[nextId] = { botId = bot:getID(), bot = bot:getName(), to = to, kind = kind, text = text, deadline = now() + (ai and WAIT or 0),
+        facts = facts, ai = ai }
 end
 
 -- its own short answer when the model is not there (or too slow)
 local function fallback(p)
+    if dialogue and GetPlayerByID then
+        local bot = GetPlayerByID(p.botId)
+        local ok, line = pcall(function()
+            return bot and dialogue.reply(bot, p.text, p.facts, p.to)
+        end)
+        if ok and type(line) == 'string' and line ~= '' then
+            return line
+        end
+    end
+
     local text = string.lower(p.text or '')
     local f = p.facts or {}
     if text:find('party') or text:find('%f[%a]pt%f[%A]') or text:find('join') or text:find('inv') then
@@ -185,6 +221,7 @@ function B.tick()
                 local more = a.id and answered[a.id]
                 if p and a.text and a.text ~= '' then
                     pending[a.id] = nil
+                    misses = 0
                     local at = queueSend(p.botId, p.to, p.kind, a.text:sub(1, 120))
                     answered[a.id] = { botId = p.botId, to = p.to, kind = p.kind, last = at }
                 elseif more and a.text and a.text ~= '' and t - (more.last or t) < 60 then
@@ -206,6 +243,14 @@ function B.tick()
     for id, p in pairs(pending) do
         if t >= p.deadline then
             pending[id] = nil
+            if p.ai then
+                misses = misses + 1
+                if misses >= MISSES and t >= downUntil then
+                    downUntil = t + DOWN_FOR
+                    misses = 0
+                    print(string.format('[bots] the chat AI did not answer %d times: written answers for %d minutes, then it is asked again', MISSES, DOWN_FOR / 60))
+                end
+            end
             if (lastFallback[p.botId] or 0) + 5 <= t then
                 lastFallback[p.botId] = t
                 queueSend(p.botId, p.to, p.kind, fallback(p))
@@ -238,5 +283,8 @@ end
 -- for the tests
 B._fallback = fallback
 B._pending = pending
+B._aiState = function()
+    return misses, downUntil
+end
 
 return B

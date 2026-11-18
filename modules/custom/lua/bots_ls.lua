@@ -34,6 +34,14 @@ local nextTalk = {}
 local nextFound = 0
 local nextRecruit = 0
 local cache        -- [slot] = { id, name, type, gen, count, level, player }
+local lastPlayers = {} -- the real players of the last tick
+local hello = {}       -- [player id] = { at, gap }: say hi once the shell has filled up after you logged in
+
+-- written lines (bots_dialogue.lua): chatter, hellos, welcomes, reactions to what really happened
+local dialogueOk, dialogue = pcall(require, 'modules/custom/lua/bots_dialogue')
+if not dialogueOk or type(dialogue) ~= 'table' then
+    dialogue = nil
+end
 
 local function pick(list)
     return list[math.random(1, #list)]
@@ -549,6 +557,7 @@ function LS.askedPearl(bot, playerName, text)
     if ok and got then
         player:setCharVar('[Bots]LS', i)
         player:setCharVar('[Bots]LSGen', s.gen)
+        player:setCharVar('[Bots]LSNew', 1) -- (your first words in the shell get a welcome)
         setSv('LSPlayer', i, 1)
         s.player = true
         print(string.format('[bots] %s gave %s a pearl of %s', bot:getName(), playerName, s.name))
@@ -585,7 +594,7 @@ end
 -- you said something in linkshell chat: a member may answer (AI)
 function LS.onPlayerChat(player, text)
     local i = yourSlot(player)
-    if i <= 0 or not talk then
+    if i <= 0 then
         return
     end
 
@@ -594,7 +603,18 @@ function LS.onPlayerChat(player, text)
         return
     end
 
-    talk.onLs(player, text, members)
+    -- your first words after joining: the members welcome you
+    if dialogue and player:getCharVar('[Bots]LSNew') == 1 then
+        player:setCharVar('[Bots]LSNew', 0)
+        local ok, done = pcall(dialogue.onPlayerJoined, player, members)
+        if ok and done then
+            return
+        end
+    end
+
+    if talk then
+        talk.onLs(player, text, members)
+    end
 end
 
 function LS.onlineMembers(i)
@@ -611,6 +631,83 @@ function LS.onlineMembers(i)
     return out
 end
 
+-----------------------------------
+-- written dialogue in the shell you are in (bots_dialogue.lua). Nobody talks in a shell no real player hears.
+-----------------------------------
+local function shellPlayers(i)
+    local out = {}
+    for _, p in ipairs(lastPlayers) do
+        local ok, slot = pcall(yourSlot, p)
+        if ok and slot == i then
+            out[#out + 1] = p
+        end
+    end
+
+    return out
+end
+
+-- something happened to a bot (bots.lua diary): in a shell you are in, it may say so and the others react
+function LS.onBotEvent(bot, text)
+    local i = dialogue and slotOf(bot)
+    if not i or #shellPlayers(i) == 0 then
+        return false
+    end
+
+    return dialogue.onBotEvent(bot, text, LS.onlineMembers(i), 'ls' .. i)
+end
+
+-- a member logged in / is about to log out while you are on
+function LS.onBotLogin(bot)
+    local i = dialogue and slotOf(bot)
+    local players = i and shellPlayers(i) or {}
+    if #players == 0 then
+        return false
+    end
+
+    return dialogue.onBotLogin(bot, LS.onlineMembers(i), players[1])
+end
+
+function LS.onBotLogout(bot)
+    local i = dialogue and slotOf(bot)
+    local players = i and shellPlayers(i) or {}
+    if #players == 0 then
+        return false
+    end
+
+    return dialogue.onBotLogout(bot, LS.onlineMembers(i), players[1])
+end
+
+-- you logged in: once your shell has members on (it fills up on the next tick), they say hi
+function LS.onPlayerLogin(player)
+    if not dialogue or yourSlot(player) <= 0 then
+        return
+    end
+
+    local day = today()
+    local last = player:getCharVar('[Bots]LSLastDay')
+    player:setCharVar('[Bots]LSLastDay', day)
+    hello[player:getID()] = { at = now() + math.random(10, 20), gap = last > 0 and (day - last) or 0 }
+end
+
+-- !bots dialogue test: a member says something now
+function LS.dialogueTest(player)
+    local i = yourSlot(player)
+    if i <= 0 then
+        return 'You are not in a bot linkshell (ask a member for a pearl in a tell).'
+    end
+
+    local members = LS.onlineMembers(i)
+    if #members == 0 then
+        return 'Nobody from your linkshell is on right now.'
+    end
+
+    if dialogue and dialogue.lsAmbient(members, player) then
+        return 'A member of your linkshell will say something in a few seconds (linkshell 2 if you wear it there).'
+    end
+
+    return 'Nothing fresh to say right now (every line was used lately). Try again later.'
+end
+
 local RECRUIT = {
     social  = { '%s recruiting! social ls, all levels welcome, pst', 'looking for chill people? %s has room, pst for a pearl', '%s: chat, help, good times. pst' },
     exp     = { '%s (exp ls, lv %d-%d) recruiting, we party a lot, pst', 'join %s if you are around %d and want exp pts, pst' },
@@ -622,6 +719,10 @@ local RECRUIT = {
 function LS.tick(players)
     local t = now()
     pcall(LS.daily)
+    lastPlayers = players or {}
+    if dialogue then
+        pcall(dialogue.tick) -- (written lines whose "typing" is done)
+    end
 
     if t >= nextFound then
         nextFound = t + FOUND_EVERY + math.random(-300, 300)
@@ -671,11 +772,28 @@ function LS.tick(players)
                 pcall(LS.fill, i, 6)
             end
 
+            -- you logged in a moment ago: the members on say hi
+            local h = hello[player:getID()]
+            if h and t >= h.at then
+                hello[player:getID()] = nil
+                local members = LS.onlineMembers(i)
+                if #members > 0 and dialogue then
+                    pcall(dialogue.onPlayerLogin, player, members, h.gap)
+                    nextTalk[i] = math.max(nextTalk[i] or 0, t + 90) -- (no chatter on top of the hellos)
+                end
+            end
+
             nextTalk[i] = nextTalk[i] or (t + math.random(30, 90))
             if t >= nextTalk[i] then
                 nextTalk[i] = t + math.random(TALK_EVERY[1], TALK_EVERY[2])
                 local members = LS.onlineMembers(i)
-                if #members > 0 and xi.crowds and xi.crowds.sayLine then
+                local said = false
+                if #members > 0 and dialogue then
+                    local ok, done = pcall(dialogue.lsAmbient, members, player)
+                    said = ok and done
+                end
+
+                if not said and #members > 0 and xi.crowds and xi.crowds.sayLine then
                     local b = pick(members)
                     local JOBS = { 'WAR', 'MNK', 'WHM', 'BLM', 'RDM', 'THF', 'PLD', 'DRK', 'BST', 'BRD', 'RNG', 'SAM', 'NIN', 'DRG', 'SMN', 'BLU', 'COR', 'PUP' }
                     local ok, line = pcall(xi.crowds.sayLine, { name = b:getName(), job = JOBS[b:getMainJob()] or 'WAR', lvl = b:getMainLvl() }, b:getZoneID())
@@ -694,6 +812,7 @@ end
 -- for the tests
 LS._reset = function()
     cache, nextFound, nextRecruit, nextTalk, nextFill = nil, 0, 0, {}, {}
+    lastPlayers, hello = {}, {}
 end
 
 return LS

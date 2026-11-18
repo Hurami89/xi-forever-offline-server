@@ -343,6 +343,18 @@ local function pairLines(who, other, zoneId)
         pr = pick(ai.pairs)
     else
         pr = pick(T.pairs)
+        -- now and then a pair from the dialogue pack (bots_dialogue.lua), when it is there
+        if math.random() < 0.15 then
+            local ok, D = pcall(require, 'modules/custom/lua/bots_dialogue')
+            local okP, p = false, nil
+            if ok and type(D) == 'table' and D.pair then
+                okP, p = pcall(D.pair)
+            end
+
+            if okP and p then
+                pr = p
+            end
+        end
     end
 
     return fill(pr[1], who, zoneId), fill(pr[2], other, zoneId)

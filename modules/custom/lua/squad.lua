@@ -122,6 +122,20 @@ if not dialogueLoaded or type(dialogue) ~= 'table' then
     dialogue = { voices = {}, voiceOrder = {}, voiceByName = {}, wsShoutChance = 0 }
 end
 
+-- More lines from the dialogue pack (squad_pack.lua): variety on call and knock-out, camp acknowledgements, and fight
+-- and idle talk while the squad chat AI is quiet. (A field of xi.squad: this file is close to Lua's 200-local limit.)
+xi = xi or {}
+xi.squad = xi.squad or {}
+do
+    local okPack, pack = pcall(require, 'modules/custom/lua/squad_pack')
+    if okPack and type(pack) == 'table' then
+        xi.squad.pack = pack
+    else
+        xi.squad.pack = false
+        print('[squad] pack lines are off: squad_pack.lua could not be loaded: ' .. tostring(pack))
+    end
+end
+
 -- Used when a voice has no lines for an event (for example an older, edited squad_dialogue.lua)
 local fallbackLines =
 {
@@ -1433,6 +1447,9 @@ local function chatHookPlayer(player)
 
     player:addListener('DEATH', 'SQUAD_CHAT_DEATH', function()
         chatSend('DEATH', player:getZoneName())
+        if type(xi.squad.pack) == 'table' then
+            pcall(xi.squad.pack.onPlayerDeath, player)
+        end
     end)
 
     -- Your weapon skills: a mate may cheer (or needle) you. At most one every 20 seconds.
@@ -1677,6 +1694,7 @@ local function chatRead(player)
             text = chatClean(text):gsub('^%s+', ''):gsub('%s+$', '')
         end
         if kind == 'SAY' and mate ~= '' and text ~= '' then
+            xi.squad.aiSaidAt = os.time() -- (the pack's fight and idle lines stay quiet while the AI talks)
             player:printToPlayer(text, 4, mate)
             print(string.format('[squad] chat %s: %s', mate, text))
         elseif kind == 'NOTE' and text ~= '' then
@@ -1894,7 +1912,14 @@ local function callMate(player, mate)
     trust:setLocalVar('SQUAD_OWN', jobLevel(mate, mate.mjob))
 
     if dialogue.speakOnSpawn then
-        speak(player, mate.name, 'spawn', { job = jobTitles[mate.mjob] or '' })
+        local okPack, saidPack = false, false
+        if type(xi.squad.pack) == 'table' then
+            okPack, saidPack = pcall(xi.squad.pack.onCall, player, trust, mate.name, mate.race, mate.mjob, jobLevel(mate, mate.mjob))
+        end
+
+        if not (okPack and saidPack) then
+            speak(player, mate.name, 'spawn', { job = jobTitles[mate.mjob] or '' })
+        end
     end
 
     campApply(player, trust)
@@ -1933,6 +1958,9 @@ local function callMate(player, mate)
             pcall(squadThiefTick, mobArg)
         end
         chatTick(mobArg)
+        if type(xi.squad.pack) == 'table' then
+            pcall(xi.squad.pack.tick, mobArg) -- (pack lines: fights and quiet moments while the AI is quiet)
+        end
     end)
 
     trust:addListener('WEAPONSKILL_USE', 'SQUAD_WS_SHOUT', function(mobArg, target, skill, tp, action)
@@ -2676,6 +2704,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             camps[charId] = nil
             campApplyAll(player)
             say(player, 'Camp lifted. Your squad follows you again.')
+            if type(xi.squad.pack) == 'table' then
+                pcall(xi.squad.pack.onCommand, player, 'follow')
+            end
         elseif what == 'status' then
             say(player, campStatus(player))
         elseif what == 'want' then
@@ -2771,6 +2802,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
                               want = old and old.zone == player:getZoneID() and old.want or nil }
             campApplyAll(player)
             say(player, 'Camp set here. Your squad holds this spot and fights whatever comes within 20 yalms of it.')
+            if type(xi.squad.pack) == 'table' then
+                pcall(xi.squad.pack.onCommand, player, 'hold')
+            end
             say(player, 'Who pulls: !squad pull <slot>  (a mate)  or  !squad pull <bot name>  or  !squad pull me  |  !squad camp off  |  !squad camp pause|resume|status|range <yalms>|want <Monster_Name or any>')
         end
 
@@ -2864,6 +2898,10 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         elseif SquadDismissMate == nil then
             say(player, 'Dismissing one mate needs the newer server: press UPDATE in the launcher. (!squad dismiss sends everyone off.)')
         elseif SquadDismissMate(trust) then
+            if type(xi.squad.pack) == 'table' then
+                pcall(xi.squad.pack.onBench, player, mate.name)
+            end
+
             if zoneOut[player:getID()] then
                 zoneOut[player:getID()][mate.id] = nil
             end
@@ -4607,7 +4645,14 @@ for _, name in ipairs(templates) do
         if mob:getLocalVar('SQUAD_ID') == 0 then
             super(mob)
         elseif dialogue.speakOnDeath then
-            speakFromMob(mob, 'death')
+            local okPack, saidPack = false, false
+            if type(xi.squad.pack) == 'table' then
+                okPack, saidPack = pcall(xi.squad.pack.onDown, mob)
+            end
+
+            if not (okPack and saidPack) then
+                speakFromMob(mob, 'death')
+            end
         end
     end)
 end

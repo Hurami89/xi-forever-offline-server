@@ -273,6 +273,14 @@ if not teleOk or type(tele) ~= 'table' then
     tele = nil
 end
 
+-- written dialogue: linkshell chatter, hellos, reactions to what really happened, answers without the AI
+-- (bots_dialogue.lua, lines from C:\FFXISOLO\dialogue)
+local dialogueOk, dialogue = pcall(require, 'modules/custom/lua/bots_dialogue')
+if not dialogueOk or type(dialogue) ~= 'table' then
+    print('[bots] written dialogue is off: bots_dialogue.lua could not be loaded: ' .. tostring(dialogue))
+    dialogue = nil
+end
+
 local HUNT_CHECK = { 5 * 60, 15 * 60 } -- seconds in town between two "go hunting?" thoughts
 local DEAD_ALONE = { 15, 40 }          -- seconds dead (not with you) before it returns to its Home Point
 local DEAD_WITH_YOU = 180              -- with you: it waits this long for a Raise (when someone in the party can cast one)
@@ -569,6 +577,11 @@ local function diary(bot, text, public)
     -- the bigger news gets around the server (other bots may talk about it)
     if public and growth and growth.addNews then
         pcall(growth.addNews, bot:getName() .. ' ' .. text)
+    end
+
+    -- in a linkshell you are in, it may mention it and the others react (bots_dialogue.lua)
+    if linkshells and linkshells.onBotEvent then
+        pcall(linkshells.onBotEvent, bot, text)
     end
 end
 
@@ -1048,6 +1061,9 @@ xi.bots.onLogin = function(bot)
 
     if linkshells then
         pcall(linkshells.onLogin, bot) -- it may join a linkshell
+        if linkshells.onBotLogin then
+            pcall(linkshells.onBotLogin, bot) -- (and say hi in it, if you are on)
+        end
     end
 
     if growth then
@@ -1278,6 +1294,16 @@ local function facts(bot)
         end
     end)
 
+    -- its personality from the dialogue pack (the AI helper uses it too)
+    if dialogue then
+        pcall(function()
+            local p = dialogue.persona(bot)
+            if p then
+                f.persona = p.id
+            end
+        end)
+    end
+
     return f
 end
 
@@ -1289,15 +1315,30 @@ if linkshells then
     linkshells.setup(talk)
 end
 
+if dialogue then
+    dialogue.setup({ facts = facts })
+end
+
 -- (realPlayers, the real players who logged in, is declared before xi.bots.onTick, which uses it)
 m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     local result = super(player, firstLogin, zoning)
     if not (BotIsBot and BotIsBot(player:getID())) then
         realPlayers[player:getID()] = true
+        if not zoning and linkshells and linkshells.onPlayerLogin then
+            pcall(linkshells.onPlayerLogin, player) -- (your linkshell says hi)
+        end
     end
 
     return result
 end)
+
+-- a bot is about to log out (bots_life.lua): it may say bye in its linkshell
+xi.bots.beforeLogout = function(id)
+    local bot = GetPlayerByID(id)
+    if bot and linkshells and linkshells.onBotLogout then
+        pcall(linkshells.onBotLogout, bot)
+    end
+end
 
 xi.bots.lsName = function(bot)
     return linkshells and linkshells.of(bot) or nil
@@ -1562,6 +1603,18 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
         local total, online = life.status()
         tell(player, string.format('Roster %s: %d of %d characters, %d of %d online (%d in this area, %d out hunting). !bots list | online <n> | on | off',
             c.enabled and 'ON' or 'OFF', total, life.target and life.target() or c.roster, online, math.min(c.online, total), life.countInZone(player:getZoneID()), hunt and hunt.count() or 0))
+    elseif action == 'dialogue' then
+        if not dialogue then
+            tell(player, 'Written dialogue is off (bots_dialogue.lua did not load: see the map server log).')
+            return
+        end
+
+        tell(player, dialogue.stats())
+        if string.lower(a1 or '') == 'test' and linkshells and linkshells.dialogueTest then
+            tell(player, linkshells.dialogueTest(player))
+        else
+            tell(player, '!bots dialogue test - a member of your bot linkshell says something now')
+        end
     elseif action == 'online' and life then
         local n = tonumber(a1)
         if not n then
