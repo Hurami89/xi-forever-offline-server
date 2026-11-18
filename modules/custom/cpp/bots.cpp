@@ -1943,14 +1943,17 @@ class BotsModule : public CPPModule
         const bool  party = chat->Kind == static_cast<uint8_t>(GP_CLI_COMMAND_CHAT_STD_KIND::Party) && PChar->PParty;
         const bool  ls    = chat->Kind == static_cast<uint8_t>(GP_CLI_COMMAND_CHAT_STD_KIND::Linkshell1) ||
                          chat->Kind == static_cast<uint8_t>(GP_CLI_COMMAND_CHAT_STD_KIND::Linkshell2);
-        if (!party && !ls)
+        // your shouts and yells too: a bot may answer (bots_tele.lua: "need tele holla" - a bot WHM offers)
+        const bool shout = chat->Kind == static_cast<uint8_t>(GP_CLI_COMMAND_CHAT_STD_KIND::Shout) ||
+                           chat->Kind == static_cast<uint8_t>(GP_CLI_COMMAND_CHAT_STD_KIND::Yell);
+        if (!party && !ls && !shout)
         {
             return false;
         }
 
         const auto length = std::min<std::size_t>((chat->header.size * 4u) > 6u ? (chat->header.size * 4u) - 6u : 0u, sizeof(chat->Str));
         std::string text(reinterpret_cast<const char*>(chat->Str), strnlen(reinterpret_cast<const char*>(chat->Str), length));
-        callLua(party ? "partyOrder" : "lsChat", PChar, sol::make_object(::lua, text));
+        callLua(shout ? "playerShout" : (party ? "partyOrder" : "lsChat"), PChar, sol::make_object(::lua, text));
         return false; // the message still goes to party / linkshell chat as normal
     }
 

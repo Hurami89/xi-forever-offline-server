@@ -213,6 +213,13 @@ if not questsOk or type(quests) ~= 'table' then
     quests = nil
 end
 
+-- teleport shouts: bots who want a Teleport, and a bot white mage who answers yours (bots_tele.lua)
+local teleOk, tele = pcall(require, 'modules/custom/lua/bots_tele')
+if not teleOk or type(tele) ~= 'table' then
+    print('[bots] teleport shouts are off: bots_tele.lua could not be loaded: ' .. tostring(tele))
+    tele = nil
+end
+
 local HUNT_CHECK = { 5 * 60, 15 * 60 } -- seconds in town between two "go hunting?" thoughts
 local DEAD_ALONE = { 15, 40 }          -- seconds dead (not with you) before it returns to its Home Point
 local DEAD_WITH_YOU = 180              -- with you: it waits this long for a Raise
@@ -294,6 +301,8 @@ end
 if quests then
     quests.setup(state, hunt, life)
 end
+
+-- (tele.setup runs after joinAskedParty exists: see below)
 
 if growth then
     growth.setup(craft, quests, jobs, life and life.config(), gear)
@@ -820,6 +829,21 @@ xi.bots.onTick = function()
         pcall(linkshells.tick, list)
     end
 
+    if tele then
+        local list = {}
+        for pid in pairs(realPlayers) do
+            local p = GetPlayerByID(pid)
+            if p then
+                list[#list + 1] = p
+            end
+        end
+
+        local okTele, errTele = pcall(tele.tick, list)
+        if not okTele then
+            print('[bots] tele: ' .. tostring(errTele))
+        end
+    end
+
     if life then
         life.tick()
         if hunt and life.online then
@@ -969,6 +993,17 @@ xi.bots.lsName = function(bot)
     return linkshells and linkshells.of(bot) or nil
 end
 
+-- you shouted or yelled (bots.cpp): a bot white mage may answer a teleport request (bots_tele.lua)
+xi.bots.playerShout = function(player, text)
+    if tele and not BotIsBot(player:getID()) then
+        realPlayers[player:getID()] = true
+        local ok, err = pcall(tele.playerShout, player, text or '')
+        if not ok then
+            print('[bots] tele: ' .. tostring(err))
+        end
+    end
+end
+
 -- you talked in linkshell chat (bots.cpp)
 xi.bots.lsChat = function(player, text)
     if linkshells and not BotIsBot(player:getID()) then
@@ -1072,10 +1107,21 @@ local function joinAskedParty(bot, from)
     return true
 end
 
+if tele then
+    tele.setup(state, { join = joinAskedParty })
+end
+
 xi.bots.onTell = function(bot, t)
     -- (in the log, so a tell that "did nothing" can be told apart from a tell that never arrived)
     if type(t) == 'table' then
         print(string.format('[bots] tell from %s to %s: %s', tostring(t.from), bot:getName(), tostring(t.text):sub(1, 80)))
+    end
+
+    if tele and type(t) == 'table' then
+        local okTele, handled = pcall(tele.onTell, bot, t.from, t.text or '')
+        if okTele and handled then
+            return -- (it wanted a teleport, and you answered)
+        end
     end
 
     if linkshells and type(t) == 'table' and linkshells.askedPearl(bot, t.from, t.text) then
@@ -1154,6 +1200,9 @@ end
 xi.bots.onInvite = function(bot, inviterName)
     local id = bot:getID()
     BotAnswerInvite(id, true)
+    if tele then
+        pcall(tele.onInvite, bot, inviterName)
+    end
 
     bot:timer(2500, function(b)
         if b:getPartySize() <= 1 then
