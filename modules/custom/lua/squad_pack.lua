@@ -15,6 +15,8 @@
 --     has said nothing for 5 minutes), so the AI and these lines never talk over each other.
 -- Nothing claims what did not happen: lines follow real events; the role comes from the mate's job, race and
 -- gender from its look, and how long you have been together from its own level (it only levels fighting with you).
+-- Some lines are for one voice only (bold, calm, cheerful or gruff: the mate's voice from squad_dialogue.lua), so a
+-- gruff mate never says a cheerful line.
 -- State (who was called when, your last job): squad_pack_state.txt.
 -----------------------------------
 local P = {}
@@ -154,6 +156,36 @@ function P.roleOf(jobId)
     return ROLE[jobId or 0] or 'damage'
 end
 
+-- a mate's voice, chosen the way squad.lua chooses it: voiceByName in squad_dialogue.lua, or else from the name
+local voiceData
+function P.voiceOf(name)
+    if voiceData == nil then
+        local ok, d = pcall(require, 'modules/custom/lua/squad_dialogue')
+        voiceData = ok and type(d) == 'table' and d or false
+    end
+
+    if not voiceData or type(name) ~= 'string' or name == '' then
+        return nil
+    end
+
+    local chosen = voiceData.voiceByName and voiceData.voiceByName[name]
+    if chosen and voiceData.voices and voiceData.voices[chosen] then
+        return chosen
+    end
+
+    local order = voiceData.voiceOrder or {}
+    if #order == 0 then
+        return nil
+    end
+
+    local sum = 0
+    for i = 1, #name do
+        sum = sum + string.byte(name, i)
+    end
+
+    return order[(sum % #order) + 1]
+end
+
 -- remember what is true about a mate (race and gender from its look; its role from its job; familiarity from its level)
 function P.remember(name, raceCode, jobId, ownLevel)
     local m = mates[name] or {}
@@ -161,6 +193,7 @@ function P.remember(name, raceCode, jobId, ownLevel)
     m.gender = SEX[raceCode or 0]
     m.role = P.roleOf(jobId)
     m.fam = famOf(ownLevel)
+    m.voice = P.voiceOf(name)
     mates[name] = m
     return m
 end
@@ -186,11 +219,13 @@ function P.line(tag, name)
     end
 
     local m = mates[name] or {}
+    local voice = m.voice or P.voiceOf(name)
     local t = now()
     local gap = EVENT[tag] and LINE_GAP.event or LINE_GAP.ambient
     local fresh, all = {}, {}
     for _, l in ipairs(byTag[tag] or {}) do
-        if fits(l.roles, m.role) and fits(l.races, m.race) and fits(l.genders, m.gender) and fits(l.fam, m.fam) then
+        if fits(l.roles, m.role) and fits(l.races, m.race) and fits(l.genders, m.gender) and fits(l.fam, m.fam) and
+            fits(l.voices, voice) then
             local last = state.line[l.id] or 0
             all[#all + 1] = { l = l, last = last }
             if t - last >= gap then
@@ -603,6 +638,7 @@ end
 P._reset = function()
     state = { seen = {}, call = {}, job = {}, died = {}, scene = {}, line = {} }
     mates, run, tickAt = {}, {}, {}
+    voiceData = nil
 end
 P._run = function(player)
     return R(player)
