@@ -168,7 +168,8 @@ local function turnover(list)
 
     local candidates = {}
     for id, row in pairs(list) do
-        if not row.online and not loadRetired()[id] then
+        -- (a bot on a real player's friend list never stops playing: bots_friends.lua sets L.keep)
+        if not row.online and not loadRetired()[id] and not (L.keep and L.keep(id)) then
             candidates[#candidates + 1] = id
         end
     end
@@ -500,6 +501,14 @@ function L.tick()
 
         local pickFrom = math.min(#offline, 5)
         local id = offline[rnd(1, pickFrom)]
+        -- your bot friends log in more while you are on, mostly at their usual hours (bots_friends.lua)
+        if L.preferLogin then
+            local okF, friendId = pcall(L.preferLogin, offline)
+            if okF and friendId and lastList[friendId] then
+                id = friendId
+            end
+        end
+
         logIn(id, lastList[id])
         local far = #online + 1 < math.min(L.onlineTarget(L.target()), L.target()) * 0.9
         local gap = far and FILL_EVERY or REFILL_EVERY

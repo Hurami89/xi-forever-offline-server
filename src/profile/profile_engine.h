@@ -59,4 +59,5 @@ private:
     profile::PresenceManager presence_;
     std::map<Peer, uint16>   connections_;
     Maybe<Scheduler::Token>  refreshToken_;
+    Maybe<Scheduler::Token>  botPresenceToken_; // XI: Forever Offline: bot players on friend lists
 };

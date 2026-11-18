@@ -27,8 +27,11 @@
 #include "common/cbasetypes.h"
 #include "common/types/maybe.h"
 
+#include <set>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 namespace profile
 {
@@ -58,6 +61,10 @@ public:
     void hide(uint32 accountId, uint32 otherAccountId);      // accountId appears offline to otherAccountId
     void deliverMessage(uint32 senderAccountId, uint32 recipientAccountId, std::string_view name);
 
+    // XI: Forever Offline: bot players (bots.cpp) have no client and never sign on. Every few seconds the map
+    // server's sessions say which bots on someone's friend list are playing
+    void pollBots();
+
 private:
     struct Online
     {
@@ -74,6 +81,9 @@ private:
     auto nextTimestamp() -> uint64;
 
     std::unordered_map<uint32, Online> online_;
+    std::unordered_set<uint32>         botsOn_;      // bot accounts on someone's friend list that are playing
+    std::set<std::pair<uint32, uint32>> botFriends_; // (bot, player): both list each other, not pending
+    bool                               botsPolled_{};
     uint64                             lastSignOnId_{};
     uint64                             lastTimestamp_{};
 };

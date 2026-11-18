@@ -281,6 +281,13 @@ if not dialogueOk or type(dialogue) ~= 'table' then
     dialogue = nil
 end
 
+-- bot players on your friend list: how they feel about you, hellos, cheers, help offers (bots_friends.lua)
+local friendsOk, friends = pcall(require, 'modules/custom/lua/bots_friends')
+if not friendsOk or type(friends) ~= 'table' then
+    print('[bots] bot friendships are off: bots_friends.lua could not be loaded: ' .. tostring(friends))
+    friends = nil
+end
+
 local HUNT_CHECK = { 5 * 60, 15 * 60 } -- seconds in town between two "go hunting?" thoughts
 local DEAD_ALONE = { 15, 40 }          -- seconds dead (not with you) before it returns to its Home Point
 local DEAD_WITH_YOU = 180              -- with you: it waits this long for a Raise (when someone in the party can cast one)
@@ -651,6 +658,9 @@ think = function(bot, token)
     end
 
     pcall(noticeChanges, bot, st)
+    if friends then
+        pcall(friends.notice, bot, st) -- (time with you, being raised with you, its level ups for its friends)
+    end
 
     -- a Blue Mage bot: learns blue magic from what it defeats (spells from scrolls) and keeps its set spells up to
     -- date (bots_party.lua)
@@ -1121,6 +1131,10 @@ xi.bots.onLogin = function(bot)
         pcall(craft.collectSales, bot) -- (what sold while it was away)
     end
 
+    if friends then
+        pcall(friends.onLogin, bot) -- (a friend of yours may say hi)
+    end
+
     startBrain(bot, 3000, true)
 end
 
@@ -1179,6 +1193,21 @@ xi.bots.onTick = function()
 
     if talk then
         talk.tick()
+    end
+
+    if friends then
+        local list = {}
+        for id in pairs(realPlayers) do
+            local p = GetPlayerByID(id)
+            if p then
+                list[#list + 1] = p
+            end
+        end
+
+        local okF, errF = pcall(friends.tick, list)
+        if not okF then
+            print('[bots] friends: ' .. tostring(errF))
+        end
     end
 
     if linkshells then
@@ -1367,6 +1396,10 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
         if not zoning and linkshells and linkshells.onPlayerLogin then
             pcall(linkshells.onPlayerLogin, player) -- (your linkshell says hi)
         end
+
+        if not zoning and friends then
+            pcall(friends.onPlayerLogin, player) -- (a bot friend online may say hi)
+        end
     end
 
     return result
@@ -1502,6 +1535,10 @@ if tele then
     tele.setup(state, { join = joinAskedParty })
 end
 
+if friends then
+    friends.setup({ state = state, join = joinAskedParty, dialogue = dialogue, linkshells = linkshells, life = life })
+end
+
 xi.bots.onTell = function(bot, t)
     -- (in the log, so a tell that "did nothing" can be told apart from a tell that never arrived)
     if type(t) == 'table' then
@@ -1519,6 +1556,13 @@ xi.bots.onTell = function(bot, t)
         return -- (it sent you a pearl, and said so)
     end
 
+    if friends and type(t) == 'table' then
+        local okF, handled = pcall(friends.onTell, bot, t.from, t.text or '')
+        if okF and handled then
+            return -- ("can I add you?", or your answer to its offer to come and help)
+        end
+    end
+
     if type(t) == 'table' and type(t.text) == 'string' and partyAsk(t.text) and joinAskedParty(bot, t.from) then
         return -- the bot answered for itself (joining, or saying why it cannot)
     end
@@ -1528,9 +1572,19 @@ xi.bots.onTell = function(bot, t)
     end
 end
 
--- you sent a bot a friend request (the friend list): it accepts and says so (bots.cpp sweeps the requests)
+-- you sent a bot a friend request (the friend list; bots.cpp sweeps the requests): true = accept, nil = not yet
+-- (bots_friends.lua: it accepts when it knows you well enough); without bots_friends.lua it always accepts
 xi.bots.onFriendRequest = function(bot, t)
     local from = type(t) == 'table' and t.from or nil
+    if friends then
+        local okF, answer = pcall(friends.onRequest, bot, from)
+        if okF then
+            return answer
+        end
+
+        print('[bots] friends: ' .. tostring(answer))
+    end
+
     bot:setCharVar('[Bot]Friend', 1)
     print(string.format('[bots] %s accepts a friend request from %s', bot:getName(), tostring(from)))
     if from and from ~= '' then
@@ -1643,6 +1697,15 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
         local total, online = life.status()
         tell(player, string.format('Roster %s: %d of %d characters, %d of %d online (%d in this area, %d out hunting). !bots list | online <n> | on | off',
             c.enabled and 'ON' or 'OFF', total, life.target and life.target() or c.roster, online, math.min(c.online, total), life.countInZone(player:getZoneID()), hunt and hunt.count() or 0))
+    elseif action == 'friends' then
+        if not friends then
+            tell(player, 'Bot friendships are off (bots_friends.lua did not load: see the map server log).')
+            return
+        end
+
+        for _, text in ipairs(friends.report(player)) do
+            tell(player, text)
+        end
     elseif action == 'dialogue' then
         if not dialogue then
             tell(player, 'Written dialogue is off (bots_dialogue.lua did not load: see the map server log).')

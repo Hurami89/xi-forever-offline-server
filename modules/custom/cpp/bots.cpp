@@ -582,12 +582,19 @@ void callLuaPlain(const char* fn)
 }
 
 // the friend list (served by xi_profile): a real player asked a bot to be friends. The bot answers while it is on
-// (xi.bots.onFriendRequest decides, true = accept): the player's entry stops being pending and the bot lists the
-// player too, the way xi_profile does it when a client accepts. The player sees it at their next log in.
+// (xi.bots.onFriendRequest decides: true = accept, false = turn down, nil = not yet, it asks again on a later sweep):
+// the player's entry stops being pending and the bot lists the player too, the way xi_profile does it when a client
+// accepts. xi_profile shows it to the player within a few seconds (PresenceManager::pollBots).
 constexpr uint8 FriendListSize = 200;
 
 void sweepFriendRequests()
 {
+    // a player took a bot off their friend list: the bot drops them too (as a real player would notice and do)
+    db::preparedStmt("DELETE b FROM accounts_friends b "
+                     "LEFT JOIN accounts_friends p ON p.accid = b.friend_accid AND p.blacklist = 0 AND p.friend_accid = b.accid "
+                     "WHERE b.accid >= ? AND b.friend_accid < ? AND b.blacklist = 0 AND p.accid IS NULL",
+                     BotAccBase, BotAccBase);
+
     struct Request
     {
         uint32 accId;
@@ -597,7 +604,7 @@ void sweepFriendRequests()
 
     std::vector<Request> requests;
     if (auto rset = db::preparedStmt("SELECT f.accid, f.friend_accid, c.charid FROM accounts_friends f JOIN chars c ON c.accid = f.friend_accid "
-                                     "WHERE f.blacklist = 0 AND f.pending = 1 AND f.accid < ? AND f.friend_accid >= ? LIMIT 20",
+                                     "WHERE f.blacklist = 0 AND f.pending = 1 AND f.accid < ? AND f.friend_accid >= ? LIMIT 100",
                                      BotAccBase, BotAccBase))
     {
         while (rset->next())
@@ -625,6 +632,7 @@ void sweepFriendRequests()
         }
 
         bool accept = true;
+        bool later  = false;
         const sol::optional<sol::table> xiTable = ::lua["xi"].get<sol::optional<sol::table>>();
         if (xiTable)
         {
@@ -646,12 +654,22 @@ void sweepFriendRequests()
                     {
                         accept = result.get<bool>();
                     }
+                    else
+                    {
+                        later = true; // (nil: it has not made up its mind; the request stays as it is)
+                    }
                 }
             }
         }
 
-        // the request message the client left in the bot's mailbox is read now
+        // the request message the client left in the bot's mailbox is read now (also when it waits: unread
+        // messages count against the sender's limit in xi_profile, and only the friend entry needs to wait)
         db::preparedStmt("DELETE FROM accounts_messages WHERE accid = ? AND sender_accid = ?", r.botAcc, r.accId);
+        if (later)
+        {
+            continue;
+        }
+
         if (!accept)
         {
             db::preparedStmt("DELETE FROM accounts_friends WHERE accid = ? AND blacklist = 0 AND friend_accid = ? AND pending = 1", r.accId, r.botAcc);
@@ -1750,6 +1768,46 @@ class BotsModule : public CPPModule
                                std::strncpy(reinterpret_cast<char*>(pkt.sName), to.c_str(), sizeof(pkt.sName) - 1);
                                std::strncpy(reinterpret_cast<char*>(pkt.Mes), text.c_str(), sizeof(pkt.Mes) - 1);
                                return inject(b, pkt);
+                           });
+
+        // the friend list as the bots see it (bots_friends.lua): every entry a real player has for a bot.
+        // { { bot = bot charid, acc = player account, name = the player's character (the one on, if any),
+        //     mutual = both listed and accepted, asked = the player's request still waits, listed = the bot lists them } }
+        ::lua.set_function("BotFriendList", []() -> sol::table
+                           {
+                               auto out = ::lua.create_table();
+                               auto rset = db::preparedStmt("SELECT p.accid AS acc, bc.charid AS bot, p.pending AS ppending, "
+                                                            "COALESCE(b.pending, 1) AS bpending, (b.accid IS NOT NULL) AS listed, "
+                                                            "COALESCE((SELECT c.charname FROM chars c LEFT JOIN accounts_sessions s ON s.charid = c.charid "
+                                                            "WHERE c.accid = p.accid ORDER BY s.charid IS NULL, c.charid LIMIT 1), '') AS pname "
+                                                            "FROM accounts_friends p "
+                                                            "JOIN chars bc ON bc.accid = p.friend_accid "
+                                                            "LEFT JOIN accounts_friends b ON b.accid = p.friend_accid AND b.blacklist = 0 AND b.friend_accid = p.accid "
+                                                            "WHERE p.accid < ? AND p.friend_accid >= ? AND p.blacklist = 0",
+                                                            BotAccBase, BotAccBase);
+                               if (!rset)
+                               {
+                                   return out;
+                               }
+
+                               int i = 1;
+                               while (rset->next())
+                               {
+                                   const bool playerPending = rset->get<uint32>("ppending") != 0;
+                                   const bool listed        = rset->get<uint32>("listed") != 0;
+                                   const bool botPending    = rset->get<uint32>("bpending") != 0;
+
+                                   auto row      = ::lua.create_table();
+                                   row["bot"]    = rset->get<uint32>("bot");
+                                   row["acc"]    = rset->get<uint32>("acc");
+                                   row["name"]   = rset->get<std::string>("pname");
+                                   row["mutual"] = !playerPending && listed && !botPending;
+                                   row["asked"]  = playerPending;
+                                   row["listed"] = listed;
+                                   out[i++]      = row;
+                               }
+
+                               return out;
                            });
 
         ::lua.set_function("BotChat", [](uint32 charId, uint8 kind, const std::string& text) -> bool

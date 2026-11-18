@@ -43,6 +43,7 @@ using namespace std::chrono_literals;
 
 constexpr auto   kHandshakeDeadline  = 10s;
 constexpr auto   kRefreshInterval    = 1h;
+constexpr auto   kBotPresenceInterval = 5s; // XI: Forever Offline
 constexpr uint16 kConnectionsPerPeer = 16;
 
 // hardcoded in polcore
@@ -72,6 +73,13 @@ ProfileEngine::ProfileEngine(Scheduler& scheduler)
                                                     {
                                                         presence_.refreshCredentials();
                                                     });
+
+    // XI: Forever Offline: bot players have no client; their friends see them log in and out (PresenceManager::pollBots)
+    botPresenceToken_ = scheduler_.intervalOnMainThread(kBotPresenceInterval,
+                                                        [this]()
+                                                        {
+                                                            presence_.pollBots();
+                                                        });
 
     ShowInfoFmt("listening on {} (profile) and {} (irc)", profilePort, kIrcPort);
 }

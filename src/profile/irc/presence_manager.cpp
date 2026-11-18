@@ -26,7 +26,9 @@
 #include "irc/irc_session.h"
 #include "protocol/irc/notices.h"
 
+#include "common/database.h"
 #include "common/logging.h"
+#include "common/macros.h"
 
 #include <fmt/format.h>
 #include <magic_enum/magic_enum.hpp>
@@ -34,6 +36,7 @@
 #include <algorithm>
 #include <chrono>
 #include <ranges>
+#include <vector>
 
 namespace profile
 {
@@ -102,6 +105,12 @@ auto PresenceManager::status(const uint32 accountId) const -> Maybe<Status>
     if (const auto online = online_.find(accountId); online != online_.end())
     {
         return online->second.status;
+    }
+
+    // XI: Forever Offline: a bot player that is on (pollBots)
+    if (botsOn_.contains(accountId))
+    {
+        return Status{ .openStatus = OpenStatus::Online, .inGame = true };
     }
 
     return std::nullopt;
@@ -278,6 +287,82 @@ auto PresenceManager::nextTimestamp() -> uint64
     const auto now = static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     lastTimestamp_ = std::max(now, lastTimestamp_ + 1);
     return lastTimestamp_;
+}
+
+// XI: Forever Offline: bot players. Their accounts start at 21000000 (BotAccBase in modules/custom/cpp/bots.cpp);
+// a bot that is on has a row in accounts_sessions like any player. Only bots on someone's friend list are looked at.
+void PresenceManager::pollBots()
+{
+    constexpr uint32 kBotAccountBase = 21000000;
+
+    const auto rset = db::preparedStmt("SELECT p.accid AS player, p.friend_accid AS bot, "
+                                       "(p.pending = 0 AND b.accid IS NOT NULL AND b.pending = 0) AS mutual, "
+                                       "EXISTS (SELECT 1 FROM accounts_sessions s WHERE s.accid = p.friend_accid) AS playing "
+                                       "FROM accounts_friends p "
+                                       "LEFT JOIN accounts_friends b ON b.accid = p.friend_accid AND b.blacklist = 0 AND b.friend_accid = p.accid "
+                                       "WHERE p.accid < ? AND p.friend_accid >= ? AND p.blacklist = 0",
+                                       kBotAccountBase,
+                                       kBotAccountBase);
+    if (!rset)
+    {
+        return;
+    }
+
+    auto on      = std::unordered_set<uint32>{};
+    auto friends = std::set<std::pair<uint32, uint32>>{};
+    FOR_DB_MULTIPLE_RESULTS(rset)
+    {
+        const auto bot = rset->get<uint32>("bot");
+        if (rset->get<uint32>("playing") != 0)
+        {
+            on.insert(bot);
+        }
+
+        if (rset->get<uint32>("mutual") != 0)
+        {
+            friends.emplace(bot, rset->get<uint32>("player"));
+        }
+    }
+
+    // logged in or out since the last look: their friends see it now
+    auto changed = std::vector<uint32>{};
+    for (const auto bot : on)
+    {
+        if (!botsOn_.contains(bot))
+        {
+            changed.push_back(bot);
+        }
+    }
+
+    for (const auto bot : botsOn_)
+    {
+        if (!on.contains(bot))
+        {
+            changed.push_back(bot);
+        }
+    }
+
+    botsOn_ = std::move(on);
+    for (const auto bot : changed)
+    {
+        announce(bot);
+    }
+
+    // a bot accepted a friend request (bots.cpp writes both entries): the player sees it now, not at the next log in
+    if (botsPolled_)
+    {
+        for (const auto& [bot, player] : friends)
+        {
+            if (!botFriends_.contains({ bot, player }))
+            {
+                ShowInfoFmt("bot account {} and account {} are now friends", bot, player);
+                introduce(bot, player);
+            }
+        }
+    }
+
+    botFriends_ = std::move(friends);
+    botsPolled_ = true;
 }
 
 } // namespace profile
