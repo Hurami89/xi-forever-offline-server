@@ -86,7 +86,8 @@ end
 -- Before this the counter's addStatusEffect failed and the page stopped right after "completed": no reward, and the
 -- page stayed full and never finished.
 local function realArgs(proxy, player, ...)
-    local args = table.pack(...)
+    -- LuaJIT (the map server): no table.pack / table.unpack, so select('#') and the global unpack
+    local args = { n = select('#', ...), ... }
     for i = 1, args.n do
         local a = args[i]
         if rawequal(a, proxy) then
@@ -102,7 +103,7 @@ local function realArgs(proxy, player, ...)
         end
     end
 
-    return table.unpack(args, 1, args.n)
+    return (unpack or table.unpack)(args, 1, args.n)
 end
 
 local function standIn(player, held)

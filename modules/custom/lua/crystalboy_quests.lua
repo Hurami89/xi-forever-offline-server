@@ -561,6 +561,19 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
 
             player:printToPlayer(string.format('Your inventory now holds %d items (your Gobbiebag quests).', want), xi.msg.channel.SYSTEM_3)
         end
+
+        -- Classic: a brand-new character's Mog Wardrobes 1-8 and Mog Case start closed, as on Phoenix
+        -- (disable_optional_storage.sql); Phoenix's mission and quest rewards open them 5 at a time. The database
+        -- default is 80, so without this they were all open. Only empty bags on a first log in: bags never shrink.
+        if firstLogin then
+            for _, name in ipairs({ 'MOGCASE', 'WARDROBE', 'WARDROBE2', 'WARDROBE3', 'WARDROBE4', 'WARDROBE5', 'WARDROBE6', 'WARDROBE7', 'WARDROBE8' }) do
+                local loc  = xi.inv[name]
+                local size = loc and player:getContainerSize(loc) or 0
+                if size > 0 and player:getFreeSlotsCount(loc) >= size then
+                    player:changeContainerSize(loc, -size)
+                end
+            end
+        end
     end
 
     return result
