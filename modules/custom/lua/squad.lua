@@ -4555,10 +4555,9 @@ jobs[jobIds.COR] =
 -- so a squad mate cannot own one without a change to the pet code itself.
 jobs[jobIds.PUP] =
 {
-    ja = function(mob)
-        mob:setTrustTPSkillSettings(ai.tp.ASAP, ai.s.HIGHEST, 1000)
-    end,
+    -- (the weapon skill timing sits in stance: an edited PUP rule list from the launcher replaces "ja", 2026-11-17)
     stance = function(mob)
+        mob:setTrustTPSkillSettings(ai.tp.ASAP, ai.s.HIGHEST, 1000)
         mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MELEE)
     end,
 }
