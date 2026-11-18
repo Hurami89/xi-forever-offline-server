@@ -249,6 +249,7 @@ local function usage(player)
     say(player, '!squad give <item name or id>   - give an item to your squad once; every mate can then wear it')
     say(player, '!squad unlocked   - show what your squad has been given')
     say(player, '!squad equip <slot> <item name or id> [equip slot]   |   !squad unequip <slot> <equip slot or all>')
+    say(player, '!squad lockstyle <slot> <item> [equip slot] | set | off [equip slot]   - how a mate looks, whatever it wears')
     say(player, '!squad gear <slot>   (gear is saved per job; equip slots: head body hands legs feet main sub range ammo neck waist ear1 ear2 ring1 ring2 back)')
     say(player, '!squad rename <slot> <name>   |   !squad delete <slot>')
     say(player, '!squad call [slot or all]   |   !squad dismiss [slot]   |   !squad food   (what they have eaten)')
@@ -1791,6 +1792,30 @@ end
 -- hand, and the gear stays as it was. Choosing a piece by hand turns it off. A global (squad.lua is near Lua's
 -- 200-local limit). Two-handed weapons get a grip or nothing in the sub slot, hand-to-hand nothing, one-handed a
 -- shield (a ninja: a second weapon); arrows and bolts only with a bow or crossbow of the same kind.
+-- (2026-11-18, Bob's idea) Lockstyle: how a mate LOOKS, apart from what it wears. Per mate (every job), the visible slots
+-- only (main, sub, ranged, head, body, hands, legs, feet). Char vars SQUAD_LS_<mate id>_<slot> = item id (0 = shows the real
+-- gear). Any piece given to the squad that fits the slot can be shown, whatever its level or job, like a player's lockstyle.
+-- Globals: squad.lua is at Lua's local limit.
+SQUAD_LS_SLOTS = { [0] = true, [1] = true, [2] = true, [4] = true, [5] = true, [6] = true, [7] = true, [8] = true }
+function squadLockstyleGet(player, mateId)
+    local out, any = {}, false
+    for slot in pairs(SQUAD_LS_SLOTS) do
+        local item = player:getCharVar(string.format('SQUAD_LS_%d_%d', mateId, slot))
+        if item > 0 then
+            out[slot], any = item, true
+        end
+    end
+    return out, any
+end
+function squadLockstyleSet(player, mateId, slot, item)
+    player:setCharVar(string.format('SQUAD_LS_%d_%d', mateId, slot), item or 0)
+end
+function squadLockstyleClear(player, mateId)
+    for slot in pairs(SQUAD_LS_SLOTS) do
+        squadLockstyleSet(player, mateId, slot, 0)
+    end
+end
+
 SQUAD_TWO_HANDED = { [4] = true, [6] = true, [7] = true, [8] = true, [10] = true, [12] = true }
 
 function squadAutoEquip(player, mate)
@@ -1909,6 +1934,7 @@ local function callMate(player, mate)
         blueSet    = squadBlueSetGet(player, mate.id),            -- (a Blue Mage) your chosen set; empty = automatic
         bluePrefer = squadBluePrefer(),
         equip    = outfit,
+        lockstyle = (squadLockstyleGet(player, mate.id)),  -- (the look shown over the real gear, if any)
     })
 
     if trust == nil then
@@ -2722,6 +2748,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             end
         end
 
+        for slot, itemId in pairs((squadLockstyleGet(player, mate.id))) do
+            local info = GetSquadItemInfo(itemId)
+            say(player, string.format('squadsheet:ls|%d|%s|%s|%d', slot, equipSlotNames[slot], clean(info.valid and info.name or itemId), itemId))
+        end
+
         say(player, 'squadsheet:end')
         return
     end
@@ -3487,6 +3518,72 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             say(player, 'Auto-equip is now off (you chose gear by hand).')
         end
         return
+    elseif action == 'lockstyle' or action == 'ls' then
+        -- !squad lockstyle <slot> <item> [equip slot] | set | off [equip slot]
+        local what = string.lower(arg2 or '')
+        if what == '' then
+            local locked, any = squadLockstyleGet(player, mate.id)
+            say(player, string.format('%s - lockstyle:%s', mate.name, any and '' or ' off (shows the gear it wears)'))
+            for slot, itemId in pairs(locked) do
+                local info = GetSquadItemInfo(itemId)
+                say(player, string.format('  %s: %s', equipSlotNames[slot], info.valid and info.name or tostring(itemId)))
+            end
+            say(player, 'Use: !squad lockstyle <slot> <item> [slot] | set | off [slot]')
+            return
+        elseif what == 'off' or what == 'clear' then
+            local slotIndex = arg3 and equipSlots[string.lower(arg3)]
+            if slotIndex ~= nil then
+                squadLockstyleSet(player, mate.id, slotIndex, 0)
+                say(player, string.format('%s shows its own %s gear again. Dismiss and call them again to apply.', mate.name, equipSlotNames[slotIndex]))
+            else
+                squadLockstyleClear(player, mate.id)
+                say(player, string.format('Lockstyle off: %s shows the gear it wears. Dismiss and call them again to apply.', mate.name))
+            end
+            return
+        elseif what == 'set' then
+            -- lock the look it has right now (its current job's gear)
+            squadLockstyleClear(player, mate.id)
+            local n = 0
+            for slot, itemId in pairs(mate.equip[mate.mjob] or {}) do
+                if SQUAD_LS_SLOTS[slot] and itemId ~= 0 then -- (the starter mark is slot 255, not a lockstyle slot)
+                    squadLockstyleSet(player, mate.id, slot, itemId)
+                    n = n + 1
+                end
+            end
+            say(player, string.format('%s keeps this look (%d pieces) whatever it wears from now on. Dismiss and call them again to apply.', mate.name, n))
+            return
+        end
+
+        local itemId = FindSquadItem(arg2 or '')
+        local info = itemId ~= 0 and GetSquadItemInfo(itemId) or { valid = false }
+        if not info.valid then
+            say(player, 'Item not found, or not something you can wear. Use the item name (like leather_vest) or its id.')
+            return
+        end
+
+        if REQUIRE_UNLOCK and not GetSquadUnlocks(charId)[itemId] then
+            say(player, string.format('%s has not been given to your squad yet. Use !squad give %s first.', info.name, arg2))
+            return
+        end
+
+        local slotIndex = arg3 and equipSlots[string.lower(arg3)] or nil
+        if slotIndex == nil then
+            for s2 = 0, 8 do
+                if SQUAD_LS_SLOTS[s2] and hasBit(info.slot, s2) then
+                    slotIndex = s2
+                    break
+                end
+            end
+        end
+
+        if slotIndex == nil or not SQUAD_LS_SLOTS[slotIndex] or not hasBit(info.slot, slotIndex) then
+            say(player, string.format('%s does not show in that slot (lockstyle covers main, sub, range, head, body, hands, legs, feet).', info.name))
+            return
+        end
+
+        squadLockstyleSet(player, mate.id, slotIndex, itemId)
+        say(player, string.format('%s now looks like it wears %s (%s). Dismiss and call them again to apply.', mate.name, info.name, equipSlotNames[slotIndex]))
+        return
     elseif action == 'unequip' then
         if player:getCharVar('SQUAD_AUTOEQUIP') == 1 then
             player:setCharVar('SQUAD_AUTOEQUIP', 0)
@@ -3532,6 +3629,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         return
     elseif action == 'delete' then
         player:setCharVar('SQUAD_LOOK_' .. mate.id, 0)
+        squadLockstyleClear(player, mate.id)
         player:setCharVar('SQUAD_SIZE_' .. mate.id, 0)
         player:setCharVar('SQUAD_WSTP_' .. mate.id, 0)
         player:setCharVar('SQUAD_WS_' .. mate.id, 0)

@@ -1,0 +1,8 @@
+# XI: Forever Offline (2026-11-18, Yache): the ??? that gives the Pouch of Weighted Stones (opens the Banishing Gates
+# alone). Core tags it as Abyssea content, so RESTRICT_CONTENT hid it; a solo player can't work the gates otherwise.
+# "content: null" removes the tag (merge patch).
+
+npcs:
+
+  17596841:
+    content: null

@@ -1,0 +1,8 @@
+# XI: Forever Offline (2026-11-18, Yache): Lokpix, who gives the Loadstone (quest "Open Sesame": the Quicksand Caves
+# doors open for one person). Core tags him as Abyssea content, so RESTRICT_CONTENT hid him.
+# "content: null" removes the tag (merge patch).
+
+npcs:
+
+  17244656:
+    content: null

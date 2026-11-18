@@ -346,7 +346,33 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
     // The appearance is handed to the spawn itself, so the very first message the game receives already shows the right race,
     // face and armor. (Changing it afterwards does not work: a renamed character's update packets garble the armor.)
     const sol::optional<sol::table> equip = spec.get<sol::optional<sol::table>>("equip");
-    const OutfitLook                outfit = equip ? outfitLook(*equip) : OutfitLook{};
+    OutfitLook                      outfit = equip ? outfitLook(*equip) : OutfitLook{};
+
+    // (2026-11-18) lockstyle: the look the player chose for this mate replaces what its gear shows, slot by slot.
+    // Only the look: stats still come from `equip` (applyEquipment below).
+    if (const auto lockstyle = spec.get<sol::optional<sol::table>>("lockstyle"); lockstyle && !lockstyle->empty())
+    {
+        const OutfitLook locked = outfitLook(*lockstyle);
+        bool             has[9] = {};
+        for (const auto& kv : *lockstyle)
+        {
+            if (kv.first.is<int>())
+            {
+                if (const int slot = kv.first.as<int>(); slot >= 0 && slot <= 8)
+                {
+                    has[slot] = true;
+                }
+            }
+        }
+        outfit.main   = has[0] ? locked.main : outfit.main;
+        outfit.sub    = has[1] ? locked.sub : ((has[0] && locked.sub != 0) ? locked.sub : outfit.sub); // (a locked hand-to-hand look fills both hands)
+        outfit.ranged = has[2] ? locked.ranged : outfit.ranged;
+        outfit.head   = has[4] ? locked.head : outfit.head;
+        outfit.body   = has[5] ? locked.body : outfit.body;
+        outfit.hands  = has[6] ? locked.hands : outfit.hands;
+        outfit.legs   = has[7] ? locked.legs : outfit.legs;
+        outfit.feet   = has[8] ? locked.feet : outfit.feet;
+    }
     if (race >= 1 && race <= 8)
     {
         squadSpec.hasLook    = true;
