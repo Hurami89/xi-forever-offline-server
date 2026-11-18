@@ -432,7 +432,8 @@ function L.tick()
                 local speakers = {}
                 for _, id in ipairs(ids) do
                     local e = GetPlayerByID(id)
-                    if e and e:isAlive() and e:getZoneID() == zoneId then
+                    -- (not a bot in a party: "going to sell some stuff" or "no pts?" from your party member was odd)
+                    if e and e:isAlive() and e:getZoneID() == zoneId and e:getPartySize() <= 1 then
                         speakers[#speakers + 1] = e
                     end
                 end

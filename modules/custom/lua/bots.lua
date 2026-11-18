@@ -222,7 +222,23 @@ end
 
 local HUNT_CHECK = { 5 * 60, 15 * 60 } -- seconds in town between two "go hunting?" thoughts
 local DEAD_ALONE = { 15, 40 }          -- seconds dead (not with you) before it returns to its Home Point
-local DEAD_WITH_YOU = 180              -- with you: it waits this long for a Raise
+local DEAD_WITH_YOU = 180              -- with you: it waits this long for a Raise (when someone in the party can cast one)
+local DEAD_NO_RAISE = 30               -- with you, but nobody in the party can Raise: it goes home after this
+local REST_STILL_S = 8                 -- you stood still this long, out of a fight: a bot low on HP/MP sits down to rest
+
+-- someone alive in the bot's party who can cast Raise (WHM 25+, RDM 35+)
+local function partyCanRaise(bot)
+    for _, m in pairs(bot:getParty() or {}) do
+        if m:getID() ~= bot:getID() and m:isAlive() then
+            local job, lvl = m:getMainJob(), m:getMainLvl()
+            if (job == 3 and lvl >= 25) or (job == 5 and lvl >= 35) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
 
 local function tell(player, text)
     player:printToPlayer('[Bots] ' .. text, (xi.msg and xi.msg.channel and xi.msg.channel.SYSTEM_3) or 29)
@@ -459,7 +475,10 @@ think = function(bot, token)
 
     if bot:isDead() and not (st.hunt and hunt) then
         st.deadAt = st.deadAt or os.time()
-        local wait = leader and DEAD_WITH_YOU or (st.deadWait or math.random(DEAD_ALONE[1], DEAD_ALONE[2]))
+        local wait = leader and (partyCanRaise(bot) and DEAD_WITH_YOU or DEAD_NO_RAISE) or (st.deadWait or math.random(DEAD_ALONE[1], DEAD_ALONE[2]))
+        if st.releaseNow then
+            wait, st.releaseNow = 0, nil -- (you said "release" in party chat)
+        end
         st.deadWait = wait
         if os.time() - st.deadAt >= wait and BotHomepoint then
             st.deadAt, st.deadWait = nil, nil
@@ -501,6 +520,7 @@ think = function(bot, token)
     if leader and leader:getZoneID() == bot:getZoneID() then
         local target = leader:isEngaged() and leader:getTarget() or nil
         if target and target:isAlive() and st.mode ~= 'stay' then
+            st.resting = nil -- (BotHeal(id, false) below stands it up)
             -- assist: attack what the leader attacks, and stand next to it (a mage that does not melee stays behind you)
             local back = partyPlay and partyPlay.stayBack(bot)
             if back then
@@ -541,7 +561,33 @@ think = function(bot, token)
             end
 
             st.attacking = nil
-            if st.mode == 'follow' then
+
+            -- resting with you: when you /heal, or when it is low and you have stood still for a few seconds;
+            -- up again when you move off or a fight starts
+            local lp = leader:getPos()
+            local moved = st.lpos ~= nil and ((lp.x - st.lpos.x) ^ 2 + (lp.z - st.lpos.z) ^ 2) > 1
+            st.lpos = lp
+            if moved or not st.stillSince then
+                st.stillSince = os.time()
+            end
+
+            local hurt = bot:getHPP() < 60 or (bot:getMaxMP() > 0 and bot:getMPP() < 50)
+            local full = bot:getHPP() >= 100 and (bot:getMaxMP() == 0 or bot:getMPP() >= 100)
+            local leaderRests = xi.animation and leader:getAnimation() == xi.animation.HEALING
+            local wantRest = not full and (leaderRests or (hurt and os.time() - st.stillSince >= REST_STILL_S))
+                and bot:checkDistance(leader) < 10
+            if wantRest and not st.resting then
+                st.resting = true
+                BotStop(id)
+                BotHeal(id, true)
+            elseif st.resting and (moved or (full and not leaderRests)) then
+                st.resting = nil
+                BotHeal(id, false)
+            end
+
+            if st.resting then
+                -- (sitting: it stays put)
+            elseif st.mode == 'follow' then
                 BotFollow(id, leader, 3)
             else
                 BotStop(id)
@@ -1531,7 +1577,7 @@ end
 -----------------------------------
 xi.bots.partyOrder = function(player, text)
     local word = string.lower((text or ''):match('^%s*(%a+)') or '')
-    if word ~= 'follow' and word ~= 'stay' and word ~= 'attack' and word ~= 'stop' then
+    if word ~= 'follow' and word ~= 'stay' and word ~= 'attack' and word ~= 'stop' and word ~= 'release' then
         -- not an order: party talk (a bot may answer)
         if talk then
             local list = {}
@@ -1557,6 +1603,10 @@ xi.bots.partyOrder = function(player, text)
             elseif word == 'stay' then
                 st.mode = 'stay'
                 BotStop(id)
+            elseif word == 'release' then
+                if member:isDead() then
+                    st.releaseNow = true -- (the dead branch of its brain sends it to its Home Point)
+                end
             elseif word == 'stop' then
                 st.attacking = nil
                 BotAttackOff(id)
@@ -1571,7 +1621,11 @@ xi.bots.partyOrder = function(player, text)
             end
 
             member:timer(math.random(500, 1500), function(b)
-                chat(b, 4, ({ follow = 'k, following', stay = 'k, staying here', stop = 'stopping', attack = 'on it' })[word])
+                local line = ({ follow = 'k, following', stay = 'k, staying here', stop = 'stopping', attack = 'on it',
+                                release = b:isDead() and 'ok, see you back in town' or nil })[word]
+                if line then
+                    chat(b, 4, line)
+                end
             end)
         end
     end

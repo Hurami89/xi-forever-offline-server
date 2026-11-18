@@ -132,6 +132,8 @@ local function one(c, who, ctx)
         return ctx.tank == nil
     elseif kind == C.HP_MISSING then
         return (who:getMaxHP() - who:getHP()) >= value
+    elseif C.NOT_SC_AVAILABLE ~= nil and kind == C.NOT_SC_AVAILABLE then
+        return true  -- (a bot can't see an open skillchain: treated as none, so a BLM's "nuke when no skillchain" works)
     end
 
     return false -- (conditions a bot cannot judge: skipped)
@@ -194,12 +196,40 @@ local function candidates(bot, target, ctx)
     return out
 end
 
+-- elemental nukes, best tier first: for profile lines that say "the highest" or "the best against the target"
+-- with no spell family (a black mage's nukes). A random element of the best tier the bot knows and has MP for.
+local NUKE_ELEMENTS = { 'STONE', 'WATER', 'AERO', 'FIRE', 'BLIZZARD', 'THUNDER' }
+local NUKE_TIERS = { '_IV', '_III', '_II', '' }
+local function bestNuke(bot)
+    for _, tier in ipairs(NUKE_TIERS) do
+        local ok = {}
+        for _, el in ipairs(NUKE_ELEMENTS) do
+            local id = xi.magic.spell[el .. tier]
+            if id and canCast(bot, id) then
+                ok[#ok + 1] = id
+            end
+        end
+
+        if #ok > 0 then
+            return ok[math.random(1, #ok)]
+        end
+    end
+
+    return nil
+end
+
 local function doAction(bot, st, action, who)
     local R, S = ai.r, ai.s
     local id = bot:getID()
     if action[1] == R.MA then
         local spell
-        if action[2] == S.SPECIFIC then
+        if S.MB_ELEMENT ~= nil and action[2] == S.MB_ELEMENT then
+            return false -- (magic bursts need the skillchain a bot can't see)
+        elseif (action[2] == S.HIGHEST or (S.BEST_AGAINST_TARGET ~= nil and action[2] == S.BEST_AGAINST_TARGET))
+            and (action[3] == nil or action[3] == 0 or (xi.magic.spellFamily and action[3] == xi.magic.spellFamily.NONE)
+                or (S.BEST_AGAINST_TARGET ~= nil and action[2] == S.BEST_AGAINST_TARGET)) then
+            spell = bestNuke(bot)
+        elseif action[2] == S.SPECIFIC then
             spell = canCast(bot, action[3]) and action[3] or nil
         else
             local list = familySpells(action[3])
