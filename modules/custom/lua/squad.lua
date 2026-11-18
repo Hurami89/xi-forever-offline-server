@@ -240,6 +240,7 @@ local function usage(player)
     say(player, '!squad call [slot or all]   |   !squad dismiss [slot]   |   !squad food   (what they have eaten)')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
     say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
+    say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
     say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
@@ -1746,6 +1747,87 @@ local function chatRoster(player, squad)
     end
 end
 
+-- Auto-equip (SnkSyndicate's suggestion; the user's design, 2026-11-17): one squad-wide switch, !squad autoequip on.
+-- On: each mate wears the best gear you have given the squad that its job and level can use (highest item level
+-- first), picked again every time it is called (so after a level up or a job change too). Off: back to choosing by
+-- hand, and the gear stays as it was. Choosing a piece by hand turns it off. A global (squad.lua is near Lua's
+-- 200-local limit). Two-handed weapons get a grip or nothing in the sub slot, hand-to-hand nothing, one-handed a
+-- shield (a ninja: a second weapon); arrows and bolts only with a bow or crossbow of the same kind.
+SQUAD_TWO_HANDED = { [4] = true, [6] = true, [7] = true, [8] = true, [10] = true, [12] = true }
+
+function squadAutoEquip(player, mate)
+    local job, lvl = mate.mjob, levelsFor(mate)
+    local cand = {}
+    for itemId in pairs(GetSquadUnlocks(player:getID()) or {}) do
+        local info = GetSquadItemInfo(itemId)
+        if info and info.valid and info.level <= lvl and hasBit(info.jobs, job - 1) then
+            cand[#cand + 1] = { id = itemId, info = info }
+        end
+    end
+
+    if #cand == 0 then
+        return 0
+    end
+
+    table.sort(cand, function(a, b)
+        return a.info.level > b.info.level or (a.info.level == b.info.level and a.id < b.id)
+    end)
+
+    local used, pick = {}, {}
+    local function best(slot, ok)
+        for _, c in ipairs(cand) do
+            if hasBit(c.info.slot, slot) and not used[c.id] and (ok == nil or ok(c.info)) then
+                used[c.id] = true
+                return c.id, c.info
+            end
+        end
+
+        return nil
+    end
+
+    local mainId, mainInfo = best(0)
+    if mainId then
+        pick[0] = mainId
+        local skill = mainInfo.skill or 0
+        if SQUAD_TWO_HANDED[skill] then
+            pick[1] = best(1, function(i) return (i.shield or 0) == 0 and (i.skill or 0) == 0 end) or 0 -- (a grip)
+        elseif skill == 1 then
+            pick[1] = 0 -- (hand-to-hand: both hands)
+        elseif job == 13 and lvl >= 10 then
+            pick[1] = best(1, function(i) return (i.skill or 0) > 1 and not SQUAD_TWO_HANDED[i.skill] and i.skill < 25 end)
+                or best(1, function(i) return (i.shield or 0) > 0 end) or 0
+        else
+            pick[1] = best(1, function(i) return (i.shield or 0) > 0 end) or 0
+        end
+    end
+
+    local rangeId, rangeInfo = best(2)
+    if rangeId then
+        pick[2] = rangeId
+        local rs = rangeInfo.skill or 0
+        if rs == 25 or rs == 26 then
+            pick[3] = best(3, function(i) return (i.skill or 0) == rs end) or 0
+        end
+    end
+
+    for _, slot in ipairs({ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }) do
+        pick[slot] = best(slot)
+    end
+
+    mate.equip[job] = mate.equip[job] or {}
+    local worn, changed = mate.equip[job], 0
+    for slot = 0, 15 do
+        local want = pick[slot]
+        if want ~= nil and want ~= (worn[slot] or 0) then
+            SetSquadEquip(mate.id, job, slot, want)
+            worn[slot] = want ~= 0 and want or nil
+            changed = changed + 1
+        end
+    end
+
+    return changed
+end
+
 local function callMate(player, mate)
     if isSummoned(player, mate.id) then
         say(player, string.format('%s is already with you.', mate.name))
@@ -1762,6 +1844,9 @@ local function callMate(player, mate)
     local synced = main < jobLevel(mate, mate.mjob)
 
     ensureStarterGear(player, mate)
+    if player:getCharVar('SQUAD_AUTOEQUIP') == 1 then
+        pcall(squadAutoEquip, player, mate)
+    end
 
     local outfit = {}
     for slot, itemId in pairs(mate.equip[mate.mjob]) do
@@ -2298,6 +2383,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
 
         -- (servermenu 1.10) engage timing, and per mate: opt|<slot>|<size 0-3>|<ws TP, 0 = chain>|<chosen WS or ->|<range 0-3>|<usable WS, comma list or ->
         say(player, string.format('squadpanel:engage|%d', player:getCharVar('TrustEngageType') == 1 and 1 or 0))
+        say(player, string.format('squadpanel:auto|%d', player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 1 or 0))
         -- (servermenu 1.11) adv|<follow 0 normal, 1 close, 2 far>|<camp rest 1 on>|<call order, slots, or ->  and  delay|<slot>|<seconds>
         local orderCode = player:getCharVar('SQUAD_ORDER')
         say(player, string.format('squadpanel:adv|%d|%d|%s', player:getCharVar('SQUAD_FOLLOW'), player:getCharVar('SQUAD_CAMP_NOREST') == 1 and 0 or 1,
@@ -2888,6 +2974,27 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         return
     end
 
+    if action == 'autoequip' or action == 'auto' then
+        local wanted = string.lower(arg1 or '')
+        if wanted == 'on' or wanted == '1' then
+            player:setCharVar('SQUAD_AUTOEQUIP', 1)
+            local total = 0
+            for _, m in ipairs(GetSquad(player:getID()) or {}) do
+                local ok, n = pcall(squadAutoEquip, player, m)
+                total = total + ((ok and n) or 0)
+            end
+
+            say(player, string.format('Auto-equip is on: your squad wears the best gear you have given them (%d piece(s) changed), and picks again each time they are called. Apply now (or dismiss and call) to see it. !squad autoequip off to choose by hand.', total))
+        elseif wanted == 'off' or wanted == '0' then
+            player:setCharVar('SQUAD_AUTOEQUIP', 0)
+            say(player, 'Auto-equip is off: your squad keeps what it wears now, and you choose gear by hand.')
+        else
+            say(player, '!squad autoequip on | off   - mates wear the best given gear for their job and level. Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
+        end
+
+        return
+    end
+
     if action == 'engage' then
         -- When mates join a fight. The game reads the char var TrustEngageType (trust_controller.cpp): 0 = retail (you
         -- engage AND swing), 1 = as soon as you engage. Set here directly; the core !trustengage command is GM-only.
@@ -3093,8 +3200,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
 
         SetSquadEquip(mate.id, mate.mjob, slotIndex, itemId)
         say(player, string.format('%s now wears %s (%s) as %s. Dismiss and call them again to apply.', mate.name, info.name, equipSlotNames[slotIndex], jobNames[mate.mjob]))
+        if player:getCharVar('SQUAD_AUTOEQUIP') == 1 then
+            player:setCharVar('SQUAD_AUTOEQUIP', 0)
+            say(player, 'Auto-equip is now off (you chose gear by hand).')
+        end
         return
     elseif action == 'unequip' then
+        if player:getCharVar('SQUAD_AUTOEQUIP') == 1 then
+            player:setCharVar('SQUAD_AUTOEQUIP', 0)
+            say(player, 'Auto-equip is now off (you chose gear by hand).')
+        end
+
         local which = string.lower(arg2 or '')
         if which == 'all' then
             for s = 0, 15 do

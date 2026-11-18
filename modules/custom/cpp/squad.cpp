@@ -20,7 +20,7 @@
 //   - DeleteSquadMate(charId, slot)
 //   - SetSquadEquip(squadId, job, slot, itemId)   (itemId 0 removes the item)
 //   - FindSquadItem(text)                         -> item id from a numeric id or an item name, 0 if not found
-//   - GetSquadItemInfo(itemId)                    -> { valid, name, level, jobs, slot } for equipment
+//   - GetSquadItemInfo(itemId)                    -> { valid, name, level, jobs, slot, skill, shield } for equipment
 //   - Trading: when a player trades items to one of their squad mates, the offered items are handed to the Lua function
 //              xi.squad.onTrade(player, trust, items), where items = array of { itemId, slot, quantity }.
 //   - BuildStarterGear(job)                       -> { [slot] = itemId } basic level 1 gear for that job
@@ -617,14 +617,25 @@ auto getSquadItemInfo(const uint32 itemId) -> sol::table
     auto info     = ::lua.create_table();
     info["valid"] = false;
 
-    const auto rset = db::preparedStmt("SELECT name, level, jobs, slot FROM item_equipment WHERE itemId = ?", itemId);
+    info["skill"]  = 0; // weapon skill (item_weapon: 1 hand-to-hand, 4 great sword, ... 25 archery, 26 marksmanship, 27 throwing)
+    info["shield"] = 0; // shield size (0 = not a shield)
+
+    const auto rset = db::preparedStmt("SELECT name, level, jobs, slot, shieldSize FROM item_equipment WHERE itemId = ?", itemId);
     FOR_DB_SINGLE_RESULT(rset)
     {
-        info["valid"] = true;
-        info["name"]  = rset->get<std::string>("name");
-        info["level"] = rset->get<uint8>("level");
-        info["jobs"]  = rset->get<uint32>("jobs");
-        info["slot"]  = rset->get<uint32>("slot");
+        info["valid"]  = true;
+        info["name"]   = rset->get<std::string>("name");
+        info["level"]  = rset->get<uint8>("level");
+        info["jobs"]   = rset->get<uint32>("jobs");
+        info["slot"]   = rset->get<uint32>("slot");
+        info["shield"] = rset->get<uint8>("shieldSize");
+    }
+
+    // (for the squad's auto-equip: two-handed weapons, grips and shields, ammo that fits the ranged weapon)
+    const auto rsetW = db::preparedStmt("SELECT skill FROM item_weapon WHERE itemId = ?", itemId);
+    FOR_DB_SINGLE_RESULT(rsetW)
+    {
+        info["skill"] = rsetW->get<uint8>("skill");
     }
 
     return info;

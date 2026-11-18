@@ -271,13 +271,11 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
                 if (spot && distance(PTrust->loc.p, *spot) > 0.6f)
                 {
                     flanking = true;
-                    if (PTrust->PAI->PathFind->PathTo(*spot, PATHFLAG_RUN))
+                    // (only the path here: the FollowPath at the end of this tick takes the step. Stepping here as
+                    //  well moved the thief twice a tick, so players saw it snap behind the monster - Frost)
+                    if (!PTrust->PAI->PathFind->PathTo(*spot, PATHFLAG_RUN))
                     {
-                        PTrust->PAI->PathFind->FollowPath(m_Tick);
-                    }
-                    else
-                    {
-                        PTrust->PAI->PathFind->StepTo(*spot, false);
+                        PTrust->PAI->PathFind->StepTo(*spot, true);
                     }
                 }
             }
