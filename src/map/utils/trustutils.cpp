@@ -32,6 +32,7 @@
 #include "battleutils.h"
 #include "data/loader.h"
 #include "mobutils.h"
+#include "itemutils.h"
 
 #include "grades.h"
 #include "mob_spell_list.h"
@@ -583,7 +584,11 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
                 const uint8 bySub  = spec->sJob != 0 ? PListed->getJob(subJob) : 255;
                 const bool  jobOk  = byMain <= mainLevel || bySub <= subLevel;
                 const bool  noJob  = byMain == 255 && bySub == 255;
-                if (jobOk || noJob)
+                // (a job spell with no scroll is a monster's copy, e.g. Diaga II; blue magic and summons have none)
+                const auto  group    = PListed->getSpellGroup();
+                const bool  noScroll = group != SPELLGROUP_BLUE && group != SPELLGROUP_SUMMONING &&
+                                      xi::items::lookup(static_cast<uint16>(0x1200 + static_cast<uint16>(entry.spellId))) == nullptr;
+                if ((jobOk && !noScroll) || noJob)
                 {
                     known->AddSpell(entry.spellId, entry.min_level, entry.max_level);
                 }
@@ -606,6 +611,14 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
 
             // FFXI Offline: blue magic only for a squad Blue Mage (main or sub job)
             if (group == SPELLGROUP_BLUE && mainJob != xi::Job::BLU && subJob != xi::Job::BLU)
+            {
+                continue;
+            }
+
+            // (2026-11-18) a spell players learn comes on a scroll (item 4608 + spell id). One with no scroll item is a
+            // monster's version that only shares the job levels in the data (wildthing: a RDM mate knew Diaga II).
+            // Blue magic is learned from monsters, so it has no scrolls and is left alone.
+            if (group != SPELLGROUP_BLUE && xi::items::lookup(static_cast<uint16>(0x1200 + id)) == nullptr)
             {
                 continue;
             }

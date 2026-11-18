@@ -4075,7 +4075,7 @@ local function classify(action)
     end
 
     if reaction == ai.r.MA then
-        if selector == ai.s.MB_ELEMENT then
+        if selector == ai.s.MB_ELEMENT or (ai.s.BEST_AGAINST_TARGET ~= nil and selector == ai.s.BEST_AGAINST_TARGET) then
             return 'nuke'
         end
 
@@ -4291,7 +4291,7 @@ jobs[jobIds.BLM] =
     end,
     magic = function(mob, isSub)
         addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, isSub and 60 or 0), cond(ai.c.MB_AVAILABLE, 0)), { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE })
-        addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, isSub and 60 or 0), cond(ai.c.NOT_SC_AVAILABLE, 0)), { ai.r.MA, ai.s.HIGHEST, xi.magic.spellFamily.NONE }, 60)
+        addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, isSub and 60 or 0), cond(ai.c.NOT_SC_AVAILABLE, 0)), { ai.r.MA, ai.s.BEST_AGAINST_TARGET, 0 }, 60)
     end,
     stance = function(mob)
         local power = mob:getMainLvl() / 10
@@ -4331,7 +4331,7 @@ jobs[jobIds.RDM] =
         -- A skillchain just landed: magic burst it (with MP to spare for cures)
         addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, 30), cond(ai.c.MB_AVAILABLE, 0)), { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE })
         -- Now and then, after everything above: the best elemental spell the mob is weakest to, keeping MP for the rest
-        addGambit(mob, ai.t.TARGET, cond(ai.c.MPP_GTE, 50), { ai.r.MA, ai.s.BEST_AGAINST_TARGET, xi.magic.spell.STONE }, 30)
+        addGambit(mob, ai.t.TARGET, cond(ai.c.MPP_GTE, 50), { ai.r.MA, ai.s.BEST_AGAINST_TARGET, 0 }, 30)
     end,
     stance = function(mob)
         -- Red Mages fight up close and cast between swings. With the melee switch off (!squad sw / the panel),
@@ -4643,7 +4643,10 @@ local function ruleAction(spec)
     elseif kind == 'ranged' then
         return { ai.r.RATTACK, 0, 0 }
     elseif kind == 'nuke' then
-        return { ai.r.MA, ai.s.HIGHEST, xi.magic.spellFamily.NONE }
+        -- (2026-11-18) the best nuke of the element the monster is weakest to. HIGHEST with no family picked from
+        -- every spell without a family, i.e. Shock and Drown (Kennyj2007: a BLM that only cast those). The spell id 0
+        -- makes the game always choose by the weakness, at the best tier it knows.
+        return { ai.r.MA, ai.s.BEST_AGAINST_TARGET, 0 }
     elseif kind == 'burst' then
         return { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE }
     end
@@ -4977,6 +4980,10 @@ grantSquadExp = function(master, mate, squadId, gain)
         master:printToPlayer(string.format('%s reaches level %d!', name, outcome.level))
         if mate:getObjType() == xi.objType.TRUST then
             mate:setLocalVar('SQUAD_RELEVEL', outcome.level) -- (resyncSquad calls them back at it once the fight is over)
+            mate:setLocalVar('SQUAD_OWN', outcome.level)
+        end
+        if type(SquadSyncLevelled) == 'function' then
+            SquadSyncLevelled(master, name, outcome.level) -- a Level Sync to this mate follows its new level
         end
         if not xi.squad.visitor(master) then
             chatSend('UPDATE', name, 'level', outcome.level)

@@ -139,7 +139,15 @@ auto outfitLook(const sol::table& equip) -> OutfitLook
 
         switch (slot)
         {
-            case 0: look.main = withSlot(0x6000); break;
+            case 0:
+                look.main = withSlot(0x6000);
+                // (2026-11-18, Rysan) hand-to-hand weapons are worn on both hands: a player's sub look carries the
+                // same model, so without it the mate showed the weapon on one hand only
+                if (const auto* h2h = dynamic_cast<const CItemWeapon*>(item); h2h != nullptr && h2h->isHandToHand())
+                {
+                    look.sub = withSlot(0x7000);
+                }
+                break;
             case 1: look.sub = withSlot(0x7000); break;
             case 2: look.ranged = withSlot(0x8000); break;
             case 4: look.head = withSlot(0x1000); break;
@@ -152,6 +160,21 @@ auto outfitLook(const sol::table& equip) -> OutfitLook
     }
 
     return look;
+}
+
+// squad mates spawned with nothing in the main hand (barehanded MNK/PUP: hand-to-hand weapon skills)
+std::set<uint32> squadMainEmpty;
+
+// the most hits a weapon can make in one swing (item_weapon.hit; 1 for most weapons)
+auto weaponMaxHit(const uint16 itemId) -> uint8
+{
+    const auto rset = db::preparedStmt("SELECT hit FROM item_weapon WHERE itemId = ? LIMIT 1", itemId);
+    FOR_DB_SINGLE_RESULT(rset)
+    {
+        return static_cast<uint8>(std::clamp<int>(rset->get<int>("hit"), 1, 8));
+    }
+
+    return 1;
 }
 
 // Applies a squad mate's outfit stats: item modifiers and the main hand weapon.
@@ -190,7 +213,10 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
                 // in ms, so passing it converted twice: 4000 ms became 65 s, and the mate swung once a fight
                 mainWeapon->setDelay(weapon->getBaseDelay());
                 mainWeapon->setBaseDelay(weapon->getBaseDelay());
-                mainWeapon->setMaxHit(weapon->getHitCount() > 0 ? weapon->getHitCount() : static_cast<uint8>(1));
+                // the most hits it can make (Mercurial Kris & co.): from the item data. getHitCount() is one random roll
+                // of it, so copying that usually made every multi-hit weapon a single-hit one (sparkiie, 2026-11-18)
+                mainWeapon->setMaxHit(weaponMaxHit(itemId));
+                mainWeapon->setDmgType(const_cast<CItemWeapon*>(weapon)->getDmgType()); // (getDmgType isn't const)
 
                 if (mainWeapon->getDelay() > 0)
                 {
@@ -198,6 +224,33 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
                 }
             }
         }
+    }
+
+    // (2026-11-18) a second weapon in the sub slot: dual wield, as a player with the trait (NIN 10+ and the like:
+    // the DUAL_WIELD mod the job traits give). Before this only the main hand ever swung (sparkiie).
+    PTrust->m_dualWield = false;
+    for (const auto& entry : equip)
+    {
+        if (entry.first.as<int>() != 1)
+        {
+            continue;
+        }
+
+        const uint16 subId     = static_cast<uint16>(entry.second.as<uint32>());
+        const auto*  subItem   = dynamic_cast<const CItemWeapon*>(xi::items::lookup<CItemEquipment>(subId));
+        auto*        subWeapon = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[SLOT_SUB]);
+        if (subItem == nullptr || subWeapon == nullptr || subItem->getDamage() == 0 || PTrust->getMod(xi::Mod::DUAL_WIELD) <= 0)
+        {
+            continue; // (a shield, a grip, or no Dual Wield)
+        }
+
+        subWeapon->setSkillType(subItem->getSkillType());
+        subWeapon->setDamage(subItem->getDamage());
+        subWeapon->setDelay(subItem->getBaseDelay());
+        subWeapon->setBaseDelay(subItem->getBaseDelay());
+        subWeapon->setMaxHit(weaponMaxHit(subId));
+        subWeapon->setDmgType(const_cast<CItemWeapon*>(subItem)->getDmgType());
+        PTrust->m_dualWield = true;
     }
 
     if (!any)
@@ -327,6 +380,25 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
                  PTrust->getName(), outfit.head, outfit.body, outfit.hands, outfit.legs, outfit.feet, outfit.main, outfit.sub, outfit.ranged);
     }
 
+    {
+        bool mainHeld = false;
+        if (equip)
+        {
+            for (const auto& entry : *equip)
+            {
+                mainHeld = mainHeld || (entry.first.as<int>() == 0 && entry.second.as<uint32>() != 0);
+            }
+        }
+        if (mainHeld) { squadMainEmpty.erase(PTrust->id); } else { squadMainEmpty.insert(PTrust->id); }
+        if (!mainHeld && (PTrust->GetMJob() == xi::Job::MNK || PTrust->GetMJob() == xi::Job::PUP))
+        {
+            if (auto* fists = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[SLOT_MAIN]))
+            {
+                fists->setSkillType(xi::SkillType::HandToHand); // barehanded: hand-to-hand skill and weapon skills
+            }
+        }
+    }
+
     if (equip)
     {
         applyEquipment(PTrust, *equip);
@@ -350,8 +422,14 @@ void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
     }
 
     const auto* weapon     = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[SLOT_MAIN]);
-    const auto  weaponType = weapon != nullptr ? static_cast<uint8>(weapon->getSkillType()) : static_cast<uint8>(0);
     const auto  job        = PTrust->GetMJob();
+    auto        weaponType = weapon != nullptr ? static_cast<uint8>(weapon->getSkillType()) : static_cast<uint8>(0);
+    // (2026-11-18) a MNK or PUP mate with nothing in the main hand fights barehanded, like a player: hand-to-hand
+    // weapon skills. Before this an empty hand meant no weapon skills at all (Rysan).
+    if ((job == xi::Job::MNK || job == xi::Job::PUP) && squadMainEmpty.count(PTrust->id) != 0)
+    {
+        weaponType = static_cast<uint8>(xi::SkillType::HandToHand);
+    }
 
     // Exactly the weapon skills a player of this job could use with this weapon right now: no Trust-only moves
     // (Peacebreaker and the like), none for another weapon, none above the skill level, none that needs a quest.
@@ -918,6 +996,16 @@ int squadLevelSync(CLuaBaseEntity* player, const std::string& name)
     }
 
     return 1;
+}
+
+// a squad mate levelled up: a party synced to it follows its new level
+void squadSyncLevelled(CLuaBaseEntity* player, const std::string& name, const int level)
+{
+    auto* PChar = player ? dynamic_cast<CCharEntity*>(player->GetBaseEntity()) : nullptr;
+    if (PChar != nullptr && PChar->PParty != nullptr)
+    {
+        PChar->PParty->SquadMateLevelled(name, static_cast<uint8>(std::clamp(level, 0, 99)));
+    }
 }
 
 bool squadHasPet(CLuaBaseEntity* mate)
@@ -1753,6 +1841,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("SquadHasPet", squadHasPet);
         ::lua.set_function("SquadDismissMate", squadDismissMate);
         ::lua.set_function("SquadLevelSync", squadLevelSync);
+        ::lua.set_function("SquadSyncLevelled", squadSyncLevelled);
         ::lua.set_function("SquadPetAttack", squadPetAttack);
         ::lua.set_function("SquadNewSpells", squadNewSpells);
         ::lua.set_function("UnlockSquadItem", unlockSquadItem);

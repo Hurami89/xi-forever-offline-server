@@ -79,6 +79,7 @@ public:
 
     auto GetLeader() -> CBattleEntity*;
     auto GetSyncTarget() -> CBattleEntity*;
+    void SquadMateLevelled(const std::string& name, uint8 level); // XI: Forever Offline: the sync follows a squad mate's level up
     auto GetSyncLevel() -> uint8; // the level the party is synced to (the target's, or a squad mate's)
     auto GetQuaterMaster() -> CBattleEntity*;
     auto GetMemberByName(const std::string& memberName) -> CBattleEntity*; // Returns entity pointer for member name string
@@ -129,6 +130,7 @@ private:
 
     CBattleEntity* m_PLeader{};        // party leader
     CBattleEntity* m_PSyncTarget{};    // the CBattleEntity the party is being synced to
+    std::string    m_SyncName;         // XI: Forever Offline: the squad mate synced to (its level follows the mate's level ups)
     uint8          m_SyncLevel{};      // XI: Forever Offline: synced to a squad mate: that level (the leader stands in as the target); 0 = the target's own level
     CBattleEntity* m_PQuarterMaster{}; // the assigned Quartermaster
 

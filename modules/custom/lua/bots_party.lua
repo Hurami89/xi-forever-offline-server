@@ -346,6 +346,14 @@ function P.learn(bot)
                 return false
             end
 
+            -- a spell players learn comes on a scroll (item 4608 + id): one without is a monster's (Diaga II).
+            -- Summons (288-310) and blue magic (512+) don't come on scrolls.
+            if id < 288 or (id > 310 and id < 512) then
+                if not GetItemByID(SCROLL_ITEM + id) then
+                    return false
+                end
+            end
+
             local a, b = learnLevel(sp, main), learnLevel(sp, sub)
             return (a ~= nil and a <= mlvl and (not on or a < SCROLL_LEVEL))
                 or (b ~= nil and b <= slvl and (not on or b < SCROLL_LEVEL))

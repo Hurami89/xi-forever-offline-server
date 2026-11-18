@@ -94,6 +94,7 @@ CParty::~CParty()
     m_PAlliance      = nullptr;
     m_PSyncTarget    = nullptr;
     m_SyncLevel   = 0;
+    m_SyncName.clear();
     m_PQuarterMaster = nullptr;
 }
 
@@ -106,6 +107,7 @@ void CParty::DisbandParty(bool playerInitiated)
 
     m_PSyncTarget = nullptr;
     m_SyncLevel   = 0;
+    m_SyncName.clear();
     m_PLeader     = nullptr;
     m_PAlliance   = nullptr;
 
@@ -498,6 +500,7 @@ void CParty::PopMember(CBattleEntity* PEntity)
     {
         m_PSyncTarget = nullptr;
         m_SyncLevel   = 0;
+        m_SyncName.clear();
     }
 
     // free memory, party will re reinsatiated when they zone back in
@@ -803,6 +806,19 @@ auto CParty::GetPartyID() const -> uint32
 auto CParty::GetLeader() -> CBattleEntity*
 {
     return m_PLeader;
+}
+
+void CParty::SquadMateLevelled(const std::string& name, const uint8 level)
+{
+    // (2026-11-18) synced to a squad mate who just levelled up: follow it, as the sync follows a player who levels
+    // (wildthing: it stayed at the old level until /sync off and on again)
+    if (m_PSyncTarget == nullptr || m_SyncLevel == 0 || level == 0 || level == m_SyncLevel || strcmpi(name.c_str(), m_SyncName.c_str()) != 0)
+    {
+        return;
+    }
+
+    m_SyncLevel = level;
+    RefreshSync();
 }
 
 auto CParty::GetSyncLevel() -> uint8
@@ -1196,7 +1212,8 @@ void CParty::SetSyncTarget(const std::string& MemberName, MsgStd message)
             {
                 if (PTrust && (strcmpi(MemberName.c_str(), PTrust->getName().c_str()) == 0 || strcmpi(MemberName.c_str(), PTrust->packetName.c_str()) == 0))
                 {
-                    mateLevel = PTrust->GetMLevel();
+                    // its own level (SQUAD_OWN), not the level it was called at: synced to you, that can be lower
+                    mateLevel = PTrust->GetLocalVar("SQUAD_OWN") > 0 ? static_cast<uint8>(std::min<uint32>(PTrust->GetLocalVar("SQUAD_OWN"), 99)) : PTrust->GetMLevel();
                     if (PTrust->getZone() != GetLeader()->getZone())
                     {
                         static_cast<CCharEntity*>(GetLeader())->pushPacket<GP_SERV_COMMAND_BATTLE_MESSAGE>(static_cast<CCharEntity*>(GetLeader()), static_cast<CCharEntity*>(GetLeader()), 0, 0, MsgStd::LevelSyncDesigneeInOtherArea);
@@ -1240,6 +1257,7 @@ void CParty::SetSyncTarget(const std::string& MemberName, MsgStd message)
                 }
                 m_PSyncTarget = PChar;
                 m_SyncLevel   = mateLevel;
+                m_SyncName    = mateLevel > 0 ? MemberName : std::string();
                 for (auto& i : members)
                 {
                     auto* member = dynamic_cast<CCharEntity*>(i);
@@ -1295,6 +1313,7 @@ void CParty::SetSyncTarget(const std::string& MemberName, MsgStd message)
             }
             m_PSyncTarget = nullptr;
             m_SyncLevel   = 0;
+            m_SyncName.clear();
             db::preparedStmt("UPDATE accounts_parties SET partyflag = partyflag & ~? WHERE partyid = ? AND partyflag & ?",
                              PARTY_SYNC,
                              m_PartyID,
@@ -1383,6 +1402,7 @@ void CParty::DisableSync()
 {
     m_PSyncTarget = nullptr;
     m_SyncLevel   = 0;
+    m_SyncName.clear();
     ReloadParty();
 }
 
@@ -1545,6 +1565,7 @@ void CParty::RefreshFlags(std::vector<partyInfo_t>& info)
     m_PQuarterMaster = nullptr;
     m_PSyncTarget    = nullptr;
     m_SyncLevel   = 0;
+    m_SyncName.clear();
 
     for (auto&& memberinfo : info)
     {
@@ -1597,6 +1618,7 @@ void CParty::RefreshFlags(std::vector<partyInfo_t>& info)
                 {
                     m_PSyncTarget = nullptr;
                     m_SyncLevel   = 0;
+                    m_SyncName.clear();
                 }
             }
             if (memberinfo.flags & ALLIANCE_LEADER && m_PAlliance)
