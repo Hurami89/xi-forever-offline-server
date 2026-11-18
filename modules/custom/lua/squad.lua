@@ -1138,7 +1138,10 @@ local function campStatus(player)
     end
 
     local who = 'you'
-    if c.puller ~= 0 then
+    if c.pullerBot then
+        local b = GetPlayerByID(c.pullerBot)
+        who = b and (b:getName() .. ' (bot)') or 'a bot who left'
+    elseif c.puller ~= 0 then
         for _, trust in ipairs(squadTrusts(player)) do
             if trust:getLocalVar('SQUAD_ID') == c.puller then
                 who = trust:getPacketName()
@@ -2381,6 +2384,21 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
 
         say(player, string.format('squadpanel:camp|%d|%d|%d|%d', c and 1 or 0, pullerSlot, c and c.paused and 1 or 0, c and c.pulls or 0))
 
+        -- (servermenu 1.17) the bot players in your party, for the Puller list: campbots|<names, comma list or ->|<pulling bot or ->
+        if BotIsBot then
+            local botNames, pullerName = {}, '-'
+            for _, member in pairs(player:getParty() or {}) do
+                if BotIsBot(member:getID()) and member:getZoneID() == player:getZoneID() then
+                    botNames[#botNames + 1] = member:getName()
+                    if c and c.pullerBot == member:getID() then
+                        pullerName = member:getName()
+                    end
+                end
+            end
+
+            say(player, string.format('squadpanel:campbots|%s|%s', #botNames > 0 and table.concat(botNames, ',') or '-', pullerName))
+        end
+
         -- (servermenu 1.10) engage timing, and per mate: opt|<slot>|<size 0-3>|<ws TP, 0 = chain>|<chosen WS or ->|<range 0-3>|<usable WS, comma list or ->
         say(player, string.format('squadpanel:engage|%d', player:getCharVar('TrustEngageType') == 1 and 1 or 0))
         say(player, string.format('squadpanel:auto|%d', player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 1 or 0))
@@ -2704,7 +2722,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
                               want = old and old.zone == player:getZoneID() and old.want or nil }
             campApplyAll(player)
             say(player, 'Camp set here. Your squad holds this spot and fights whatever comes within 20 yalms of it.')
-            say(player, 'Who pulls: !squad pull <slot>  (a mate)  or  !squad pull me  |  !squad camp off  |  !squad camp pause|resume|status|range <yalms>|want <Monster_Name or any>')
+            say(player, 'Who pulls: !squad pull <slot>  (a mate)  or  !squad pull <bot name>  or  !squad pull me  |  !squad camp off  |  !squad camp pause|resume|status|range <yalms>|want <Monster_Name or any>')
         end
 
         return
@@ -2713,7 +2731,37 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
     if action == 'pull' then
         local who = arg1 and string.lower(arg1) or 'me'
         local mate = nil
-        if who ~= 'me' and who ~= 'off' then
+        -- a bot player in your party can pull too (bots.lua runs it)
+        local pullBot = nil
+        if who ~= 'me' and who ~= 'off' and BotIsBot then
+            for _, member in pairs(player:getParty() or {}) do
+                if BotIsBot(member:getID()) and string.lower(member:getName()) == who then
+                    pullBot = member
+                end
+            end
+        end
+
+        if pullBot then
+            local c = camps[charId]
+            if c == nil then
+                local pos = player:getPos()
+                c = { zone = player:getZoneID(), x = pos.x, y = pos.y, z = pos.z, puller = 0, state = 'idle', pulls = 0 }
+                camps[charId] = c
+                campApplyAll(player)
+                say(player, 'Camp set here (where you stand).')
+            end
+
+            for _, trust in ipairs(squadTrusts(player)) do
+                if trust:getLocalVar('SQUAD_ID') == c.puller then
+                    campStop(trust)
+                end
+            end
+
+            c.puller, c.pullerBot, c.state, c.nextPull = 0, pullBot:getID(), 'idle', os.time() + 2
+            say(player, string.format('%s pulls. Monsters level %d-%d within %d yalms of camp, one at a time.',
+                pullBot:getName(), math.max(1, player:getMainLvl() + CAMP_LEVELS[1]), player:getMainLvl() + CAMP_LEVELS[2], campRange(player)))
+            return
+        elseif who ~= 'me' and who ~= 'off' then
             mate = findMate(squad, tonumber(who) or -1)
             for _, m in ipairs(squad) do
                 if mate == nil and string.lower(m.name) == who then
@@ -2743,6 +2791,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         end
 
         c.state = 'idle'
+        c.pullerBot = nil
         if mate == nil then
             c.puller = 0
             say(player, 'You pull. Bring them back within 20 yalms of camp and the squad joins in.')
@@ -4732,6 +4781,38 @@ end
 -- For other modules (fov_no_buffs.lua: page exp for squad mates)
 xi.squad = xi.squad or {}
 xi.squad.activeMates = activeMates
+
+-- Camps for the bot players in your party (bots.lua, 2026-11-17): they hold the same camp as your squad, fight what
+-- comes within 20 yalms of it, and one of them can be the puller (!squad pull <bot name>, or the menu's Puller list).
+xi.squad.campInfo = function(player)
+    local c = camps[player:getID()]
+    if c == nil or c.zone ~= player:getZoneID() then
+        return nil
+    end
+
+    return c
+end
+
+xi.squad.campPickFor = function(player)
+    local c = camps[player:getID()]
+    if c == nil then
+        return nil
+    end
+
+    local ok, mob = pcall(campPick, player, c)
+    return ok and mob or nil
+end
+
+xi.squad.campRestOn = function(player)
+    return player:getCharVar('SQUAD_CAMP_NOREST') == 0
+end
+
+xi.squad.campCountPull = function(player)
+    local c = camps[player:getID()]
+    if c then
+        c.pulls = (c.pulls or 0) + 1
+    end
+end
 xi.squad.grantExp    = function(master, mate, squadId, gain)
     grantSquadExp(master, mate, squadId, math.floor(tonumber(gain) or 0))
 end

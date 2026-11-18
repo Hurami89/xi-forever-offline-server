@@ -348,6 +348,156 @@ local function realLeader(bot)
     return nil
 end
 
+-----------------------------------
+-- Camps (2026-11-17): your squad camp (!squad camp, the Squad menu's Camp row) holds the bot players in your party
+-- too. They stand around the camp spot instead of following you, fight whatever anyone in the party fights within
+-- CAMP_FIGHT yalms of it, and rest there when low (the camp rest switch). One of them can pull (!squad pull <name>,
+-- or the menu's Puller list): it picks a monster the way the squad puller does (your pull levels and monster
+-- picks), shoots it if it has a ranged weapon or tags it, and runs it back to camp.
+-----------------------------------
+local CAMP_FIGHT = 20
+local CAMP_PULL_GIVE_UP = 120  -- seconds before a pull that went nowhere is dropped
+local CAMP_PULL_FLEE_HP = 40
+
+local function campOf(leader)
+    if not (xi.squad and xi.squad.campInfo) then
+        return nil
+    end
+
+    local ok, c = pcall(xi.squad.campInfo, leader)
+    return ok and c or nil
+end
+
+local function nearCamp(c, ent, range)
+    local p = ent:getPos()
+    return (p.x - c.x) ^ 2 + (p.z - c.z) ^ 2 <= range * range
+end
+
+-- what to fight at camp: anything someone in your party (squad mates included) fights near camp, or the monster
+-- this bot brought back
+local function campTarget(leader, c, st)
+    for _, m in pairs(leader:getPartyWithTrusts() or {}) do
+        if m:isEngaged() then
+            local t = m:getTarget()
+            if t and t:isAlive() and t:getObjType() == xi.objType.MOB and nearCamp(c, t, CAMP_FIGHT) then
+                return t
+            end
+        end
+    end
+
+    if st.pullMob then
+        local t = GetMobByID(st.pullMob)
+        if t and t:isAlive() and t:isEngaged() then
+            if nearCamp(c, t, CAMP_FIGHT) then
+                return t
+            end
+        else
+            st.pullMob = nil
+        end
+    end
+
+    return nil
+end
+
+-- its own spot around the camp (so a few bots don't stand inside each other)
+local function campSpot(bot, st, c)
+    if not st.campSpot or st.campSpot.zone ~= c.zone or st.campSpot.cx ~= c.x or st.campSpot.cz ~= c.z then
+        local a, r = math.random() * 2 * math.pi, 2 + math.random() * 2
+        st.campSpot = { zone = c.zone, cx = c.x, cz = c.z, x = c.x + math.cos(a) * r, y = c.y, z = c.z + math.sin(a) * r }
+    end
+
+    return st.campSpot
+end
+
+-- the bot puller, once a second; true while it is busy with a pull
+local function campPullTurn(bot, st, leader, c)
+    local id = bot:getID()
+    if c.pullerBot ~= id or c.paused then
+        st.pull = nil
+        return false
+    end
+
+    local t = os.time()
+    local p = st.pull
+    if p == nil then
+        if campTarget(leader, c, st) or t < (st.pullNext or 0) or bot:getHPP() < 70 or bot:isEngaged() then
+            return false
+        end
+
+        local mob = xi.squad.campPickFor and xi.squad.campPickFor(leader)
+        if not mob then
+            st.pullNext = t + 5
+            return false
+        end
+
+        st.pull = { mob = mob:getID(), since = t, phase = 'go' }
+        if xi.squad.campCountPull then
+            pcall(xi.squad.campCountPull, leader)
+        end
+
+        chat(bot, 4, ({ 'pulling ' .. mob:getName(), 'getting one', 'brb with a ' .. mob:getName(), 'pull incoming soon' })[math.random(1, 4)])
+        return true
+    end
+
+    local mob = GetMobByID(p.mob)
+    if not mob or not mob:isAlive() or t - p.since > CAMP_PULL_GIVE_UP then
+        if mob and mob:isAlive() and p.phase == 'go' then
+            chat(bot, 4, 'cant get to it, coming back')
+        end
+
+        st.pull, st.pullNext = nil, t + 10
+        BotMoveTo(id, c.x, c.y, c.z)
+        return false
+    end
+
+    if p.phase == 'go' then
+        if mob:isEngaged() and not (mob:getTarget() and mob:getTarget():getID() == id) then
+            st.pull, st.pullNext = nil, t + 5 -- (someone else got it)
+            return false
+        end
+
+        local d = bot:checkDistance(mob)
+        local ranged = false
+        pcall(function()
+            ranged = bot:getEquipID(xi.slot.RANGED) ~= 0
+        end)
+
+        if mob:isEngaged() then
+            BotAttackOff(id)
+            p.phase = 'back'
+        elseif ranged and BotShoot and d <= 18 then
+            BotStop(id)
+            pcall(function()
+                bot:lookAt(mob:getPos())
+            end)
+            if t >= (p.shotAt or 0) then
+                p.shotAt = t + 4
+                BotShoot(id, mob)
+            end
+        elseif d <= 3 then
+            BotAttack(id, mob)
+        else
+            BotFollow(id, mob, 2)
+        end
+
+        return true
+    end
+
+    -- back to camp with it on its tail (or too hurt: it drops the pull and runs)
+    if bot:getHPP() < CAMP_PULL_FLEE_HP then
+        chat(bot, 4, 'too hurt, help!')
+    end
+
+    if nearCamp(c, bot, 4) then
+        st.pullMob, st.pull, st.pullNext = p.mob, nil, t + 8 -- (the camp fight takes over)
+        return false
+    end
+
+    BotAttackOff(id)
+    BotMoveTo(id, c.x, c.y, c.z)
+    return true
+end
+
 local think
 
 -- its own story: a few things that happened to it lately (it brings them up when you chat: bots_chat_ai.py keeps them)
@@ -517,14 +667,34 @@ think = function(bot, token)
         bcnm.drop(bot, st)
     end
 
+    local camp = (leader and leader:getZoneID() == bot:getZoneID() and st.mode ~= 'stay') and campOf(leader) or nil
+    if camp and campPullTurn(bot, st, leader, camp) then
+        schedule(bot, token)
+        return -- (out pulling for the camp)
+    end
+
     if leader and leader:getZoneID() == bot:getZoneID() then
-        local target = leader:isEngaged() and leader:getTarget() or nil
+        local target
+        if camp then
+            target = campTarget(leader, camp, st)
+        else
+            target = leader:isEngaged() and leader:getTarget() or nil
+        end
+
         if target and target:isAlive() and st.mode ~= 'stay' then
             st.resting = nil -- (BotHeal(id, false) below stands it up)
             -- assist: attack what the leader attacks, and stand next to it (a mage that does not melee stays behind you)
             local back = partyPlay and partyPlay.stayBack(bot)
             if back then
-                BotFollow(id, leader, 6)
+                if camp then
+                    local spot = campSpot(bot, st, camp) -- (at camp: casts from its spot, not next to you)
+                    local bp = bot:getPos()
+                    if (bp.x - spot.x) ^ 2 + (bp.z - spot.z) ^ 2 > 2.5 * 2.5 and not BotIsMoving(id) then
+                        BotMoveTo(id, spot.x, spot.y, spot.z)
+                    end
+                else
+                    BotFollow(id, leader, 6)
+                end
             else
                 -- (the attack is sent again until the server really has it engaged: a refused packet used to
                 --  leave the bot standing next to the monster, sure it was already fighting)
@@ -574,18 +744,40 @@ think = function(bot, token)
             local hurt = bot:getHPP() < 60 or (bot:getMaxMP() > 0 and bot:getMPP() < 50)
             local full = bot:getHPP() >= 100 and (bot:getMaxMP() == 0 or bot:getMPP() >= 100)
             local leaderRests = xi.animation and leader:getAnimation() == xi.animation.HEALING
-            local wantRest = not full and (leaderRests or (hurt and os.time() - st.stillSince >= REST_STILL_S))
+            local wantRest = not camp and not full and (leaderRests or (hurt and os.time() - st.stillSince >= REST_STILL_S))
                 and bot:checkDistance(leader) < 10
             if wantRest and not st.resting then
                 st.resting = true
                 BotStop(id)
                 BotHeal(id, true)
-            elseif st.resting and (moved or (full and not leaderRests)) then
+            elseif st.resting and not camp and (moved or (full and not leaderRests)) then
                 st.resting = nil
                 BotHeal(id, false)
             end
 
-            if st.resting then
+            if camp then
+                -- holding camp: back to its spot, then rest there when low (the camp rest switch)
+                local spot = campSpot(bot, st, camp)
+                local bp = bot:getPos()
+                if (bp.x - spot.x) ^ 2 + (bp.z - spot.z) ^ 2 > 2.5 * 2.5 then
+                    if st.resting then
+                        st.resting = nil
+                        BotHeal(id, false)
+                    end
+
+                    BotMoveTo(id, spot.x, spot.y, spot.z)
+                elseif not BotIsMoving(id) then
+                    local restOn = not (xi.squad and xi.squad.campRestOn) or xi.squad.campRestOn(leader)
+                    local low = bot:getHPP() < 80 or (bot:getMaxMP() > 0 and bot:getMPP() < 70)
+                    if restOn and low and not st.resting then
+                        st.resting = true
+                        BotHeal(id, true)
+                    elseif st.resting and full then
+                        st.resting = nil
+                        BotHeal(id, false)
+                    end
+                end
+            elseif st.resting then
                 -- (sitting: it stays put)
             elseif st.mode == 'follow' then
                 BotFollow(id, leader, 3)
