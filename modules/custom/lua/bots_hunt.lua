@@ -416,7 +416,9 @@ local function healTurn(bot, h)
         return false
     end
 
-    local worst, worstHP = nil, CURE_BELOW
+    -- sitting (the party rests): only a real emergency gets it up; resting brings the rest back
+    local sitting = bot:getAnimation() == 33
+    local worst, worstHP = nil, sitting and 30 or CURE_BELOW
     for _, m in ipairs(partyBots(bot)) do
         if m:isAlive() and m:getZoneID() == bot:getZoneID() and m:getHPP() < worstHP and d2(m:getPos(), bot:getPos()) <= 20 * 20 then
             worst, worstHP = m, m:getHPP()
@@ -427,8 +429,21 @@ local function healTurn(bot, h)
         return false
     end
 
-    local spell = bestSpell(bot, CURES)
-    if spell and bot:getMP() >= 8 then
+    -- the best cure it has the MP for: with too little MP for its best one it stood up, the cast was refused, it sat
+    -- down, stood up again ... (the party "resting and standing, up and down" in the Dunes, 2026-11-17)
+    local spell
+    for _, name in ipairs(CURES) do
+        local id = bestSpell(bot, { name })
+        local okC, cost = pcall(function()
+            return GetSpell(id):getMPCost()
+        end)
+        if id and okC and cost and cost <= bot:getMP() then
+            spell = id
+            break
+        end
+    end
+
+    if spell then
         BotHeal(bot:getID(), false) -- (stands up first: the server refuses a spell from someone who is resting)
         BotCast(bot:getID(), spell, worst)
         h.castWait = now() + 4

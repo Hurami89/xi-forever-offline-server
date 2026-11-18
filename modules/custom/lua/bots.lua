@@ -120,6 +120,59 @@ xi.bots.thiefTurn = function(bot, target)
     return true -- (behind it with Sneak Attack up, or holding the Trick Attack spot)
 end
 
+-- spreading out around the monster (2026-11-17, Impending Descent): melee bots used to stand on one spot in front
+-- of it. Whoever has the monster's attention stays in front; the others take their own place around its sides
+-- and back, like the squad mates do. Returns true while it is walking to (or holding) its place.
+local FLANK_ANGLES = { 110, -110, 150, -150, 180, 80, -80 } -- degrees from the monster's front, per party slot
+xi.bots.flankTurn = function(bot, target, stop)
+    if type(BotMoveTo) ~= 'function' or target == nil or not target:isAlive() or xi.bots.isCasting(bot) then
+        return false
+    end
+
+    local id   = bot:getID()
+    local tank = target:getTarget()
+    if tank == nil or tank:getID() == id then
+        return false -- (it is the one being hit: it stays in front)
+    end
+
+    local tp = target:getPos()
+    if bot:checkDistance(target) > 6 then
+        return false -- (still running to it: just follow)
+    end
+
+    -- its slot: its place among the party's melee members (by id), the tank left out
+    local slot, n = 1, 0
+    local ids = {}
+    for _, m in pairs(bot:getParty() or {}) do
+        if m:isAlive() and m:getID() ~= tank:getID() then
+            ids[#ids + 1] = m:getID()
+        end
+    end
+    table.sort(ids)
+    for i, mid in ipairs(ids) do
+        if mid == id then
+            slot = i
+        end
+        n = i
+    end
+
+    local kp = tank:getPos()
+    local front = math.atan2(kp.z - tp.z, kp.x - tp.x)
+    if (kp.x - tp.x) ^ 2 + (kp.z - tp.z) ^ 2 < 0.01 then
+        front = 2 * math.pi - (tp.rot / 256) * 2 * math.pi
+    end
+
+    local a = front + math.rad(FLANK_ANGLES[((slot - 1) % #FLANK_ANGLES) + 1])
+    local r = stop or 1.5
+    local spot = { x = tp.x + math.cos(a) * r, y = tp.y, z = tp.z + math.sin(a) * r }
+    local bp = bot:getPos()
+    if (bp.x - spot.x) ^ 2 + (bp.z - spot.z) ^ 2 > 0.9 * 0.9 then
+        BotMoveTo(id, spot.x, spot.y, spot.z)
+    end
+
+    return true
+end
+
 -- (bots.cpp registers BotList & co. AFTER the Lua modules load, so this is checked when a command is used)
 local function moduleBuilt()
     return type(BotList) == 'function'
@@ -704,7 +757,7 @@ think = function(bot, token)
                     st.attacking = BotAttack(id, target) and target:getID() or nil
                 end
 
-                if not xi.bots.thiefTurn(bot, target) then
+                if not xi.bots.thiefTurn(bot, target) and not xi.bots.flankTurn(bot, target, MELEE_STOP) then
                     BotFollow(id, target, MELEE_STOP)
                 end
                 -- the server only lets a character swing at (or weapon skill) something it faces
@@ -741,7 +794,8 @@ think = function(bot, token)
                 st.stillSince = os.time()
             end
 
-            local hurt = bot:getHPP() < 60 or (bot:getMaxMP() > 0 and bot:getMPP() < 50)
+            -- (casters sit for MP too, and stay down until full: 2026-11-17)
+            local hurt = bot:getHPP() < 70 or (bot:getMaxMP() > 0 and bot:getMPP() < 75)
             local full = bot:getHPP() >= 100 and (bot:getMaxMP() == 0 or bot:getMPP() >= 100)
             local leaderRests = xi.animation and leader:getAnimation() == xi.animation.HEALING
             local wantRest = not camp and not full and (leaderRests or (hurt and os.time() - st.stillSince >= REST_STILL_S))
@@ -785,8 +839,26 @@ think = function(bot, token)
                 BotStop(id)
             end
 
-            if partyPlay then
-                partyPlay.act(bot, st, leader, nil) -- between fights: cures and buffs
+            -- between fights: cures and buffs. While resting only a real emergency (someone under 50% HP) gets it up;
+            -- a buff or top-up cure used to stand it up for good, so a white mage healed once and then stood
+            -- there with no MP (Impending Descent, 2026-11-17)
+            local emergency = false
+            if st.resting then
+                for _, m in pairs(bot:getParty() or {}) do
+                    if m:isAlive() and m:getZoneID() == bot:getZoneID() and m:getHPP() < 50 and bot:checkDistance(m) < 20 then
+                        emergency = true
+                    end
+                end
+            end
+
+            if partyPlay and (not st.resting or emergency) then
+                partyPlay.act(bot, st, leader, nil)
+            end
+
+            -- still meant to be resting but standing (a cast stood it up): sit back down once the spell is done
+            if st.resting and not xi.bots.isCasting(bot) and os.time() >= (st.partyWait or 0)
+                and xi.animation and bot:getAnimation() ~= xi.animation.HEALING and not BotIsMoving(id) then
+                BotHeal(id, true)
             end
         end
     elseif st.attacking then

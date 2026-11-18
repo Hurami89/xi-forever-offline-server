@@ -98,6 +98,11 @@ local check -- forward
 local function one(c, who, ctx)
     local kind, value = c[1], c[2] or 0
     local C = ai.c
+    -- MP checks on a line aimed at the monster ("nuke while I have MP") are about the caster, not the monster: a
+    -- black mage's "MP 0% or more" was asked of the monster (no MP at all), so it never cast (2026-11-17)
+    if (kind == C.MPP_LT or kind == C.MPP_GTE) and ctx.self and ctx.mob and who == ctx.mob then
+        who = ctx.self
+    end
     if kind == C.ALWAYS then
         return true
     elseif kind == C.HPP_LT then
@@ -277,6 +282,38 @@ local function doAction(bot, st, action, who)
     return false
 end
 
+-- the spells of its main and sub job up to their levels, as if it had bought the scrolls (once per job/level):
+-- a bot that joined you straight from town only knew the few spells its field hunts had taught it, so a white mage
+-- had no Protectra and a black mage could have no nuke at all (2026-11-17). White, black, songs, ninjutsu and
+-- summoning (ids below 512); blue magic is set, not learned.
+local learnedKey = {}
+function P.learn(bot)
+    local key = string.format('%d:%d:%d:%d', bot:getMainJob(), bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl())
+    if learnedKey[bot:getID()] == key then
+        return
+    end
+
+    learnedKey[bot:getID()] = key
+    local main, mlvl, sub, slvl = bot:getMainJob(), bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl()
+    for id = 1, 511 do
+        local ok, need = pcall(function()
+            local sp = GetSpell(id)
+            if not sp then
+                return false
+            end
+
+            local a = sp:getLevel(main)
+            local b = (sub and sub ~= 0) and sp:getLevel(sub) or 255
+            return (a and a > 0 and a <= mlvl) or (b and b > 0 and b <= slvl)
+        end)
+        if ok and need and not bot:hasSpell(id) then
+            pcall(function()
+                bot:addSpell(id, { silentLog = true })
+            end)
+        end
+    end
+end
+
 -- one decision for a bot in a party (with you or with other bots); mob = the monster being fought (or nil).
 -- Returns true when it did something.
 function P.act(bot, st, leader, mob)
@@ -285,7 +322,8 @@ function P.act(bot, st, leader, mob)
     end
 
     st.partyCheck = now() + CHECK_EVERY
-    local ctx = { leader = leader, mob = (mob and mob:isAlive()) and mob or nil, members = {} }
+    P.learn(bot)
+    local ctx = { self = bot, leader = leader, mob = (mob and mob:isAlive()) and mob or nil, members = {} }
     for _, m in pairs(bot:getParty() or {}) do
         if m:getZoneID() == bot:getZoneID() and m:isAlive() and dist2(m, bot) <= RANGE * RANGE then
             ctx.members[#ctx.members + 1] = m
