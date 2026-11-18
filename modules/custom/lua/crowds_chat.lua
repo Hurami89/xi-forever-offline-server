@@ -9,6 +9,12 @@
 -- C:\FFXISOLO\crowds\crowd_chat_ai.py helper through your local Ollama) when "AI chatter" is on.
 -----------------------------------
 local T = require('modules/custom/lua/crowds_chat_data')
+-- lines from the dialogue pack (crowds_pack.lua): most town chatter comes from there; these templates still mix in
+local packOk, pack = pcall(require, 'modules/custom/lua/crowds_pack')
+if not packOk or type(pack) ~= 'table' then
+    pack = nil
+end
+local PACK_SHARE = 0.7 -- share of the lines (not taken from the AI pool) that come from the pack
 
 local chat = {}
 local env            -- set by chat.setup: cfg, data, makeName, dist2
@@ -272,6 +278,16 @@ end
 -----------------------------------
 -- making lines
 -----------------------------------
+-- a pack line of this kind for this speaker (nil when none fits, or now and then to let the templates through)
+local function packLine(cat, who, zoneId)
+    if not pack or math.random() >= PACK_SHARE then
+        return nil
+    end
+
+    local ok, line = pcall(pack.line, cat, who, zoneId, chat.levelOf(who))
+    return ok and line or nil
+end
+
 function chat.shoutLine(who, zoneId, group)
     local lvl = chat.levelOf(who)
     if group == 'endgame' and lvl < 75 then
@@ -283,7 +299,24 @@ function chat.shoutLine(who, zoneId, group)
             return fill(pick(ai.shout), who, zoneId)
         end
 
+        -- (no AI: a pack shout of the same kind - directions, a crafter, a hello to the town)
+        local okM, misc = false, nil
+        if pack then
+            okM, misc = pcall(pack.line, 'shout_misc', who, zoneId, lvl)
+        end
+
+        if okM and misc then
+            return fill(misc, who, zoneId)
+        end
+
         group = 'lfp'
+    end
+
+    if pack and pack.SHOUT[group] then
+        local p = packLine(pack.SHOUT[group], who, zoneId)
+        if p then
+            return fill(p, who, zoneId)
+        end
     end
 
     if group == 'lfp_heal' then
@@ -325,14 +358,16 @@ local function sayLine(who, zoneId, outpost)
             return fill(pick(ai.outpost), who, zoneId)
         end
 
-        return fill(pick(T.outpost), who, zoneId)
+        local p = packLine('outpost', who, zoneId)
+        return fill(p or pick(T.outpost), who, zoneId)
     end
 
     if useAi(ai.say, 0.5) then
         return fill(pick(ai.say), who, zoneId)
     end
 
-    return fill(pick(T.say), who, zoneId)
+    local p = packLine('say_town', who, zoneId)
+    return fill(p or pick(T.say), who, zoneId)
 end
 
 chat.sayLine = sayLine
@@ -341,6 +376,13 @@ local function pairLines(who, other, zoneId)
     local pr
     if useAi(ai.pairs, 0.5) then
         pr = pick(ai.pairs)
+    elseif pack and math.random() < PACK_SHARE then
+        local ok, a, b = pcall(pack.pair, who.name, other.name, zoneId, chat.levelOf(who))
+        if ok and a and b then
+            return fill(a, who, zoneId), fill(b, other, zoneId)
+        end
+
+        pr = pick(T.pairs)
     else
         pr = pick(T.pairs)
         -- now and then a pair from the dialogue pack (bots_dialogue.lua), when it is there
@@ -567,7 +609,8 @@ function chat.onNear(npc, bot, player)
 
     bot.greeted[id] = now
     local pos = npc:getPos()
-    sendSay({ player }, pos.x, pos.z, bot.name, fill(pick(T.greet), bot, npc:getZoneID(), player:getName()))
+    local line = packLine('greet', bot, npc:getZoneID()) or pick(T.greet)
+    sendSay({ player }, pos.x, pos.z, bot.name, fill(line, bot, npc:getZoneID(), player:getName()))
 end
 
 -- You touched a bot
@@ -578,7 +621,7 @@ function chat.onTouch(npc, bot, player)
 
     local now = os.time()
     loadAi(now)
-    local line = useAi(ai.react, 0.4) and pick(ai.react) or pick(T.react)
+    local line = useAi(ai.react, 0.4) and pick(ai.react) or packLine('react', bot, npc:getZoneID()) or pick(T.react)
     local pos = npc:getPos()
     sendSay({ player }, pos.x, pos.z, bot.name, fill(line, bot, npc:getZoneID(), player:getName()))
 end
