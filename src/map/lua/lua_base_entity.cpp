@@ -8093,13 +8093,23 @@ auto CLuaBaseEntity::getFame(const xi::FameArea area) const -> uint16
  *  Notes   :
  ************************************************************************/
 
-void CLuaBaseEntity::addFame(const xi::FameArea area, const uint16 fame)
+void CLuaBaseEntity::addFame(const xi::FameArea area, const uint16 baseFame)
 {
     if (m_PBaseEntity->objtype != TYPE_PC)
     {
         ShowWarningFmt("Invalid entity type calling function ({}).", m_PBaseEntity->getName());
         return;
     }
+
+    // XI: Forever Offline: main.FAME_RATE (the launcher's "Fame from quests" rate) multiplies every fame gain.
+    // 0 or a missing setting counts as 1 (retail), so an old settings file never stops fame altogether.
+    float fameRate = settings::get<float>("main.FAME_RATE");
+    if (!(fameRate > 0.0f))
+    {
+        fameRate = 1.0f;
+    }
+
+    const uint16 fame = static_cast<uint16>(std::clamp(std::lround(baseFame * fameRate), 0L, 2500L));
 
     auto* PChar  = static_cast<CCharEntity*>(m_PBaseEntity);
     auto& stored = PChar->profile.fame;
