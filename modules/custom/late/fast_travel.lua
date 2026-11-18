@@ -451,18 +451,20 @@ end
 
 local function homepointMenu(player, npc, index)
     player:setFreezeFlag(true)
-    player:customMenu({
-        title = 'What will you do?',
-        options =
+    local options = {}
+    if xi.settings.main.HOMEPOINT_TELEPORT == 1 then -- (classic travel: only "set home point")
+        options[#options + 1] =
         {
-            {
-                'Teleport.',
-                function(playerArg)
-                    later(playerArg, function(entity)
-                        homepointRegionMenu(entity, index)
-                    end)
-                end,
-            },
+            'Teleport.',
+            function(playerArg)
+                later(playerArg, function(entity)
+                    homepointRegionMenu(entity, index)
+                end)
+            end,
+        }
+    end
+
+    options[#options + 1] =
             {
                 'Set as your home point.',
                 function(playerArg)
@@ -476,9 +478,12 @@ local function homepointMenu(player, npc, index)
                         playerArg:messageSpecial(text.HOMEPOINT_SET)
                     end
                 end,
-            },
-            { 'Never mind.', function(playerArg) end },
-        },
+            }
+    options[#options + 1] = { 'Never mind.', function(playerArg) end }
+
+    player:customMenu({
+        title = 'What will you do?',
+        options = options,
         onCancelled = function(playerArg)
             playerArg:setFreezeFlag(false)
         end,
@@ -509,10 +514,30 @@ if USE_CUSTOM_HOMEPOINT_MENU then
 end
 
 -- Retail window: keep the full heal on touch, then the game's own Home Point menu.
+-- Zones whose era files keep the retail Home Point entries but the era text (Yumainai, 2026-11-17: the Metalworks
+-- crystals showed chocobo text, one did nothing; Qufim Island is the same) can't show the game's window, so their
+-- crystals use the text menu above.
+local TEXT_MENU_ZONES =
+{
+    [xi.zone.METALWORKS]   = true,
+    [xi.zone.QUFIM_ISLAND] = true,
+}
+
 if not USE_CUSTOM_HOMEPOINT_MENU then
     m:addOverride('xi.homepoint.onTrigger', function(player, csid, index)
         player:addHP(player:getMaxHP())
         player:addMP(player:getMaxMP())
+        if TEXT_MENU_ZONES[player:getZoneID()] then
+            local hpBit, hpSet = index % 32, math.floor(index / 32)
+            if not player:hasTeleport(xi.teleport.type.HOMEPOINT, hpBit, hpSet) then
+                player:addTeleport(xi.teleport.type.HOMEPOINT, hpBit, hpSet)
+                tell(player, 'You have registered this Home Point.')
+            end
+
+            homepointMenu(player, player:getCursorTarget(), index)
+            return
+        end
+
         super(player, csid, index)
     end)
 end
