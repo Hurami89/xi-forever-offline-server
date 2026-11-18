@@ -1,0 +1,108 @@
+# XI: Forever Offline: the Linux / Steam Deck server for each release.
+#
+# When the Publish button (launcher_publish.py, on the dev PC) pushes a version tag (v0.1.40) to this repo, this builds
+# the five server programs for Linux, packs them with the kit's package_server.py (--platform linux --bundle-libs)
+# and adds them to that tag's GitHub release, next to the Windows zip:
+#   xi-forever-offline-server-<tag>-linux-x64.tar.gz
+#   SHA256SUMS-linux.txt
+# Before uploading it runs the package: a database made with the launcher's own setup code (MariaDB's Linux package),
+# the five programs started, the map server must say "ready to work". It also checks on Arch Linux (what SteamOS is
+# made from) that no library is missing.
+# Built on Ubuntu 22.04 (glibc 2.35, so SteamOS and desktop distros from 2022 on) with Clang 20 and its own C++
+# library linked in (-DXI_PORTABLE_LINUX=ON); the other libraries go in lib/ beside the programs.
+# Run it by hand for an existing tag: Actions > XI Forever Offline Linux server > Run workflow.
+
+name: XI Forever Offline Linux server
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and upload (e.g. v0.1.40)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  server:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      KIT_REPO: Hurami89/xi-forever-offline
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 1
+
+      - name: Navigation meshes (the public submodules only)
+        run: git submodule update --init --depth 1 navmeshes ximeshes
+
+      - name: The kit (package_server.py and the launcher's setup code)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KIT_REPO }}
+          path: kit
+
+      - name: Compiler and libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config patchelf libmariadb-dev libzmq3-dev libssl-dev zlib1g-dev python3-pip
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 20
+          sudo apt-get install -y libc++-20-dev libc++abi-20-dev
+          python3 -m pip install --user "cmake>=3.25"
+          python3 -m pip install --user -r tools/requirements.txt
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: LuaJIT (2.1, newer than Ubuntu 22.04's)
+        run: |
+          git clone --depth 1 --branch v2.1 https://github.com/LuaJIT/LuaJIT.git /tmp/luajit
+          make -C /tmp/luajit -j4
+          sudo make -C /tmp/luajit install PREFIX=/usr/local
+          sudo ldconfig
+
+      - name: Build
+        run: |
+          CC=clang-20 CXX=clang++-20 cmake --preset default -DXI_PORTABLE_LINUX=ON -DCMAKE_LINKER_TYPE=LLD
+          cmake --build build --config Release -j4 --target xi_connect xi_world xi_search xi_profile xi_map
+          ls -la xi_connect xi_world xi_search xi_profile xi_map
+
+      - name: Pack
+        run: python3 kit/package_server.py "$TAG" --server . --platform linux --bundle-libs --out dist
+
+      - name: Run the package (database, five servers, map server ready)
+        run: |
+          mkdir -p /tmp/run && tar -xzf "dist/xi-forever-offline-server-$TAG-linux-x64.tar.gz" -C /tmp/run
+          python3 kit/dev/linux-tests/check_mariadb_package.py /tmp/check
+          python3 kit/dev/linux-tests/check_server_package.py "/tmp/run/xi-forever-offline-server-$TAG" /tmp/check/mariadb /tmp/serverrun
+
+      - name: No missing libraries on Arch Linux (SteamOS)
+        run: |
+          docker run --rm -v /tmp/run:/run-pkg archlinux:latest bash -c '
+            cd "/run-pkg/xi-forever-offline-server-'"$TAG"'"
+            bad=0
+            for p in xi_connect xi_world xi_search xi_profile xi_map lib/*; do
+              if ldd "$p" | grep "not found"; then echo "missing for $p"; bad=1; fi
+            done
+            exit $bad'
+
+      - name: Wait for the release
+        run: |
+          for i in $(seq 1 240); do
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null | grep -q false; then
+              echo "Release $TAG is published."; exit 0
+            fi
+            sleep 30
+          done
+          echo "No published release for $TAG after two hours."; exit 1
+
+      - name: Upload to the release
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "dist/xi-forever-offline-server-$TAG-linux-x64.tar.gz" dist/SHA256SUMS-linux.txt

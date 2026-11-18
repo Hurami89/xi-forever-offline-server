@@ -225,6 +225,16 @@ if(APPLE)
         "CPPTRACE_GET_SYMBOLS_WITH_LIBDWARF OFF"
         "CPPTRACE_GET_SYMBOLS_WITH_ADDR2LINE ON"
     )
+elseif(UNIX AND XI_PORTABLE_LINUX)
+    # XI: Forever Offline player build: cpptrace builds its own libdwarf (static), so the
+    # packaged server doesn't need the player's distro to have a matching libdwarf.
+    list(APPEND CPPTRACE_SYMBOL_OPTIONS
+        "CPPTRACE_GET_SYMBOLS_WITH_ADDR2LINE OFF"
+        "CPPTRACE_GET_SYMBOLS_WITH_LIBDWARF ON"
+        "CPPTRACE_USE_EXTERNAL_LIBDWARF OFF"
+    )
+    # Our debug info isn't compressed, so the fetched libdwarf needs no zlib/zstd.
+    set(ENABLE_DECOMPRESSION OFF CACHE BOOL "libdwarf: compressed debug sections" FORCE)
 elseif(UNIX)
     # Linux: resolve in-process with libdwarf.
     list(APPEND CPPTRACE_SYMBOL_OPTIONS

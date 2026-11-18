@@ -32,6 +32,24 @@ if(UNIX)
     link_libraries(dl) # dlopen, used by LuaJIT and the crash trace libraries
 endif()
 
+# XI: Forever Offline player build for Linux (-DXI_PORTABLE_LINUX=ON): the C++ runtime is
+# linked in, and the programs look for the other libraries in ./lib beside them first, so
+# one build runs on SteamOS and most desktop distros (glibc of the build machine or newer).
+option(XI_PORTABLE_LINUX "Portable Linux player build (static libstdc++, ./lib rpath)" OFF)
+if(UNIX AND NOT APPLE AND XI_PORTABLE_LINUX)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Clang with its own C++ library (libc++), linked in with its ABI library: GCC 14's libstdc++ can't build
+        # this C++23 code with Clang, and GCC 15 isn't on older distros. Needs LLD (-DCMAKE_LINKER_TYPE=LLD).
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-stdlib=libc++>)
+        add_link_options(-stdlib=libc++ -Wl,-Bstatic -lc++abi -Wl,-Bdynamic)
+    endif()
+    add_link_options(-static-libstdc++ -static-libgcc
+        -Wl,--disable-new-dtags)   # DT_RPATH, not RUNPATH: the libraries in ./lib find each other there too
+    set(CMAKE_BUILD_RPATH "\$ORIGIN/lib")
+    set(CMAKE_INSTALL_RPATH "\$ORIGIN/lib")
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
+endif()
+
 if(APPLE)
     # The modern Apple linker (ld_prime, Xcode 15+) warns when the same library
     # appears more than once on the link line. CMake's dependency propagation
