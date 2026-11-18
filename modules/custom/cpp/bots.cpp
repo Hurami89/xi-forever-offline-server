@@ -21,6 +21,7 @@
     BotIsMoving(charId) -> bool
     BotAttack(charId, target) / BotAttackOff(charId)  BotCast(charId, spellId, target)
     BotWeaponSkill(charId, wsId, target)              BotAbility(charId, abilityId, target)
+    BotShoot(charId, target) (a ranged attack, /shoot)
     BotChat(charId, kind, text)  kind: 0 say, 1 shout, 4 party
     BotAnswerInvite(charId, accept)                   BotLeaveParty(charId)
     BotInvite(charId, playerEntity) (the bot invites you)  BotMakeLeader(charId, name)
@@ -1227,6 +1228,10 @@ class BotsModule : public CPPModule
 
                                return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::CastMagic, targetOf(target), spellId);
                            });
+
+        // a ranged attack (bow, gun, crossbow, throwing), the same packet as /shoot (bots_party.lua: RNG / COR / pullers)
+        ::lua.set_function("BotShoot", [](uint32 charId, const sol::object& target) -> bool
+                           { return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::Shoot, targetOf(target), 0); });
 
         ::lua.set_function("BotWeaponSkill", [](uint32 charId, uint32 wsId, const sol::object& target) -> bool
                            { return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::Weaponskill, targetOf(target), wsId); });

@@ -132,6 +132,10 @@ local function one(c, who, ctx)
         return ctx.tank == nil
     elseif kind == C.HP_MISSING then
         return (who:getMaxHP() - who:getHP()) >= value
+    elseif C.STATUS_FLAG ~= nil and kind == C.STATUS_FLAG then
+        return who:hasStatusEffectByFlag(value) -- (e.g. something Erase can remove)
+    elseif C.IS_ECOSYSTEM ~= nil and kind == C.IS_ECOSYSTEM then
+        return who.getEcosystem ~= nil and who:getEcosystem() == value
     elseif C.NOT_SC_AVAILABLE ~= nil and kind == C.NOT_SC_AVAILABLE then
         return true  -- (a bot can't see an open skillchain: treated as none, so a BLM's "nuke when no skillchain" works)
     end
@@ -246,6 +250,20 @@ local function doAction(bot, st, action, who)
             st.partyWait = now() + CAST_WAIT
             return true
         end
+    elseif R.RATTACK ~= nil and action[1] == R.RATTACK then
+        -- a ranged attack (RNG, COR, a thrower): only with a ranged weapon or throwing item on, and needs bots.cpp's
+        -- BotShoot (server rebuild of 2026-11-17)
+        if not BotShoot or not who or who == bot then
+            return false
+        end
+
+        local okR, ranged = pcall(function()
+            return bot:getEquipID(xi.slot.RANGED) ~= 0 or bot:getEquipID(xi.slot.AMMO) ~= 0
+        end)
+        if okR and ranged and BotShoot(id, who) then
+            st.partyWait = now() + 4
+            return true
+        end
     elseif action[1] == R.JA and action[2] == S.SPECIFIC then
         st.jaUsed = st.jaUsed or {}
         if now() >= (st.jaUsed[action[3]] or 0) then
@@ -278,7 +296,7 @@ function P.act(bot, st, leader, mob)
     end
 
     for _, g in ipairs(profileOf(bot)) do
-        if type(g.action) == 'table' and (g.action[1] == ai.r.MA or g.action[1] == ai.r.JA) then
+        if type(g.action) == 'table' and (g.action[1] == ai.r.MA or g.action[1] == ai.r.JA or (ai.r.RATTACK ~= nil and g.action[1] == ai.r.RATTACK)) then
             local list = candidates(bot, g.target, ctx)
             -- for HP conditions: the most hurt first
             table.sort(list, function(a, b)
