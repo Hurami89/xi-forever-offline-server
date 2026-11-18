@@ -241,6 +241,7 @@ local function usage(player)
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
     say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
+    say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
     say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
@@ -1870,6 +1871,7 @@ local function callMate(player, mate)
         face     = mate.face,
         size     = player:getCharVar('SQUAD_SIZE_' .. mate.id), -- 0 = not chosen, 1-3 = small / medium / large
         ws       = player:getCharVar('SQUAD_WS_' .. mate.id),   -- 0 = every weapon skill it can use, else only this one
+        scrolls  = squadScrollsOn(),                              -- spells 18+ only when the squad learned them
         equip    = outfit,
     })
 
@@ -1952,6 +1954,49 @@ local function callCooldownSec()
     end)
     local minutes = ok and type(c) == 'table' and tonumber(c.call_cooldown_min) or 5
     return math.max(0, math.min(30, minutes)) * 60
+end
+
+-- (2026-11-17) the launcher's "Squad mates learn spells from scrolls (18+)" switch (squad_config.lua spell_scrolls,
+-- off by default). On: spells a mate's jobs learn at level 18 or above need their scroll given to the squad once
+-- (trade it to a mate or !squad give); blue magic from 18 is learned from monsters instead (a squad Blue Mage out with
+-- you may learn a spell when the party defeats a monster that knows it). Below 18 everything stays automatic.
+-- Learned spells are squad_unlock rows 60000 + spell id. (Globals: squad.lua is near Lua's 200-local limit.)
+SQUAD_SPELL_KEY = 60000
+SQUAD_BLUE_LEARN_CHANCE = 15 -- percent per spell, per defeated monster
+
+function squadScrollsOn()
+    local ok, c = pcall(function()
+        package.loaded['modules/custom/lua/squad_config'] = nil
+        return require('modules/custom/lua/squad_config')
+    end)
+    return ok and type(c) == 'table' and c.spell_scrolls == true
+end
+
+-- a spell scroll given to the squad: true when it was dealt with here (learned, or why not)
+function squadLearnScroll(owner, tell, itemId, takeOne)
+    local sc = SquadScrollSpell and SquadScrollSpell(itemId)
+    if sc == nil then
+        return false
+    end
+
+    local name = prettySpellName and prettySpellName(sc.name) or sc.name
+    if not squadScrollsOn() then
+        tell(string.format('Your squad learns %s by itself (spells come automatically on this world).', name))
+        return true
+    elseif sc.level < 18 then
+        tell(string.format('%s comes by itself (spells below level 18 are automatic).', name))
+        return true
+    elseif GetSquadUnlocks(owner:getID())[SQUAD_SPELL_KEY + sc.spell] then
+        tell(string.format('Your squad already knows %s.', name))
+        return true
+    elseif not takeOne() then
+        tell('Could not take the scroll.')
+        return true
+    end
+
+    UnlockSquadItem(owner:getID(), SQUAD_SPELL_KEY + sc.spell)
+    tell(string.format('Your squad learns %s. Every mate whose job and level fit can cast it from their next call.', name))
+    return true
 end
 
 local function cooldownLeft(player, mate)
@@ -2197,7 +2242,10 @@ xi.squad.onTrade = function(player, trust, items)
     for _, offer in ipairs(items) do
         local info = GetSquadItemInfo(offer.itemId)
 
-        if not info.valid then
+        if squadLearnScroll(owner, function(text) player:printToPlayer(text, xi.msg.channel.SYSTEM_3) end, offer.itemId,
+            function() return player:delItemAt(offer.itemId, 1, xi.inv.INVENTORY, offer.slot) end) then
+            -- (a spell scroll: learned or told why not)
+        elseif not info.valid then
             speak(player, who, 'cannotuse')
         elseif unlocked[offer.itemId] then
             speak(player, who, 'alreadyhave', { item = prettyItem(info.name) })
@@ -2893,9 +2941,15 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             return
         end
 
+        if squadLearnScroll(player, function(text) say(player, text) end, itemId, function()
+            return player:hasItem(itemId) and player:delItem(itemId, 1)
+        end) then
+            return
+        end
+
         local info = GetSquadItemInfo(itemId)
         if not info.valid then
-            say(player, 'Your squad can only be given equipment.')
+            say(player, 'Your squad can only be given equipment (and spell scrolls).')
             return
         end
 
@@ -2923,16 +2977,19 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         local count = 0
         local names = {}
         for itemId in pairs(GetSquadUnlocks(charId)) do
-            count = count + 1
-            if #names < 15 then
-                local info = GetSquadItemInfo(itemId)
-                names[#names + 1] = info.valid and info.name or tostring(itemId)
+            if itemId < SQUAD_SPELL_KEY then -- (learned spells are listed by !squad spells)
+                count = count + 1
+                if #names < 15 then
+                    local info = GetSquadItemInfo(itemId)
+                    names[#names + 1] = info.valid and info.name or tostring(itemId)
+                end
             end
         end
 
         say(player, string.format('Your squad has been given %d item(s).', count))
         if count > 0 then
             say(player, table.concat(names, ', ') .. (count > #names and ', ...' or ''))
+
         end
 
         return
@@ -3020,6 +3077,34 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         end
 
         say(player, '"Call all" order: ' .. table.concat(names, ', ') .. '. Dismiss and call everyone to use it now.')
+        return
+    end
+
+    if action == 'spells' then
+        if not squadScrollsOn() then
+            say(player, 'Squad mates know every spell their jobs learn at their level (the launcher option "learn spells from scrolls" is off).')
+            return
+        end
+
+        local byId = {}
+        for name, id in pairs(xi.magic.spell or {}) do
+            byId[id] = name
+        end
+
+        local names = {}
+        for key in pairs(GetSquadUnlocks(charId) or {}) do
+            if key >= SQUAD_SPELL_KEY then
+                local raw = byId[key - SQUAD_SPELL_KEY]
+                names[#names + 1] = raw and prettySpellName(string.lower(raw)) or tostring(key - SQUAD_SPELL_KEY)
+            end
+        end
+
+        table.sort(names)
+        say(player, string.format('Your squad has learned %d spell(s) of level 18 or above%s', #names, #names > 0 and ':' or '. Give them scrolls (trade to a mate or !squad give scroll_of_<spell>).'))
+        for i = 1, #names, 12 do
+            say(player, table.concat(names, ', ', i, math.min(i + 11, #names)))
+        end
+
         return
     end
 
@@ -4669,6 +4754,42 @@ end
 -- moment after you arrive, without the call timer. Through your Mog House (no Trusts inside) they wait for the next area.
 m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     local result = super(player, firstLogin, zoning)
+
+    -- (spells from scrolls) a squad Blue Mage out with you may learn blue magic from what the party defeats
+    if not (BotIsBot and BotIsBot(player:getID())) then
+        player:addListener('DEFEATED_MOB', 'SQUAD_BLU_LEARN', function(mob)
+            if mob == nil or not squadScrollsOn() or not SquadBlueSpellsOf then
+                return
+            end
+
+            local blus = {}
+            for _, trust in ipairs(squadTrusts(player)) do
+                if trust:isAlive() and trust:getMainJob() == xi.job.BLU then
+                    blus[#blus + 1] = trust
+                end
+            end
+
+            if #blus == 0 then
+                return
+            end
+
+            local learned = GetSquadUnlocks(player:getID()) or {}
+            for _, sp in ipairs(SquadBlueSpellsOf(mob) or {}) do
+                local key = SQUAD_SPELL_KEY + sp.spell
+                if sp.level >= 18 and not learned[key] then
+                    for _, trust in ipairs(blus) do
+                        if trust:getMainLvl() >= sp.level and math.random(100) <= SQUAD_BLUE_LEARN_CHANCE and not learned[key] then
+                            UnlockSquadItem(player:getID(), key)
+                            learned[key] = true
+                            local name = prettySpellName and prettySpellName(sp.name) or sp.name
+                            player:printToPlayer(string.format('%s learned the blue magic %s! (from their next call)', trust:getPacketName(), name), xi.msg.channel.SYSTEM_3)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
     local seen = zoneOut[player:getID()]
     if not zoning or firstLogin or seen == nil then
         return result

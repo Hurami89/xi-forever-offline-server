@@ -605,6 +605,43 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
             }
         }
 
+        // (squad option "spells from scrolls") a spell this mate only gets at level 18 or above stays only when the
+        // squad has learned it; spells from below 18 stay automatic. Entries no job of the mate learns are kept.
+        if (spec->spellScrolls)
+        {
+            auto* kept = new CMobSpellList(Maybe<uint16>{});
+            for (const auto& entry : known->m_spellList)
+            {
+                uint8 at = 255;
+                if (CSpell* PSpell = spell::GetSpell(entry.spellId))
+                {
+                    const uint8 byMain = PSpell->getJob(mainJob);
+                    if (byMain <= mainLevel)
+                    {
+                        at = byMain;
+                    }
+
+                    if (spec->sJob != 0)
+                    {
+                        const uint8 bySub = PSpell->getJob(subJob);
+                        if (bySub <= subLevel && bySub < at)
+                        {
+                            at = bySub;
+                        }
+                    }
+                }
+
+                const bool learned = std::ranges::find(spec->learnedSpells, static_cast<uint16>(entry.spellId)) != spec->learnedSpells.end();
+                if (at < 18 || at == 255 || learned)
+                {
+                    kept->AddSpell(entry.spellId, entry.min_level, entry.max_level);
+                }
+            }
+
+            delete known;
+            known = kept;
+        }
+
         PTrust->setSquadSpellList(known);
         PTrust->m_SpellListContainer = known;
 

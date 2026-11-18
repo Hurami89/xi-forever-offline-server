@@ -44,6 +44,7 @@
 #include "map/autotranslate.h"
 #include "common/lua.h"
 #include "map/entities/char_entity.h"
+#include "map/entities/mob_entity.h"
 #include "map/entities/trust_entity.h"
 #include "map/item_container.h"
 #include "map/items/item.h"
@@ -255,6 +256,17 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
     squadSpec.sLevel  = static_cast<uint8>(std::clamp(sLevel, 0, 99));
     squadSpec.squadId = static_cast<uint32>(std::max(id, 0));
     squadSpec.race    = static_cast<uint8>((race >= 1 && race <= 8) ? race : 0);
+
+    // (squad option "spells from scrolls") what the squad has learned: squad_unlock rows 60000 + spell id
+    if (spec.get_or("scrolls", false))
+    {
+        squadSpec.spellScrolls = true;
+        const auto lrset = db::preparedStmt("SELECT itemid FROM squad_unlock WHERE charid = ? AND itemid >= 60000", PChar->id);
+        FOR_DB_MULTIPLE_RESULTS(lrset)
+        {
+            squadSpec.learnedSpells.push_back(static_cast<uint16>(lrset->get<uint16>("itemid") - 60000));
+        }
+    }
 
     // The appearance is handed to the spawn itself, so the very first message the game receives already shows the right race,
     // face and armor. (Changing it afterwards does not work: a renamed character's update packets garble the armor.)
@@ -609,7 +621,89 @@ auto findSquadItem(std::string text) -> uint32
         return rset->get<uint32>("itemId");
     }
 
+    // (squad option "spells from scrolls") spell scrolls by name too, e.g. scroll_of_cure_iii
+    if (text.rfind("scroll", 0) == 0)
+    {
+        const auto srset = db::preparedStmt("SELECT itemid FROM item_basic WHERE name = ? LIMIT 1", text);
+        FOR_DB_SINGLE_RESULT(srset)
+        {
+            return srset->get<uint32>("itemid");
+        }
+    }
+
     return 0;
+}
+
+// (squad option "spells from scrolls") a spell scroll: { spell, name, level = the lowest level any job learns it } or nil.
+// Scrolls are items 4609-5631, item id = 4608 + spell id.
+auto squadScrollSpell(const uint32 itemId) -> sol::object
+{
+    if (itemId < 4609 || itemId > 5631)
+    {
+        return sol::lua_nil;
+    }
+
+    const CItem* PItem = xi::items::lookup(static_cast<uint16>(itemId));
+    if (PItem == nullptr || PItem->getName().find("scroll") == std::string::npos)
+    {
+        return sol::lua_nil;
+    }
+
+    CSpell* PSpell = spell::GetSpell(static_cast<SpellID>(itemId - 4608));
+    if (PSpell == nullptr)
+    {
+        return sol::lua_nil;
+    }
+
+    uint8 lowest = 255;
+    for (uint8 job = 1; job < MAX_JOBTYPE; ++job)
+    {
+        const uint8 at = PSpell->getJob(static_cast<xi::Job>(job));
+        if (at > 0 && at < lowest)
+        {
+            lowest = at;
+        }
+    }
+
+    auto t     = ::lua.create_table();
+    t["spell"] = itemId - 4608;
+    t["name"]  = PSpell->getName();
+    t["level"] = lowest;
+    return sol::make_object(::lua, t);
+}
+
+// (squad option "spells from scrolls") the blue magic a monster can teach (its skill list x blue_spell_list):
+// { { spell, name, level }, ... } with level = the Blue Mage level of the spell
+auto squadBlueSpellsOf(CLuaBaseEntity* mob) -> sol::table
+{
+    auto out = ::lua.create_table();
+    auto* PMob = mob ? dynamic_cast<CMobEntity*>(mob->GetBaseEntity()) : nullptr;
+    if (PMob == nullptr || PMob->m_MobSkillList == 0)
+    {
+        return out;
+    }
+
+    const auto rset = db::preparedStmt("SELECT DISTINCT b.spellid FROM blue_spell_list b JOIN mob_skill_lists l ON l.mob_skill_id = b.mob_skill_id "
+                                       "WHERE l.skill_list_id = ?",
+                                       PMob->m_MobSkillList);
+    int index = 1;
+    FOR_DB_MULTIPLE_RESULTS(rset)
+    {
+        const auto spellId = rset->get<uint16>("spellid");
+        CSpell*    PSpell  = spell::GetSpell(static_cast<SpellID>(spellId));
+        if (PSpell == nullptr)
+        {
+            continue;
+        }
+
+        auto e       = ::lua.create_table();
+        e["spell"]   = spellId;
+        e["name"]    = PSpell->getName();
+        e["level"]   = PSpell->getJob(xi::Job::BLU);
+        out[index++] = e;
+    }
+
+    return out;
 }
 
 auto getSquadItemInfo(const uint32 itemId) -> sol::table
@@ -1535,6 +1629,8 @@ class SquadModule : public CPPModule
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);
         ::lua.set_function("GetSquadItemInfo", getSquadItemInfo);
+        ::lua.set_function("SquadScrollSpell", squadScrollSpell);
+        ::lua.set_function("SquadBlueSpellsOf", squadBlueSpellsOf);
         ::lua.set_function("BuildStarterGear", buildStarterGear);
         ::lua.set_function("SquadSpawnPet", squadSpawnPet);
         ::lua.set_function("SquadHasPet", squadHasPet);

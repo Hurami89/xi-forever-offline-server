@@ -22,6 +22,8 @@
 
 #include "common/cbasetypes.h"
 
+#include <vector>
+
 class CCharEntity;
 class CTrustEntity;
 
@@ -55,6 +57,11 @@ struct SquadSpec
     uint16 lookMain{ 0 };
     uint16 lookSub{ 0 };
     uint16 lookRanged{ 0 };
+
+    // (squad option "spells from scrolls", 2026-11-17) spells a mate's jobs learn at level 18 or above are known only
+    // when the squad learned them: a scroll given to the squad, or blue magic learned from a monster
+    bool                spellScrolls{ false };
+    std::vector<uint16> learnedSpells;
 };
 
 // We cache all of this so we don't have to hit the database every time a trust is spawned
