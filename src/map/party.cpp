@@ -24,6 +24,8 @@
 
 #include "alliance.h"
 #include "entities/battle_entity.h"
+#include "entities/char_entity.h"
+#include "entities/trust_entity.h"
 #include "ipc_client.h"
 #include "job_points.h"
 #include "latent_effect_container.h"
@@ -91,6 +93,7 @@ CParty::~CParty()
     m_PartyID        = 0;
     m_PAlliance      = nullptr;
     m_PSyncTarget    = nullptr;
+    m_SyncLevel   = 0;
     m_PQuarterMaster = nullptr;
 }
 
@@ -102,6 +105,7 @@ void CParty::DisbandParty(bool playerInitiated)
     }
 
     m_PSyncTarget = nullptr;
+    m_SyncLevel   = 0;
     m_PLeader     = nullptr;
     m_PAlliance   = nullptr;
 
@@ -177,6 +181,33 @@ void CParty::AssignPartyRole(const std::string& MemberName, const GP_CLI_COMMAND
     const auto rset = db::preparedStmt("SELECT chars.charid FROM chars JOIN accounts_parties ON accounts_parties.charid = chars.charid WHERE charname = ? AND partyid = ?", MemberName, m_PartyID);
     if (!rset || rset->rowsCount() == 0)
     {
+        // XI: Forever Offline: Level Sync on a squad mate (a trust, not in the parties table)
+        const bool syncRole = role == GP_CLI_COMMAND_GROUP_CHANGE2_CHANGEKIND::SetLevelSync || role == GP_CLI_COMMAND_GROUP_CHANGE2_CHANGEKIND::DisableLevelSync;
+        if (syncRole && !MemberName.empty())
+        {
+            for (auto* member : members)
+            {
+                if (auto* PMemberChar = dynamic_cast<CCharEntity*>(member))
+                {
+                    for (auto* PTrust : PMemberChar->PTrusts)
+                    {
+                        if (PTrust && (strcmpi(MemberName.c_str(), PTrust->getName().c_str()) == 0 || strcmpi(MemberName.c_str(), PTrust->packetName.c_str()) == 0))
+                        {
+                            if (role == GP_CLI_COMMAND_GROUP_CHANGE2_CHANGEKIND::SetLevelSync)
+                            {
+                                SetSyncTarget(MemberName, MsgStd::LevelSyncSet);
+                            }
+                            else
+                            {
+                                SetSyncTarget("", MsgStd::LevelSyncRemoveLeftParty);
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         return;
     }
 
@@ -466,6 +497,7 @@ void CParty::PopMember(CBattleEntity* PEntity)
     if (m_PSyncTarget == PEntity)
     {
         m_PSyncTarget = nullptr;
+        m_SyncLevel   = 0;
     }
 
     // free memory, party will re reinsatiated when they zone back in
@@ -659,11 +691,11 @@ void CParty::AddMember(CBattleEntity* PEntity)
         {
             if (PChar->getZone() == m_PSyncTarget->getZone())
             {
-                PChar->pushPacket<GP_SERV_COMMAND_BATTLE_MESSAGE>(PChar, PChar, 0, m_PSyncTarget->GetMLevel(), MsgStd::LevelSyncActivated);
+                PChar->pushPacket<GP_SERV_COMMAND_BATTLE_MESSAGE>(PChar, PChar, 0, GetSyncLevel(), MsgStd::LevelSyncActivated);
                 PChar->StatusEffectContainer->DelStatusEffectsByFlag(xi::StatusEffectFlag::Dispelable | xi::StatusEffectFlag::OnZone);
                 PChar->health.tp = 0;
                 PChar->updatemask |= UPDATE_HP;
-                PChar->StatusEffectContainer->AddStatusEffectSilent(xi::StatusEffect::LevelSync, static_cast<uint16>(xi::StatusEffect::LevelSync), m_PSyncTarget->GetMLevel(), 0s, 0s);
+                PChar->StatusEffectContainer->AddStatusEffectSilent(xi::StatusEffect::LevelSync, static_cast<uint16>(xi::StatusEffect::LevelSync), GetSyncLevel(), 0s, 0s);
                 PChar->loc.zone->PushPacket(PChar, CHAR_INRANGE, std::make_unique<CCharSyncPacket>(PChar, CharSyncRecipient::Others));
             }
         }
@@ -771,6 +803,26 @@ auto CParty::GetPartyID() const -> uint32
 auto CParty::GetLeader() -> CBattleEntity*
 {
     return m_PLeader;
+}
+
+auto CParty::GetSyncLevel() -> uint8
+{
+    if (m_PSyncTarget == nullptr)
+    {
+        return 0;
+    }
+
+    if (m_SyncLevel > 0)
+    {
+        return m_SyncLevel;
+    }
+
+    if (auto* PChar = dynamic_cast<CCharEntity*>(m_PSyncTarget))
+    {
+        return PChar->jobs.job[static_cast<uint8>(PChar->GetMJob())];
+    }
+
+    return m_PSyncTarget->GetMLevel();
 }
 
 auto CParty::GetSyncTarget() -> CBattleEntity*
@@ -1126,12 +1178,47 @@ void CParty::SetSyncTarget(const std::string& MemberName, MsgStd message)
 {
     CBattleEntity* PEntity = GetMemberByName(MemberName);
 
+    // XI: Forever Offline: the party menu's Level Sync on a squad mate (a trust of anyone in the party). A trust
+    // comes and goes (every call is a new entity), so the party leader stands in as the sync target and the mate's
+    // level is kept in m_SyncLevel. Bots are characters, so they already work through the normal path.
+    uint8 mateLevel = 0;
+    if (PEntity == nullptr && !MemberName.empty() && GetLeader() != nullptr)
+    {
+        for (auto* member : members)
+        {
+            auto* PMemberChar = dynamic_cast<CCharEntity*>(member);
+            if (!PMemberChar)
+            {
+                continue;
+            }
+
+            for (auto* PTrust : PMemberChar->PTrusts)
+            {
+                if (PTrust && (strcmpi(MemberName.c_str(), PTrust->getName().c_str()) == 0 || strcmpi(MemberName.c_str(), PTrust->packetName.c_str()) == 0))
+                {
+                    mateLevel = PTrust->GetMLevel();
+                    if (PTrust->getZone() != GetLeader()->getZone())
+                    {
+                        static_cast<CCharEntity*>(GetLeader())->pushPacket<GP_SERV_COMMAND_BATTLE_MESSAGE>(static_cast<CCharEntity*>(GetLeader()), static_cast<CCharEntity*>(GetLeader()), 0, 0, MsgStd::LevelSyncDesigneeInOtherArea);
+                        return;
+                    }
+                }
+            }
+        }
+
+        if (mateLevel > 0)
+        {
+            PEntity = GetLeader();
+        }
+    }
+
     if (settings::get<bool>("map.LEVEL_SYNC_ENABLE"))
     {
         if (auto* PChar = dynamic_cast<CCharEntity*>(PEntity); PChar && GetLeader() != nullptr)
         {
+            const uint8 syncLevel = mateLevel > 0 ? mateLevel : PChar->GetMLevel();
             // enable level sync
-            if (PChar->GetMLevel() < 10)
+            if (syncLevel < 10)
             {
                 static_cast<CCharEntity*>(GetLeader())->pushPacket<GP_SERV_COMMAND_BATTLE_MESSAGE>(static_cast<CCharEntity*>(GetLeader()), static_cast<CCharEntity*>(GetLeader()), 0, 10, MsgStd::LevelSyncDesigneeBelowMin);
                 return;
@@ -1152,6 +1239,7 @@ void CParty::SetSyncTarget(const std::string& MemberName, MsgStd message)
                     }
                 }
                 m_PSyncTarget = PChar;
+                m_SyncLevel   = mateLevel;
                 for (auto& i : members)
                 {
                     auto* member = dynamic_cast<CCharEntity*>(i);
@@ -1162,11 +1250,11 @@ void CParty::SetSyncTarget(const std::string& MemberName, MsgStd message)
 
                     if (member->status != xi::Status::Disappear && member->getZone() == PChar->getZone())
                     {
-                        member->pushPacket<GP_SERV_COMMAND_MESSAGE>(PChar->GetMLevel(), 0, 0, 0, message);
+                        member->pushPacket<GP_SERV_COMMAND_MESSAGE>(syncLevel, 0, 0, 0, message);
                         member->StatusEffectContainer->DelStatusEffectsByFlag(xi::StatusEffectFlag::Dispelable | xi::StatusEffectFlag::OnZone);
                         member->health.tp = 0;
                         member->updatemask |= UPDATE_HP;
-                        member->StatusEffectContainer->AddStatusEffectSilent(xi::StatusEffect::LevelSync, static_cast<uint16>(xi::StatusEffect::LevelSync), PChar->GetMLevel(), 0s, 0s);
+                        member->StatusEffectContainer->AddStatusEffectSilent(xi::StatusEffect::LevelSync, static_cast<uint16>(xi::StatusEffect::LevelSync), syncLevel, 0s, 0s);
                         member->loc.zone->PushPacket(member, CHAR_INRANGE, std::make_unique<CCharSyncPacket>(member, CharSyncRecipient::Others));
                     }
                 }
@@ -1206,6 +1294,7 @@ void CParty::SetSyncTarget(const std::string& MemberName, MsgStd message)
                 }
             }
             m_PSyncTarget = nullptr;
+            m_SyncLevel   = 0;
             db::preparedStmt("UPDATE accounts_parties SET partyflag = partyflag & ~? WHERE partyid = ? AND partyflag & ?",
                              PARTY_SYNC,
                              m_PartyID,
@@ -1293,13 +1382,14 @@ void CParty::EffectsChanged()
 void CParty::DisableSync()
 {
     m_PSyncTarget = nullptr;
+    m_SyncLevel   = 0;
     ReloadParty();
 }
 
 void CParty::RefreshSync()
 {
     CCharEntity* sync      = static_cast<CCharEntity*>(m_PSyncTarget);
-    uint8        syncLevel = sync->jobs.job[static_cast<uint8>(sync->GetMJob())];
+    uint8        syncLevel = GetSyncLevel(); // (a squad mate's level when synced to one)
     if (syncLevel < 10)
     {
         SetSyncTarget("", MsgStd::LevelSyncRemoveLowLevel);
@@ -1454,6 +1544,7 @@ void CParty::RefreshFlags(std::vector<partyInfo_t>& info)
     m_PLeader        = nullptr;
     m_PQuarterMaster = nullptr;
     m_PSyncTarget    = nullptr;
+    m_SyncLevel   = 0;
 
     for (auto&& memberinfo : info)
     {
@@ -1505,6 +1596,7 @@ void CParty::RefreshFlags(std::vector<partyInfo_t>& info)
                 if (!found)
                 {
                     m_PSyncTarget = nullptr;
+                    m_SyncLevel   = 0;
                 }
             }
             if (memberinfo.flags & ALLIANCE_LEADER && m_PAlliance)

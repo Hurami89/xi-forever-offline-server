@@ -54,6 +54,9 @@
 #include "map/utils/charutils.h"
 #include "map/utils/itemutils.h"
 #include "map/map_session.h"
+#include "map/party.h"
+#include "map/enums/msg_std.h"
+#include "map/packets/c2s/0x077_group_change2.h"
 #include "map/mob_spell_container.h"
 #include "map/spell.h"
 #include "map/packets/basic.h"
@@ -808,6 +811,34 @@ bool squadDismissMate(CLuaBaseEntity* mate)
     PTrust->updatemask |= UPDATE_HP;
     PChar->RemoveTrust(PTrust);
     return true;
+}
+
+// !squad sync <name> | off: the party menu's Level Sync, by name (a player, a bot or a squad mate in your party).
+// The same call the menu's packet makes, so the same rules apply (you lead the party, the target is 10+ and here).
+// Returns: 1 done (the server's own messages tell the result), 0 no party, -1 not the leader.
+int squadLevelSync(CLuaBaseEntity* player, const std::string& name)
+{
+    auto* PChar = player ? dynamic_cast<CCharEntity*>(player->GetBaseEntity()) : nullptr;
+    if (PChar == nullptr || PChar->PParty == nullptr)
+    {
+        return 0;
+    }
+
+    if (PChar->PParty->GetLeader() != PChar)
+    {
+        return -1;
+    }
+
+    if (name.empty())
+    {
+        PChar->PParty->SetSyncTarget("", MsgStd::LevelSyncRemoveLeftParty);
+    }
+    else
+    {
+        PChar->PParty->AssignPartyRole(name, GP_CLI_COMMAND_GROUP_CHANGE2_CHANGEKIND::SetLevelSync);
+    }
+
+    return 1;
 }
 
 bool squadHasPet(CLuaBaseEntity* mate)
@@ -1635,6 +1666,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("SquadSpawnPet", squadSpawnPet);
         ::lua.set_function("SquadHasPet", squadHasPet);
         ::lua.set_function("SquadDismissMate", squadDismissMate);
+        ::lua.set_function("SquadLevelSync", squadLevelSync);
         ::lua.set_function("SquadPetAttack", squadPetAttack);
         ::lua.set_function("SquadNewSpells", squadNewSpells);
         ::lua.set_function("UnlockSquadItem", unlockSquadItem);

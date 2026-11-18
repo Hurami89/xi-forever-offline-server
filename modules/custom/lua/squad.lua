@@ -240,6 +240,7 @@ local function usage(player)
     say(player, '!squad call [slot or all]   |   !squad dismiss [slot]   |   !squad food   (what they have eaten)')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
     say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
+    say(player, '!squad sync <name> | off   - Level Sync to a player, bot or squad mate in your party (party menu works too)')
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
@@ -3124,6 +3125,31 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             say(player, 'Auto-equip is off: your squad keeps what it wears now, and you choose gear by hand.')
         else
             say(player, '!squad autoequip on | off   - mates wear the best given gear for their job and level. Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
+        end
+
+        return
+    end
+
+    if action == 'sync' then
+        -- Level Sync to anyone in your party: a player, a bot or a squad mate (the party menu's Level Sync does the same;
+        -- needs the server of 2026-11-17 or later)
+        local who = arg1 or ''
+        if who == '' then
+            say(player, '!squad sync <name> | off   - Level Sync your party to a player, bot or squad mate in it (or use the party menu)')
+            return
+        end
+
+        if not SquadLevelSync then
+            say(player, 'Level Sync to squad mates needs the latest update (UPDATE in the launcher).')
+            return
+        end
+
+        local off = string.lower(who) == 'off'
+        local r = SquadLevelSync(player, off and '' or who)
+        if r == 0 then
+            say(player, 'You are not in a party (call a squad mate or invite someone first).')
+        elseif r < 0 then
+            say(player, 'Only the party leader can set Level Sync.')
         end
 
         return

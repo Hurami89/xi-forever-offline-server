@@ -8,7 +8,18 @@ effectObject.onEffectGain = function(target, effect)
     target:levelRestriction(effect:getPower())
 
     if target:getObjType() == xi.objType.PC then
-        target:clearTrusts()
+        -- XI: Forever Offline: squad mates stay out (the squad is called again at the synced level by squad.lua);
+        -- regular trusts still leave, as in retail
+        local hasMates = false
+        for _, member in pairs(target:getPartyWithTrusts()) do
+            if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 then
+                hasMates = true
+            end
+        end
+
+        if not hasMates then
+            target:clearTrusts()
+        end
 
         if xi.settings.map.DESPAWN_JUGPETS_BELOW_MINIMUM_LEVEL then
             local pet = target:getPet()
