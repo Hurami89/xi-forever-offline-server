@@ -118,6 +118,17 @@ local function destIn(lower)
     return nil
 end
 
+-- a bot white mage can take this job: with "spells from scrolls" on it has to really know the spell (bought the
+-- scroll); off, it learns it when it takes the job, as before
+local function botKnows(b, d)
+    if xi.bots and xi.bots.scrollsOn and xi.bots.scrollsOn() then
+        local sid = spellId(d)
+        return sid ~= nil and b:hasSpell(sid)
+    end
+
+    return true
+end
+
 local function canCast(player, d)
     local sid = spellId(d)
     return player:getMainJob() == WHM and player:getMainLvl() >= d.lvl and sid ~= nil and player:hasSpell(sid)
@@ -284,7 +295,7 @@ local function whiteMages(d, zoneId)
     for id, row in pairs(BotList()) do
         if row.online then
             local b = botEntity(id)
-            if b and b:getMainJob() == WHM and b:getMainLvl() >= d.lvl and idle(b) then
+            if b and b:getMainJob() == WHM and b:getMainLvl() >= d.lvl and idle(b) and botKnows(b, d) then
                 if b:getZoneID() == zoneId then
                     same[#same + 1] = b
                 elseif TOWNS[b:getZoneID()] then
@@ -510,7 +521,7 @@ local function botTakes(customer, offer)
     for id, row in pairs(BotList()) do
         if row.online and row.zone == offer.zone and id ~= customer:getID() then
             local b = botEntity(id)
-            if b and b:getMainJob() == WHM and b:getMainLvl() >= d.lvl and idle(b) and b:getZoneID() == offer.zone then
+            if b and b:getMainJob() == WHM and b:getMainLvl() >= d.lvl and idle(b) and b:getZoneID() == offer.zone and botKnows(b, d) then
                 whm = b
                 break
             end

@@ -652,6 +652,11 @@ think = function(bot, token)
 
     pcall(noticeChanges, bot, st)
 
+    -- (spells from scrolls) a Blue Mage bot learns blue magic from what it defeats (bots_party.lua)
+    if partyPlay and partyPlay.hookBlue and bot:getMainJob() == 16 then
+        pcall(partyPlay.hookBlue, bot, st)
+    end
+
     -- asleep, petrified, stunned, terrorised, charmed: it can do nothing, and it must not walk either. (It kept
     -- trying to attack, cast and stand up every few seconds - the server refused each one - and its movement was
     -- still being sent, so a sleeping bot could slide along after its target.)
@@ -939,6 +944,14 @@ think = function(bot, token)
                 local okGear, bought = pcall(gear.check, bot)
                 if okGear and bought then
                     diary(bot, 'bought some new gear at the ah')
+                end
+            end
+
+            -- (spells from scrolls) and the spell scrolls it is missing, when it can spare the gil (bots_party.lua)
+            if partyPlay and partyPlay.buyScrolls then
+                local okS, n = pcall(partyPlay.buyScrolls, bot)
+                if okS and n and n > 0 then
+                    diary(bot, n > 1 and 'bought a couple of spell scrolls' or 'bought a spell scroll')
                 end
             end
 

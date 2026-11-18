@@ -192,7 +192,9 @@ local function prepare(bot)
     local job, lvl = jobOf(bot), bot:getMainLvl()
     for _, s in pairs(gameData().spells) do
         local need = s[2] and s[2][job]
-        if need and need <= lvl and not bot:hasSpell(s[1]) then
+        -- (spells from scrolls on: 18+ only bought as scrolls, bots_party.lua)
+        local scrolls = xi.bots and xi.bots.scrollsOn and xi.bots.scrollsOn()
+        if need and need <= lvl and (need < 18 or not scrolls) and not bot:hasSpell(s[1]) then
             pcall(function()
                 bot:addSpell(s[1], { silentLog = true })
             end)

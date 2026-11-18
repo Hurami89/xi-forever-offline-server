@@ -282,29 +282,68 @@ local function doAction(bot, st, action, who)
     return false
 end
 
+-- "Spells from scrolls" (the launcher's option, squad_config.lua spell_scrolls; the same switch as for squad mates,
+-- 2026-11-17): on = a bot gets the spells it learns below level 18 by itself, but the ones from 18 up it has to buy as
+-- scrolls with its own gil (P.buyScrolls, in town), and a Blue Mage learns blue magic from 18 up from monsters it
+-- defeats (P.hookBlue). Spells it already knows stay. Off = everything up to its level, as before.
+local SCROLL_LEVEL = 18
+local SCROLL_ITEM  = 4608   -- scroll item id = 4608 + spell id
+local BLU          = 16
+local scrollsCache, scrollsAt = false, 0
+function P.scrollsOn()
+    if os.time() >= scrollsAt then
+        scrollsAt = os.time() + 60
+        local ok, on = pcall(function()
+            return squadScrollsOn ~= nil and squadScrollsOn() or false
+        end)
+        scrollsCache = ok and on == true
+    end
+
+    return scrollsCache
+end
+
+xi.bots = xi.bots or {}
+xi.bots.scrollsOn = P.scrollsOn
+
+-- the level a job learns this spell at, or nil
+local function learnLevel(sp, job)
+    if not job or job == 0 then
+        return nil
+    end
+
+    local l = sp:getLevel(job)
+    if l and l > 0 and l < 255 then
+        return l
+    end
+
+    return nil
+end
+
 -- the spells of its main and sub job up to their levels, as if it had bought the scrolls (once per job/level):
 -- a bot that joined you straight from town only knew the few spells its field hunts had taught it, so a white mage
 -- had no Protectra and a black mage could have no nuke at all (2026-11-17). White, black, songs, ninjutsu and
--- summoning (ids below 512); blue magic is set, not learned.
+-- summoning (ids below 512), and blue magic (512-767) for a Blue Mage.
 local learnedKey = {}
 function P.learn(bot)
-    local key = string.format('%d:%d:%d:%d', bot:getMainJob(), bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl())
+    local on = P.scrollsOn()
+    local key = string.format('%d:%d:%d:%d:%s', bot:getMainJob(), bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl(), tostring(on))
     if learnedKey[bot:getID()] == key then
         return
     end
 
     learnedKey[bot:getID()] = key
     local main, mlvl, sub, slvl = bot:getMainJob(), bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl()
-    for id = 1, 511 do
+    local last = (main == BLU or sub == BLU) and 767 or 511
+    for id = 1, last do
         local ok, need = pcall(function()
             local sp = GetSpell(id)
             if not sp then
                 return false
             end
 
-            local a = sp:getLevel(main)
-            local b = (sub and sub ~= 0) and sp:getLevel(sub) or 255
-            return (a and a > 0 and a <= mlvl) or (b and b > 0 and b <= slvl)
+            local a, b = learnLevel(sp, main), learnLevel(sp, sub)
+            return (a ~= nil and a <= mlvl and (not on or a < SCROLL_LEVEL))
+                or (b ~= nil and b <= slvl and (not on or b < SCROLL_LEVEL))
         end)
         if ok and need and not bot:hasSpell(id) then
             pcall(function()
@@ -312,6 +351,75 @@ function P.learn(bot)
             end)
         end
     end
+end
+
+-- (spells from scrolls) in town now and then: buys up to two scrolls it is missing (18+ for its jobs and levels,
+-- lowest first) when it can spare the gil. Returns how many it learned.
+function P.buyScrolls(bot)
+    if not P.scrollsOn() then
+        return 0
+    end
+
+    local main, mlvl, sub, slvl = bot:getMainJob(), bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl()
+    local want = {}
+    for id = 1, 511 do
+        pcall(function()
+            local sp = GetSpell(id)
+            if sp and not bot:hasSpell(id) then
+                local a, b = learnLevel(sp, main), learnLevel(sp, sub)
+                local lvl = (a and a >= SCROLL_LEVEL and a <= mlvl and a) or (b and b >= SCROLL_LEVEL and b <= slvl and b) or nil
+                if lvl and GetItemByID(SCROLL_ITEM + id) then
+                    want[#want + 1] = { id = id, lvl = lvl }
+                end
+            end
+        end)
+    end
+
+    table.sort(want, function(x, y)
+        return x.lvl < y.lvl
+    end)
+
+    local bought = 0
+    for _, w in ipairs(want) do
+        if bought >= 2 then
+            break
+        end
+
+        local okP, price = pcall(function()
+            return GetItemByID(SCROLL_ITEM + w.id):getBasePrice()
+        end)
+        price = (okP and tonumber(price) and price > 0) and price or (w.lvl * w.lvl * 15)
+        price = math.floor(price * 1.5) -- (the auction house asks a bit more than the shop price)
+        if bot:getGil() >= price * 2 then -- (keeps half its gil for gear and food)
+            bot:delGil(price)
+            bot:addSpell(w.id, { silentLog = true })
+            bought = bought + 1
+        end
+    end
+
+    return bought
+end
+
+-- (spells from scrolls) a Blue Mage bot learns blue magic (18+) from what it defeats, 15% per spell, like a squad
+-- Blue Mage. The listener is added again after each zone change (they do not follow the entity across areas).
+function P.hookBlue(bot, st)
+    if st.bluHookZone == bot:getZoneID() or not SquadBlueSpellsOf then
+        return
+    end
+
+    st.bluHookZone = bot:getZoneID()
+    bot:addListener('DEFEATED_MOB', 'BOT_BLU_LEARN', function(mob)
+        if mob == nil or bot:getMainJob() ~= BLU or not P.scrollsOn() then
+            return
+        end
+
+        for _, sp in ipairs(SquadBlueSpellsOf(mob) or {}) do
+            if sp.level >= SCROLL_LEVEL and bot:getMainLvl() >= sp.level and not bot:hasSpell(sp.spell)
+                and math.random(100) <= (SQUAD_BLUE_LEARN_CHANCE or 15) then
+                bot:addSpell(sp.spell, { silentLog = true })
+            end
+        end
+    end)
 end
 
 -- one decision for a bot in a party (with you or with other bots); mob = the monster being fought (or nil).
