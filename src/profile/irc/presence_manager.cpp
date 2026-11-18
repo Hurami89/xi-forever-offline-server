@@ -362,6 +362,29 @@ void PresenceManager::pollBots()
     }
 
     botFriends_ = std::move(friends);
+
+    // mail from bots (bots.cpp writes it into the mailbox itself): the message notice a client's post would get,
+    // so the game picks it up now (a player who is off finds it when they log in)
+    if (const auto mail = db::preparedStmt("SELECT accid, name, sender_accid FROM accounts_messages WHERE sender_accid >= ? AND accid < ?",
+                                           kBotAccountBase,
+                                           kBotAccountBase))
+    {
+        auto seen = std::set<std::pair<uint32, std::string>>{};
+        FOR_DB_MULTIPLE_RESULTS(mail)
+        {
+            auto key = std::pair{ mail->get<uint32>("accid"), mail->get<std::string>("name") };
+            if (botsPolled_ && !botMail_.contains(key))
+            {
+                ShowInfoFmt("bot account {} left a message for account {}", mail->get<uint32>("sender_accid"), key.first);
+                deliverMessage(mail->get<uint32>("sender_accid"), key.first, key.second);
+            }
+
+            seen.insert(std::move(key));
+        }
+
+        botMail_ = std::move(seen);
+    }
+
     botsPolled_ = true;
 }
 

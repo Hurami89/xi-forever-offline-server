@@ -11,8 +11,12 @@
 --   - each bot has its own nature (always the same, from its name): about a third accept anyone, most want to have
 --     met you first, a few are picky. A request it is not ready for waits: it tells you so (once a day at most) and
 --     accepts by itself once you have partied enough. Being in the same linkshell counts as having met;
---   - a bot that had a good time in your party may ask you to add it when the party ends, and it answers
---     "can I add you?" by tell itself;
+--   - a bot that had a good time in your party sends you a real friend request when the party ends (the game's
+--     own request; you accept or turn it down as usual), and answers "can I add you?" by sending you one;
+--   - the game's mail (bots.cpp writes it in PlayOnline's own format, xi_profile lights up your message icon): it
+--     answers the accepted request ("accepted", so your list updates at once), friends leave you a message or two
+--     you find when you come back after a few days away, and a message you send a bot gets an answer (by tell when
+--     you are on, by mail when you are off);
 --   - friends say hi now and then when they log in or you do, cheer your level ups (every 5th level, and from 70),
 --     tell you about their own (every 10th), and sometimes offer to come and help while you fight with room in your
 --     party ("sure" / "no thanks" by tell answers them);
@@ -46,6 +50,12 @@ local HELP_PLAYER_GAP  = 20 * 60           -- any friend offering you help, at m
 local HELP_LEVELS      = 4                 -- a friend offers help within this many levels of you
 local HELP_WAIT        = 180               -- seconds the offer stands
 local UNASKED_GAP      = 90                -- seconds between two unasked friend tells to the same player
+local SENT_TELL_CHANCE = 0.5               -- after sending you a request, it also says so by tell
+local DECLINED_WAIT    = 30 * 86400        -- you turned its request down: it does not ask again for this long
+local AWAY_MAIL_AFTER  = 2 * 86400         -- you were away this long: friends may have left you mail
+local AWAY_MAIL_MAX    = 2
+local AWAY_MAIL_CHANCE = 0.5
+local SEEN_EVERY       = 600               -- seconds between two notes of "we were both on" (for "long time no see")
 local LOGIN_REST       = 45 * 60           -- a friend logged in by preferLogin rests this long before the next time
 local LOGIN_CHANCE     = { 0.5, 0.08 }     -- per login slot, a friend at / outside its usual hours
 -- usual play hours (local time, end may pass midnight: 27 = 3 am); on weekends they start 3 hours earlier
@@ -116,6 +126,31 @@ local LINES = {
         { 'hey, want a hand? I\'m free, can come to you', 'Would you like some help? I am free and can come to you.' },
         { 'need help? I\'m not doing anything rn', 'If you need help, I am free at the moment.' },
         { 'want me to join you? just say sure', 'I can join you if you like. Just say so.' },
+    },
+    sentRequest = {
+        { 'sent you a friend request :)', 'I have sent you a friend request.' },
+        { 'just sent you a friend request!', 'I sent you a friend request. I hope you do not mind.' },
+    },
+    askSent = {
+        { 'sure! sent you one :)', 'Of course. I have sent you a friend request.' },
+        { 'yeah! just sent you a request', 'Gladly. Please check your friend requests.' },
+    },
+    thanks = {
+        { 'yay thanks for adding me :)', 'Thank you for accepting my request.' },
+        { 'ty for accepting! :D', 'Thank you. I am glad to be on your list.' },
+    },
+    mailMilestone = {
+        { 'finally hit {lvl} on {job}!! we should party sometime', 'I reached level {lvl} on {job} today. We should adventure together soon.' },
+        { 'guess who\'s {lvl} {job} now :D', 'Some news: I am a level {lvl} {job} now.' },
+    },
+    mailMissed = {
+        { 'haven\'t seen you around lately! hope you\'re ok. let\'s party when you\'re back', 'I have not seen you in a while. I hope all is well. Let us party when you return.' },
+        { 'hey, been a while! send me a tell when you\'re on', 'It has been some time. Send me a tell when you are back online.' },
+        { 'where\'d you go? :P the camps feel empty without you', 'I noticed you have been away. I hope to see you back soon.' },
+    },
+    mailReply = {
+        { 'got your message :) see you around!', 'Thank you for your message. I hope to see you soon.' },
+        { 'thanks for the msg! I\'ll be on later', 'Thank you for writing. I will be online again later.' },
     },
     helpNo = {
         { 'ok np! have fun', 'Understood. Good luck.' },
@@ -377,10 +412,31 @@ local function maybeOffer(bot, name)
         return
     end
 
-    if say(bot, name, 'offer', { name = name }, rnd(8, 25), true) then
-        bot:setCharVar('[BotFO]' .. name, now())
-        print(string.format('[bots] %s asks %s to add it as a friend (%d points)', bot:getName(), name, points(bot, name)))
+    bot:setCharVar('[BotFO]' .. name, now())
+    if not BotFriendRequest then
+        if say(bot, name, 'offer', { name = name }, rnd(8, 25), true) then
+            print(string.format('[bots] %s asks %s to add it as a friend (%d points)', bot:getName(), name, points(bot, name)))
+        end
+
+        return
     end
+
+    -- a real friend request a little after the party (the game shows it like any other), sometimes with a tell
+    bot:timer(rnd(8, 25) * 1000, function(b)
+        if not botOnline(b:getID()) or not playerNamed(name) then
+            return
+        end
+
+        local ok, why = BotFriendRequest(b:getID(), name)
+        if ok then
+            print(string.format('[bots] %s sends %s a friend request (%d points)', b:getName(), name, points(b, name)))
+            if math.random() < SENT_TELL_CHANCE then
+                say(b, name, 'sentRequest', { name = name }, rnd(4, 10), true)
+            end
+        elseif why ~= 'listed' and why ~= 'blocked' and why ~= 'asked' then
+            say(b, name, 'offer', { name = name }, rnd(4, 10), true) -- (could not send one: it asks by tell)
+        end
+    end)
 end
 
 local function milestone(bot, lvl)
@@ -394,8 +450,11 @@ local function milestone(bot, lvl)
             end
         end
 
+        local vars = { name = name, lvl = lvl, job = JOB_NAMES[bot:getMainJob()] or '' }
         if p and not together and math.random() < MILESTONE_CHANCE then
-            say(bot, name, 'milestone', { name = name, lvl = lvl, job = JOB_NAMES[bot:getMainJob()] or '' }, rnd(5, 20), true)
+            say(bot, name, 'milestone', vars, rnd(5, 20), true)
+        elseif not p and BotSendMessage and math.random() < MILESTONE_CHANCE then
+            BotSendMessage(bot:getID(), name, line(bot, 'mailMilestone', vars)) -- (you are off: a message you find later)
         end
     end
 end
@@ -552,7 +611,16 @@ function F.onTell(bot, from, text)
             say(bot, from, 'askAlready', { name = from }, rnd(3, 8))
         elseif ready(bot, from) or nature(bot) == 1 then
             bot:setCharVar('[BotFO]' .. from, t) -- (your request is accepted at once)
-            say(bot, from, 'askYes', { name = from }, rnd(3, 8))
+            local ok, why = false, nil
+            if BotFriendRequest and playerNamed(from) then
+                ok, why = BotFriendRequest(id, from)
+            end
+
+            if why == 'asked' then
+                return true -- (you already sent one: bots.cpp accepts it on its next look, with a word)
+            end
+
+            say(bot, from, (ok or why == 'listed') and 'askSent' or 'askYes', { name = from }, rnd(3, 8))
         else
             say(bot, from, 'askNotYet', { name = from }, rnd(3, 8))
         end
@@ -596,10 +664,51 @@ function F.onLogin(bot)
     end
 
     local name = online[rnd(1, #online)]
-    local which = now() - bot:getCharVar('[BotFS]') > LONG_TIME and bot:getCharVar('[BotFS]') > 0 and 'helloBack' or 'hello'
+    local seen = bot:getCharVar('[BotFS]' .. name)
+    local which = seen > 0 and now() - seen > LONG_TIME and 'helloBack' or 'hello'
     if say(bot, name, which, { name = name }, rnd(20, 60), true) then
         bot:setCharVar('[BotFH]', now())
-        bot:setCharVar('[BotFS]', now())
+        bot:setCharVar('[BotFS]' .. name, now())
+    end
+end
+
+-- back after days away: a friend or two left you a message (the game's mail: you see it come in, as in the era)
+local function awayMail(player, ids)
+    local name = player:getName()
+    local seen = player:getCharVar('[BotF]Seen')
+    player:setCharVar('[BotF]Seen', now())
+    if not BotSendMessage or seen <= 0 or now() - seen < AWAY_MAIL_AFTER then
+        return
+    end
+
+    local list = {}
+    for _, id in ipairs(ids) do
+        list[#list + 1] = id
+    end
+
+    for i = #list, 2, -1 do
+        local j = rnd(1, i)
+        list[i], list[j] = list[j], list[i]
+    end
+
+    local sent = 0
+    for _, id in ipairs(list) do
+        if sent >= AWAY_MAIL_MAX then
+            break
+        end
+
+        if math.random() < AWAY_MAIL_CHANCE then
+            local bot = GetPlayerByID(id) -- (nil when it is off: the casual voice then)
+            local which = LINES.mailMissed[rnd(1, #LINES.mailMissed)]
+            local text = (bot and polite(bot)) and which[2] or which[1]
+            if BotSendMessage(id, name, text) then
+                sent = sent + 1
+            end
+        end
+    end
+
+    if sent > 0 then
+        print(string.format('[bots] %d bot friend(s) left %s a message (away %d days)', sent, name, math.floor((now() - seen) / 86400)))
     end
 end
 
@@ -607,11 +716,12 @@ function F.onPlayerLogin(player)
     local name = player:getName()
     local mem = players[lower(name)] or {}
     players[lower(name)] = mem
+    local ids = refresh(true).byName[lower(name)] or {}
+    awayMail(player, ids)
     if now() - (mem.greetAt or -1e9) < GREET_GAP or math.random() >= GREET_CHANCE then
         return
     end
 
-    local ids = refresh(true).byName[lower(name)] or {}
     local on = {}
     for _, id in ipairs(ids) do
         local bot = botOnline(id) and GetPlayerByID(id) or nil
@@ -627,8 +737,50 @@ function F.onPlayerLogin(player)
     local bot = on[rnd(1, #on)]
     if say(bot, name, 'greet', { name = name }, rnd(20, 90), true) then
         mem.greetAt = now()
-        bot:setCharVar('[BotFS]', now())
+        bot:setCharVar('[BotFS]' .. name, now())
     end
+end
+
+-----------------------------------
+-- the friend list's answers and mail (bots.cpp reads a bot's mailbox while it is on)
+-----------------------------------
+-- your answer to its friend request
+function F.onReply(bot, from, accepted)
+    if not from or from == '' then
+        return
+    end
+
+    cache.at = nil
+    if accepted then
+        bot:setCharVar('[Bot]Friend', 1)
+        flagged[bot:getID()] = true
+        if playerNamed(from) and math.random() < 0.7 then
+            say(bot, from, 'thanks', { name = from }, rnd(4, 15))
+        end
+    else
+        bot:setCharVar('[BotFO]' .. from, now() + DECLINED_WAIT - OFFER_AGAIN) -- (no new request for a month)
+    end
+end
+
+-- a message you sent it while you are off now (bots.lua answers one from a player who is on by tell)
+function F.onMessage(bot, from, text)
+    if not from or from == '' then
+        return
+    end
+
+    local k = bot:getID() .. '|' .. lower(from)
+    if now() - (chatAt[k] or -1e9) >= CHAT_POINT_GAP then
+        chatAt[k] = now()
+        addPoints(bot, from, 1)
+    end
+
+    if not BotSendMessage or not mutual(bot:getID(), from) then
+        return
+    end
+
+    bot:timer(rnd(30, 120) * 1000, function(b)
+        BotSendMessage(b:getID(), from, line(b, 'mailReply', { name = from }))
+    end)
 end
 
 -----------------------------------
@@ -755,6 +907,15 @@ function F.tick(list)
         if t >= (mem.helpCheck or 0) then
             mem.helpCheck = t + HELP_CHECK_S
             offerHelp(p, mem)
+        end
+
+        -- every 10 minutes: you were on (for the mail after days away), and with which friends (for "long time no see")
+        if t >= (mem.seenAt or 0) then
+            mem.seenAt = t + SEEN_EVERY
+            p:setCharVar('[BotF]Seen', t)
+            for _, bot in ipairs(friendBotsOf(p)) do
+                bot:setCharVar('[BotFS]' .. p:getName(), t)
+            end
         end
     end
 end

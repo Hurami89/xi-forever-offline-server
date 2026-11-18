@@ -1597,6 +1597,28 @@ xi.bots.onFriendRequest = function(bot, t)
     return true
 end
 
+-- a message you sent a bot (the friend list's mail; bots.cpp reads its mailbox while it is on): you are on, so it
+-- answers by tell like any tell; you are off, it writes back (bots_friends.lua)
+xi.bots.onMessage = function(bot, t)
+    if type(t) ~= 'table' or not t.from or t.from == '' then
+        return
+    end
+
+    local p = GetPlayerByName(t.from)
+    if p and not BotIsBot(p:getID()) then
+        xi.bots.onTell(bot, { from = t.from, text = t.text or '' })
+    elseif friends then
+        pcall(friends.onMessage, bot, t.from, t.text or '')
+    end
+end
+
+-- your answer to a bot's friend request (accepted = true / false)
+xi.bots.onFriendReply = function(bot, t)
+    if friends and type(t) == 'table' then
+        pcall(friends.onReply, bot, t.from, t.accepted == true)
+    end
+end
+
 -- for squad.lua (squad chat): the bot players around you, your bot friends online, your bot linkshell, and the
 -- bots in your party. { near = { {name, job, level}... }, friends = {...}, party = {...}, ls = name or nil }
 local JOB_NAMES = { 'WAR', 'MNK', 'WHM', 'BLM', 'RDM', 'THF', 'PLD', 'DRK', 'BST', 'BRD', 'RNG', 'SAM', 'NIN', 'DRG', 'SMN', 'BLU', 'COR', 'PUP' }

@@ -28,6 +28,7 @@
 #include "common/types/maybe.h"
 
 #include <set>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -83,6 +84,7 @@ private:
     std::unordered_map<uint32, Online> online_;
     std::unordered_set<uint32>         botsOn_;      // bot accounts on someone's friend list that are playing
     std::set<std::pair<uint32, uint32>> botFriends_; // (bot, player): both list each other, not pending
+    std::set<std::pair<uint32, std::string>> botMail_; // (player, message name): mail from bots already announced
     bool                               botsPolled_{};
     uint64                             lastSignOnId_{};
     uint64                             lastTimestamp_{};

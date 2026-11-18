@@ -82,6 +82,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <string>
@@ -581,6 +582,220 @@ void callLuaPlain(const char* fn)
     }
 }
 
+// ---- the friend list's mail: messages in xi_profile's mailboxes (accounts_messages), in PlayOnline's own format ----
+// Worked out from four messages two real game clients sent each other on this server (2026-11-18: a friend request
+// both ways, the "accepted" answer and a plain message). A row's name is the 72-byte message header in polcore's
+// base64; its data is "<title>\x07<text>\0". The game reads a new message when xi_profile sends it the message notice
+// (PresenceManager::pollBots does that for mail from bots) or when it logs in. Only the parts the clients filled in
+// are set; everything else stays 0, as in theirs.
+namespace polmail
+{
+constexpr uint64 PolIdMask = 0x1C273E4567891133ull; // XORed into both account ids of a header (xi_profile notices.cpp)
+constexpr char   Alphabet[] = "TSG8IncW3HFKokOg79qzeCmZs2yBYEQVAUxR5rbwi4P@jMDLtpvad0f_J1hlN6uX";
+constexpr uint8  Plain = 0, FriendRequest = 1, FriendAccepted = 9, FriendDeclined = 10;
+// the titles the game writes (16 bytes at most: "Friend registration" is cut short in the client's own answer too)
+constexpr const char* TitleRequest  = "Let's be friends";
+constexpr const char* TitleAccepted = "Friend registrat";
+constexpr const char* TitlePlain    = "FINAL FANTASY XI";
+
+// polcore's base64: its own digits, and a short last group padded with its zero digit instead of '='
+auto base64(const std::vector<uint8>& in) -> std::string
+{
+    std::string out;
+    for (size_t i = 0; i < in.size(); i += 3)
+    {
+        const uint32 n = (static_cast<uint32>(in[i]) << 16) | (i + 1 < in.size() ? static_cast<uint32>(in[i + 1]) << 8 : 0u) |
+                         (i + 2 < in.size() ? static_cast<uint32>(in[i + 2]) : 0u);
+        for (int shift = 18; shift >= 0; shift -= 6)
+        {
+            out += Alphabet[(n >> shift) & 0x3F];
+        }
+    }
+
+    return out;
+}
+
+void put(std::vector<uint8>& b, size_t at, uint64 value, size_t bytes)
+{
+    for (size_t i = 0; i < bytes; ++i)
+    {
+        b[at + i] = static_cast<uint8>(value >> (8 * i));
+    }
+}
+
+// one stored message: { row name, row data }. summaryOf: the title whose first 15 letters go in the header (a
+// client's "accepted" answer keeps the request's title there).
+auto make(uint32 fromAcc, const std::string& fromName, uint32 toAcc, uint8 type, const std::string& title, const std::string& text,
+          const std::string& summaryOf, uint32 seq, uint32 date) -> std::pair<std::string, std::string>
+{
+    std::string data = title.substr(0, 16);
+    data += '\x07';
+    data += text;
+    data += '\0';
+
+    std::vector<uint8> h(72, 0);
+    put(h, 0, fromAcc ^ PolIdMask, 8);
+    put(h, 8, toAcc ^ PolIdMask, 8);
+    std::memcpy(h.data() + 16, fromName.data(), std::min<size_t>(fromName.size(), 15));
+    std::memcpy(h.data() + 32, summaryOf.data(), std::min<size_t>(summaryOf.size(), 15));
+    put(h, 48, seq, 4);
+    put(h, 52, date, 4);
+    put(h, 56, data.size(), 4);
+    put(h, 62, (static_cast<uint64>(type & 0x1F) << 7) | 0x8000, 2);       // DataType 0, Type, Code 0, not online, valid
+    put(h, 64, 1, 2);                                                        // ContentsId: FINAL FANTASY XI
+    put(h, 66, 0x0002 | (summaryOf.size() > 15 ? 0x1000 : 0), 2);           // Language 1, title longer than its summary
+    return { base64(h), data };
+}
+
+// the text of a stored message (after the title), printable letters only; auto-translate phrases are left out
+auto textOf(const std::string& data) -> std::string
+{
+    const auto start = data.find('\x07');
+    std::string out;
+    bool translated = false;
+    for (size_t i = start == std::string::npos ? 0 : start + 1; i < data.size() && data[i] != '\0'; ++i)
+    {
+        const auto c = static_cast<uint8>(data[i]);
+        if (c == 0xFD)
+        {
+            translated = !translated;
+        }
+        else if (!translated && c >= 0x20 && c < 0x7F)
+        {
+            out += static_cast<char>(c);
+        }
+    }
+
+    return out;
+}
+} // namespace polmail
+
+auto& g_mailSeq = *new std::map<uint32, uint32>(); // [bot account] = its next message number (a client counts per session too)
+
+// a bot's message into a player's mailbox (with the limits a game client meets in xi_profile)
+auto postMail(Bot* b, uint32 toAcc, uint8 type, const std::string& title, const std::string& text, const std::string& summaryOf) -> bool
+{
+    if (auto rset = db::preparedStmt("SELECT COUNT(*) AS messages, COALESCE(SUM(sender_accid = ?), 0) AS mine FROM accounts_messages WHERE accid = ?", b->accId, toAcc);
+        !rset || !rset->next() || rset->get<uint32>("messages") >= 100 || rset->get<uint32>("mine") >= 10)
+    {
+        return false;
+    }
+
+    const auto date        = static_cast<uint32>(std::time(nullptr));
+    const auto [name, data] = polmail::make(b->accId, b->name, toAcc, type, title, text, summaryOf, g_mailSeq[b->accId]++, date);
+    auto rset              = db::preparedStmt("INSERT IGNORE INTO accounts_messages(accid, name, sender_accid, type, data) VALUES(?, ?, ?, ?, ?)",
+                                              toAcc, name, b->accId, type, data);
+    return rset && rset->rowsAffected() == 1;
+}
+
+// a real player's account by character name (0: none)
+auto playerAccount(const std::string& name) -> uint32
+{
+    if (auto rset = db::preparedStmt("SELECT accid FROM chars WHERE charname = ? AND accid < ? LIMIT 1", name, BotAccBase); rset && rset->next())
+    {
+        return rset->get<uint32>("accid");
+    }
+
+    return 0;
+}
+
+// the name an account goes by: its character that is on, else its first
+auto playerNameOf(uint32 accId) -> std::string
+{
+    if (auto rset = db::preparedStmt("SELECT c.charname FROM chars c LEFT JOIN accounts_sessions s ON s.charid = c.charid "
+                                     "WHERE c.accid = ? ORDER BY s.charid IS NULL, c.charid LIMIT 1",
+                                     accId);
+        rset && rset->next())
+    {
+        return rset->get<std::string>("charname");
+    }
+
+    return {};
+}
+
+// xi.bots.<fn>(bot, info) for the friend list's events
+void callBotLua(const char* fn, CCharEntity* PBot, const sol::table& info)
+{
+    const sol::optional<sol::table> xiTable = ::lua["xi"].get<sol::optional<sol::table>>();
+    if (!xiTable)
+    {
+        return;
+    }
+
+    const sol::optional<sol::table> botsTable = (*xiTable)["bots"].get<sol::optional<sol::table>>();
+    if (!botsTable)
+    {
+        return;
+    }
+
+    sol::protected_function f = (*botsTable)[fn];
+    if (f.valid())
+    {
+        auto result = f(CLuaBaseEntity(PBot), info);
+        if (!result.valid())
+        {
+            sol::error err = result;
+            ShowErrorFmt("[bots] xi.bots.{}: {}", fn, err.what());
+        }
+    }
+}
+
+// a bot's mailbox: what real players sent it (a message, or the answer to its friend request). Read while it is on
+// (Lua answers), then deleted, as a game client does. Friend requests are left to sweepFriendRequests.
+void sweepBotMail()
+{
+    struct Mail
+    {
+        uint32      botAcc;
+        std::string name;
+        uint32      from;
+        uint8       type;
+        std::string data;
+        uint32      botChar;
+    };
+
+    std::vector<Mail> mail;
+    if (auto rset = db::preparedStmt("SELECT m.accid, m.name, m.sender_accid, m.type, m.data, c.charid FROM accounts_messages m "
+                                     "JOIN chars c ON c.accid = m.accid "
+                                     "WHERE m.accid >= ? AND m.sender_accid < ? AND m.type <> 1 LIMIT 50",
+                                     BotAccBase, BotAccBase))
+    {
+        while (rset->next())
+        {
+            mail.push_back({ rset->get<uint32>("accid"), rset->get<std::string>("name"), rset->get<uint32>("sender_accid"),
+                             rset->get<uint8>("type"), rset->getBlobBytes("data"), rset->get<uint32>("charid") });
+        }
+    }
+
+    for (const auto& m : mail)
+    {
+        Bot*         b    = botOf(m.botChar);
+        CCharEntity* PBot = (b && b->online && !b->zoning) ? charOf(b) : nullptr;
+        if (PBot == nullptr)
+        {
+            continue; // (it reads its mail when it is on)
+        }
+
+        const auto from = playerNameOf(m.from);
+        auto       info = ::lua.create_table();
+        info["from"]    = from;
+        if (m.type == polmail::Plain)
+        {
+            info["text"] = polmail::textOf(m.data);
+            ShowInfoFmt("[bots] {} reads a message from {}", b->name, from);
+            callBotLua("onMessage", PBot, info);
+        }
+        else if (m.type == polmail::FriendAccepted || m.type == polmail::FriendDeclined)
+        {
+            info["accepted"] = m.type == polmail::FriendAccepted;
+            ShowInfoFmt("[bots] {} {} {}'s friend request", from, m.type == polmail::FriendAccepted ? "accepted" : "turned down", b->name);
+            callBotLua("onFriendReply", PBot, info);
+        }
+
+        db::preparedStmt("DELETE FROM accounts_messages WHERE accid = ? AND name = ?", m.botAcc, m.name);
+    }
+}
+
 // the friend list (served by xi_profile): a real player asked a bot to be friends. The bot answers while it is on
 // (xi.bots.onFriendRequest decides: true = accept, false = turn down, nil = not yet, it asks again on a later sweep):
 // the player's entry stops being pending and the bot lists the player too, the way xi_profile does it when a client
@@ -589,11 +804,15 @@ constexpr uint8 FriendListSize = 200;
 
 void sweepFriendRequests()
 {
-    // a player took a bot off their friend list: the bot drops them too (as a real player would notice and do)
+    // a player took a bot off their friend list: the bot drops them too (as a real player would notice and do).
+    // (Only accepted entries: a request the bot sent waits with no entry on the player's side yet.)
     db::preparedStmt("DELETE b FROM accounts_friends b "
                      "LEFT JOIN accounts_friends p ON p.accid = b.friend_accid AND p.blacklist = 0 AND p.friend_accid = b.accid "
-                     "WHERE b.accid >= ? AND b.friend_accid < ? AND b.blacklist = 0 AND p.accid IS NULL",
+                     "WHERE b.accid >= ? AND b.friend_accid < ? AND b.blacklist = 0 AND b.pending = 0 AND p.accid IS NULL",
                      BotAccBase, BotAccBase);
+
+    // messages and answers real players sent to bots
+    sweepBotMail();
 
     struct Request
     {
@@ -664,7 +883,7 @@ void sweepFriendRequests()
 
         // the request message the client left in the bot's mailbox is read now (also when it waits: unread
         // messages count against the sender's limit in xi_profile, and only the friend entry needs to wait)
-        db::preparedStmt("DELETE FROM accounts_messages WHERE accid = ? AND sender_accid = ?", r.botAcc, r.accId);
+        db::preparedStmt("DELETE FROM accounts_messages WHERE accid = ? AND sender_accid = ? AND type = ?", r.botAcc, r.accId, polmail::FriendRequest);
         if (later)
         {
             continue;
@@ -713,6 +932,8 @@ void sweepFriendRequests()
                              r.botAcc, index, r.accId, index, playerName.substr(0, 15));
         }
 
+        // and answers the way a game client does: an "accepted" message (the player's list updates at once)
+        postMail(b, r.accId, polmail::FriendAccepted, polmail::TitleAccepted, "", polmail::TitleRequest);
         ShowInfoFmt("[bots] {} and {} are now friends", b->name, playerName);
     }
 }
@@ -1808,6 +2029,113 @@ class BotsModule : public CPPModule
                                }
 
                                return out;
+                           });
+
+        // a bot sends a real player a friend request (the game shows it like any other): ok, why
+        // ("sent", or why not: "not on", "no such player", "blocked", "listed" = it already lists them or asked before,
+        // "asked" = the player asked it first, "full", "mailbox")
+        ::lua.set_function("BotFriendRequest", [](uint32 charId, const std::string& playerName) -> std::tuple<bool, std::string>
+                           {
+                               Bot* b = botOf(charId);
+                               if (!charOf(b) || !b->online)
+                               {
+                                   return { false, "not on" };
+                               }
+
+                               const uint32 acc = playerAccount(playerName);
+                               if (acc == 0)
+                               {
+                                   return { false, "no such player" };
+                               }
+
+                               bool blocked = false, listed = false, asked = false;
+                               if (auto rset = db::preparedStmt("SELECT accid, blacklist FROM accounts_friends "
+                                                                "WHERE (accid = ? AND friend_accid = ?) OR (accid = ? AND friend_accid = ?)",
+                                                                b->accId, acc, acc, b->accId))
+                               {
+                                   while (rset->next())
+                                   {
+                                       const bool mine = rset->get<uint32>("accid") == b->accId;
+                                       const bool black = rset->get<uint32>("blacklist") != 0;
+                                       blocked = blocked || (!mine && black);
+                                       listed  = listed || mine;
+                                       asked   = asked || (!mine && !black);
+                                   }
+                               }
+
+                               if (blocked || listed || asked)
+                               {
+                                   return { false, blocked ? "blocked" : (listed ? "listed" : "asked") };
+                               }
+
+                               std::vector<bool> used(FriendListSize, false);
+                               if (auto rset = db::preparedStmt("SELECT list_index FROM accounts_friends WHERE accid = ? AND blacklist = 0", b->accId))
+                               {
+                                   while (rset->next())
+                                   {
+                                       const auto index = rset->get<uint32>("list_index");
+                                       if (index < FriendListSize)
+                                       {
+                                           used[index] = true;
+                                       }
+                                   }
+                               }
+
+                               const auto it = std::find(used.begin(), used.end(), false);
+                               if (it == used.end())
+                               {
+                                   return { false, "full" };
+                               }
+
+                               const auto index = static_cast<uint32>(std::distance(used.begin(), it));
+                               db::preparedStmt("INSERT INTO accounts_friends(accid, blacklist, list_index, friend_accid, display_order, name, pending) VALUES(?, 0, ?, ?, ?, ?, 1)",
+                                                b->accId, index, acc, index, playerName.substr(0, 15));
+                               if (!postMail(b, acc, polmail::FriendRequest, polmail::TitleRequest, playerName, polmail::TitleRequest))
+                               {
+                                   db::preparedStmt("DELETE FROM accounts_friends WHERE accid = ? AND blacklist = 0 AND friend_accid = ? AND pending = 1", b->accId, acc);
+                                   return { false, "mailbox" };
+                               }
+
+                               ShowInfoFmt("[bots] {} sent {} a friend request", b->name, playerName);
+                               return { true, "sent" };
+                           });
+
+        // a bot leaves a friend a message (the game's own: the icon lights up, it waits when they are off). Mail needs
+        // no log in, so a bot that is off can write too (bots_friends.lua: the mail you find after days away).
+        // As in the era, only to a friend: both listed, both accepted.
+        ::lua.set_function("BotSendMessage", [](uint32 charId, const std::string& playerName, const std::string& text) -> bool
+                           {
+                               Bot* b = botOf(charId);
+                               const uint32 acc = playerAccount(playerName);
+                               if (b == nullptr || acc == 0)
+                               {
+                                   return false;
+                               }
+
+                               auto rset = db::preparedStmt("SELECT COUNT(*) AS n FROM accounts_friends "
+                                                            "WHERE blacklist = 0 AND pending = 0 AND ((accid = ? AND friend_accid = ?) OR (accid = ? AND friend_accid = ?))",
+                                                            b->accId, acc, acc, b->accId);
+                               if (!rset || !rset->next() || rset->get<uint32>("n") != 2)
+                               {
+                                   return false;
+                               }
+
+                               std::string clean;
+                               for (const char c : text)
+                               {
+                                   if (static_cast<uint8>(c) >= 0x20 && static_cast<uint8>(c) < 0x7F && clean.size() < 120)
+                                   {
+                                       clean += c;
+                                   }
+                               }
+
+                               if (clean.empty() || !postMail(b, acc, polmail::Plain, polmail::TitlePlain, clean, polmail::TitlePlain))
+                               {
+                                   return false;
+                               }
+
+                               ShowInfoFmt("[bots] {} left {} a message", b->name, playerName);
+                               return true;
                            });
 
         ::lua.set_function("BotChat", [](uint32 charId, uint8 kind, const std::string& text) -> bool
