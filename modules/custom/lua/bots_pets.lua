@@ -44,6 +44,92 @@ end
 local FRAMES = { 'HARLEQUIN', 'VALOREDGE', 'SHARPSHOT', 'STORMWAKER' }
 local HEADS  = { 'HARLEQUIN', 'VALOREDGE', 'SHARPSHOT', 'STORMWAKER', 'SOULSOOTHER', 'SPIRITREAVER' }
 
+-- its attachments, by frame (item ids from sql/item_puppet.sql; names in item_basic aren't unique, so ids):
+-- what a player of that build would fit first. The game refuses ones the head and frame have no element room for.
+local ATTACH = {
+    VALOREDGE  = { 8449, 8545, 8451, 8450, 8453, 8546, 8577, 8454, 8641, 8609, 8610, 8643 },            -- tank
+    HARLEQUIN  = { 8449, 8450, 8451, 8453, 8513, 8514, 8577, 8641, 8673, 8545, 8546, 8456 },            -- all-round
+    SHARPSHOT  = { 8514, 8450, 8451, 8453, 8513, 8577, 8641, 8517, 8673, 8456, 8528, 8519 },            -- ranged
+    STORMWAKER = { 8482, 8481, 8485, 8673, 8641, 8609, 8675, 8483, 8497, 8643, 8610, 8486 },            -- magic
+}
+local attachedKey = {}
+
+-- how many it wants fitted by now: a couple at the start, all twelve by the 70s
+local function attachCount(level)
+    return math.min(12, 2 + math.floor(level / 7))
+end
+
+local function pupLevel(bot)
+    return bot:getMainJob() == xi.job.PUP and bot:getMainLvl() or bot:getSubLvl()
+end
+
+local function frameOf(bot)
+    local build = bot:getCharVar('[Bot]Puppet')
+    return FRAMES[math.floor(build / 10)] or 'HARLEQUIN'
+end
+
+-- the attachments of its list that it owns, in its order
+local function owned(bot, frame)
+    local out = {}
+    for _, id in ipairs(ATTACH[frame] or ATTACH.HARLEQUIN) do
+        if bot:hasAttachment(id) then
+            out[#out + 1] = id
+        end
+    end
+
+    return out
+end
+
+-- fits what it owns (BotSetAttachments, bots.cpp), up to its count for its level; again only when that changes
+local function fitAttachments(bot, frame)
+    if not BotSetAttachments then
+        return
+    end
+
+    local have = owned(bot, frame)
+    local key = frame .. ':' .. attachCount(pupLevel(bot)) .. ':' .. #have
+    if attachedKey[bot:getID()] == key then
+        return
+    end
+
+    attachedKey[bot:getID()] = key
+    BotSetAttachments(bot:getID(), have, attachCount(pupLevel(bot)))
+end
+
+-- in town now and then (with its gear shopping, bots.lua): a Puppetmaster buys the next attachments on its list it
+-- doesn't own yet, up to its count for its level, when it can spare the gil (about the shop price; keeps half its
+-- gil). They are fitted the next time it calls its automaton. Returns how many it bought.
+function Pets.buyAttachments(bot)
+    if bot:getMainJob() ~= xi.job.PUP and bot:getSubJob() ~= xi.job.PUP then
+        return 0
+    end
+
+    local frame = frameOf(bot)
+    local want = attachCount(pupLevel(bot)) - #owned(bot, frame)
+    local bought = 0
+    for _, id in ipairs(ATTACH[frame] or ATTACH.HARLEQUIN) do
+        if bought >= math.min(want, 2) then
+            break
+        end
+
+        if not bot:hasAttachment(id) then
+            local okP, price = pcall(function()
+                return GetItemByID(id):getBasePrice()
+            end)
+            price = (okP and tonumber(price) and price > 0) and price or 1500
+            if bot:getGil() < price * 2 then
+                break -- (saves up for this one before the next)
+            end
+
+            bot:delGil(price)
+            bot:unlockAttachment(id)
+            bought = bought + 1
+        end
+    end
+
+    return bought
+end
+
 local function automatonReady(bot)
     return pcall(function()
         if bot:getAutomatonName() == '' then
@@ -71,6 +157,8 @@ local function automatonReady(bot)
         if bot:getAutomatonHead() ~= xi.automaton.head[head] then
             bot:setAutomatonHead(xi.automaton.head[head])
         end
+
+        fitAttachments(bot, frame)
     end)
 end
 

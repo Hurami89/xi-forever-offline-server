@@ -400,6 +400,61 @@ function P.buyScrolls(bot)
     return bought
 end
 
+-- A Blue Mage bot sets its blue magic the way a player does in the Set Spells menu (BotSetBlueSpells, bots.cpp):
+-- the spells its job rules use first (heals, Cocoon, the physical damage spells), then the rest of what it knows,
+-- strongest first, while it has the slots and points. Done again when its level, job or known spells change.
+local BLUE_PREFER = { 'MAGIC_FRUIT', 'WILD_CARROT', 'HEALING_BREEZE', 'POLLEN', 'COCOON', 'METALLIC_BODY', 'JET_STREAM',
+    'UPPERCUT', 'SCREWDRIVER', 'BLUDGEON', 'HEAD_BUTT', 'BATTLE_DANCE', 'POWER_ATTACK', 'SPROUT_SMACK', 'WILD_OATS' }
+function P.setBlue(bot, st)
+    if not BotSetBlueSpells or (bot:getMainJob() ~= BLU and bot:getSubJob() ~= BLU) or os.time() < (st.bluSetAt or 0) then
+        return
+    end
+
+    st.bluSetAt = os.time() + 60
+    local known = {}
+    for id = 512, 767 do
+        if bot:hasSpell(id) then
+            known[#known + 1] = id
+        end
+    end
+
+    local key = string.format('%d:%d:%d:%d:%d', bot:getMainJob(), bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl(), #known)
+    if st.bluSetKey == key then
+        return
+    end
+
+    st.bluSetKey = key
+    local order, seen = {}, {}
+    for _, name in ipairs(BLUE_PREFER) do
+        local id = xi.magic and xi.magic.spell and xi.magic.spell[name]
+        if id and bot:hasSpell(id) and not seen[id] then
+            order[#order + 1], seen[id] = id, true
+        end
+    end
+
+    local rest = {}
+    for _, id in ipairs(known) do
+        if not seen[id] then
+            local okL, l = pcall(function()
+                return GetSpell(id):getLevel(BLU)
+            end)
+            l = (okL and tonumber(l)) or 255
+            if l < 255 then
+                rest[#rest + 1] = { id = id, l = l }
+            end
+        end
+    end
+
+    table.sort(rest, function(a, b)
+        return a.l > b.l
+    end)
+    for _, r in ipairs(rest) do
+        order[#order + 1] = r.id
+    end
+
+    pcall(BotSetBlueSpells, bot:getID(), order)
+end
+
 -- (spells from scrolls) a Blue Mage bot learns blue magic (18+) from what it defeats, 15% per spell, like a squad
 -- Blue Mage. The listener is added again after each zone change (they do not follow the entity across areas).
 function P.hookBlue(bot, st)

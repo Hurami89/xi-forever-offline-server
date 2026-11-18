@@ -68,6 +68,11 @@
 #include "map/persist_batch.h"
 #include "map/enums/party_kind.h"
 #include "map/utils/charutils.h"
+#include "map/utils/blueutils.h"
+#include "map/utils/puppetutils.h"
+#include "map/utils/itemutils.h"
+#include "map/blue_spell.h"
+#include "map/spell.h"
 #include "map/utils/moduleutils.h"
 #include "map/utils/zoneutils.h"
 #include "map/zone.h"
@@ -1238,6 +1243,130 @@ class BotsModule : public CPPModule
 
         ::lua.set_function("BotAbility", [](uint32 charId, uint32 abilityId, const sol::object& target) -> bool
                            { return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::JobAbility, targetOf(target), abilityId); });
+
+        // A Blue Mage bot sets its blue magic (what the client's "Set Spells" menu does: 0x102): every set spell is
+        // taken off, then the spells in `wanted` (blue spell ids, the bot's preference first) go into the free slots
+        // while it has the slots and set points for them, and only ones it knows and is high enough for.
+        // Returns how many are set. (2026-11-17)
+        // A Puppetmaster bot fits its automaton (what the client's attachment menu does: 0x102): every attachment is
+        // taken off, then the item ids in `wanted` (preference first) are unlocked and fitted while there are free
+        // slots, up to `count`. The game's own check refuses one that the head and frame have no element capacity
+        // left for, so those are just skipped. Returns how many are fitted. (2026-11-17)
+        ::lua.set_function("BotSetAttachments", [](uint32 charId, const sol::table& wanted, uint8 count) -> int
+                           {
+                               CCharEntity* PChar = charOf(botOf(charId));
+                               if (!PChar || (PChar->GetMJob() != xi::Job::PUP && PChar->GetSJob() != xi::Job::PUP))
+                               {
+                                   return 0;
+                               }
+
+                               for (uint8 i = 0; i < 12; ++i)
+                               {
+                                   if (PChar->getAutomatonAttachment(i) != 0)
+                                   {
+                                       puppetutils::setAttachment(PChar, i, 0);
+                                   }
+                               }
+
+                               uint8 slot = 0;
+                               for (const auto& kv : wanted)
+                               {
+                                   if (slot >= 12 || slot >= count)
+                                   {
+                                       break;
+                                   }
+
+                                   const auto itemId = kv.second.as<uint32>();
+                                   if (itemId <= 0x2100 || itemId > 0x21FF)
+                                   {
+                                       continue;
+                                   }
+
+                                   const CItem* PItem = xi::items::lookup(static_cast<uint16>(itemId));
+                                   if (!PItem)
+                                   {
+                                       continue;
+                                   }
+
+                                   if (!puppetutils::HasAttachment(PChar, PItem))
+                                   {
+                                       puppetutils::UnlockAttachment(PChar, PItem);
+                                   }
+
+                                   puppetutils::setAttachment(PChar, slot, static_cast<uint8>(itemId - 0x2100));
+                                   if (PChar->getAutomatonAttachment(slot) == static_cast<uint8>(itemId - 0x2100))
+                                   {
+                                       ++slot;
+                                   }
+                               }
+
+                               puppetutils::SaveAutomaton(PChar);
+                               return slot;
+                           });
+
+        ::lua.set_function("BotSetBlueSpells", [](uint32 charId, const sol::table& wanted) -> int
+                           {
+                               CCharEntity* PChar = charOf(botOf(charId));
+                               if (!PChar || (PChar->GetMJob() != xi::Job::BLU && PChar->GetSJob() != xi::Job::BLU))
+                               {
+                                   return 0;
+                               }
+
+                               for (uint8 i = 0; i < 20; ++i)
+                               {
+                                   if (PChar->m_SetBlueSpells[i] != 0)
+                                   {
+                                       auto* POld = static_cast<CBlueSpell*>(spell::GetSpell(static_cast<SpellID>(PChar->m_SetBlueSpells[i] + 0x200)));
+                                       if (POld)
+                                       {
+                                           blueutils::SetBlueSpell(PChar, POld, i, false);
+                                       }
+                                   }
+                               }
+
+                               const uint8 slots  = blueutils::GetTotalSlots(PChar);
+                               const uint8 mLevel = PChar->m_LevelRestriction != 0 && PChar->m_LevelRestriction < PChar->GetMLevel() ? PChar->m_LevelRestriction : PChar->GetMLevel();
+                               const uint8 sLevel = PChar->GetSLevel();
+                               uint8       slot   = 0;
+                               int         set    = 0;
+                               for (const auto& kv : wanted)
+                               {
+                                   if (slot >= slots)
+                                   {
+                                       break;
+                                   }
+
+                                   const auto id = kv.second.as<uint32>();
+                                   if (id < 0x200 || id >= 0x300 || !charutils::hasSpell(PChar, static_cast<uint16>(id)))
+                                   {
+                                       continue;
+                                   }
+
+                                   auto* PSpell = dynamic_cast<CBlueSpell*>(spell::GetSpell(static_cast<SpellID>(id)));
+                                   if (!PSpell)
+                                   {
+                                       continue;
+                                   }
+
+                                   const bool mainOk = PChar->GetMJob() == xi::Job::BLU && mLevel >= PSpell->getJob(xi::Job::BLU);
+                                   const bool subOk  = PChar->GetSJob() == xi::Job::BLU && sLevel >= PSpell->getJob(xi::Job::BLU);
+                                   if (!mainOk && !subOk)
+                                   {
+                                       continue;
+                                   }
+
+                                   blueutils::SetBlueSpell(PChar, PSpell, slot, true);
+                                   if (PChar->m_SetBlueSpells[slot] != 0)
+                                   {
+                                       ++slot;
+                                       ++set;
+                                   }
+                               }
+
+                               charutils::BuildingCharTraitsTable(PChar);
+                               PChar->UpdateHealth();
+                               return set;
+                           });
 
         // its inventory: { { slot, id, qty, stack, ah }, ... } (ah = may go on the auction house)
         ::lua.set_function("BotInventory", [](uint32 charId) -> sol::table

@@ -652,9 +652,20 @@ think = function(bot, token)
 
     pcall(noticeChanges, bot, st)
 
-    -- (spells from scrolls) a Blue Mage bot learns blue magic from what it defeats (bots_party.lua)
-    if partyPlay and partyPlay.hookBlue and bot:getMainJob() == 16 then
-        pcall(partyPlay.hookBlue, bot, st)
+    -- a Blue Mage bot: learns blue magic from what it defeats (spells from scrolls) and keeps its set spells up to
+    -- date (bots_party.lua)
+    if partyPlay and (bot:getMainJob() == 16 or bot:getSubJob() == 16) then
+        if partyPlay.hookBlue and bot:getMainJob() == 16 then
+            pcall(partyPlay.hookBlue, bot, st)
+        end
+
+        if partyPlay.learn then
+            pcall(partyPlay.learn, bot)
+        end
+
+        if partyPlay.setBlue then
+            pcall(partyPlay.setBlue, bot, st)
+        end
     end
 
     -- asleep, petrified, stunned, terrorised, charmed: it can do nothing, and it must not walk either. (It kept
@@ -944,6 +955,14 @@ think = function(bot, token)
                 local okGear, bought = pcall(gear.check, bot)
                 if okGear and bought then
                     diary(bot, 'bought some new gear at the ah')
+                end
+            end
+
+            -- a Puppetmaster: automaton attachments it doesn't own yet (bots_pets.lua)
+            if petsMod and petsMod.buyAttachments then
+                local okA, n = pcall(petsMod.buyAttachments, bot)
+                if okA and n and n > 0 then
+                    diary(bot, 'bought new attachments for its automaton')
                 end
             end
 
