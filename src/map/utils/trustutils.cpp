@@ -26,6 +26,7 @@
 #include <common/types/hash_map.h>
 
 #include <algorithm>
+#include <map>
 #include <set>
 
 #include "battleutils.h"
@@ -39,6 +40,9 @@
 #include "ai/controllers/trust_controller.h"
 #include "ai/helpers/gambits_container.h"
 #include "entities/trust_entity.h"
+#include "blue_spell.h"
+#include "blue_trait.h"
+#include "trait.h"
 #include "items/item_weapon.h"
 #include "mobskill.h"
 #include "status_effect_container.h"
@@ -640,6 +644,132 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
 
             delete known;
             known = kept;
+        }
+
+        // (2026-11-17) a squad Blue Mage sets its blue magic like a player: a player's slots and set points at that
+        // level, the player's chosen set (spec->blueSet) or else an automatic one (spec->bluePrefer first, then the
+        // strongest it knows). Blue magic that isn't set is dropped from what it can cast, and the set spells give
+        // their stat bonuses and blue traits. What was set is left in local vars SQUAD_BLU_* for the Squad window.
+        if (mainJob == xi::Job::BLU || subJob == xi::Job::BLU)
+        {
+            const uint8 bluLevel = mainJob == xi::Job::BLU ? mainLevel : subLevel;
+            const int   slots    = bluLevel == 0 ? 0 : std::clamp(((bluLevel - 1) / 10) * 2 + 6, 6, 20);
+            const int   points   = bluLevel == 0 ? 0 : std::clamp(((bluLevel - 1) / 10) * 5 + 10, 0, 55);
+
+            auto knows = [&](uint16 id)
+            {
+                return std::ranges::any_of(known->m_spellList, [&](const MobSpell_t& e)
+                                           { return static_cast<uint16>(e.spellId) == id; });
+            };
+
+            std::vector<uint16> order;
+            if (!spec->blueSet.empty())
+            {
+                order = spec->blueSet;
+            }
+            else
+            {
+                order = spec->bluePrefer;
+                std::vector<std::pair<uint8, uint16>> rest;
+                for (const auto& e : known->m_spellList)
+                {
+                    if (auto* PBlue = dynamic_cast<CBlueSpell*>(spell::GetSpell(e.spellId)))
+                    {
+                        rest.emplace_back(PBlue->getJob(xi::Job::BLU), static_cast<uint16>(e.spellId));
+                    }
+                }
+
+                std::ranges::sort(rest, [](const auto& a, const auto& b) { return a.first > b.first; });
+                for (const auto& r : rest)
+                {
+                    order.push_back(r.second);
+                }
+            }
+
+            std::vector<CBlueSpell*> set;
+            int                      used = 0;
+            for (const uint16 id : order)
+            {
+                if (static_cast<int>(set.size()) >= slots)
+                {
+                    break;
+                }
+
+                auto* PBlue = dynamic_cast<CBlueSpell*>(spell::GetSpell(static_cast<SpellID>(id)));
+                if (!PBlue || !knows(id) || PBlue->getJob(xi::Job::BLU) > bluLevel || std::ranges::find(set, PBlue) != set.end())
+                {
+                    continue;
+                }
+
+                if (used + PBlue->getSetPoints() > points)
+                {
+                    continue;
+                }
+
+                used += PBlue->getSetPoints();
+                set.push_back(PBlue);
+            }
+
+            auto* setOnly = new CMobSpellList(Maybe<uint16>{});
+            for (const auto& entry : known->m_spellList)
+            {
+                auto* PBlue = dynamic_cast<CBlueSpell*>(spell::GetSpell(entry.spellId));
+                if (PBlue && std::ranges::find(set, PBlue) == set.end())
+                {
+                    continue; // (blue magic that isn't set)
+                }
+
+                setOnly->AddSpell(entry.spellId, entry.min_level, entry.max_level);
+            }
+
+            delete known;
+            known = setOnly;
+
+            // stat bonuses and blue traits, the way blueutils::CalculateTraits works them out for a player
+            std::map<uint8, uint16> weights;
+            for (auto* PBlue : set)
+            {
+                PTrust->addModifiers(&PBlue->modList);
+                weights[PBlue->getTraitCategory()] += PBlue->getTraitWeight();
+            }
+
+            std::vector<CBlueTrait*> traitsToAdd;
+            if (TraitList_t* PTraitsList = traits::GetTraits(xi::Job::BLU))
+            {
+                for (const auto& [category, weight] : weights)
+                {
+                    for (auto* PTrait : *PTraitsList)
+                    {
+                        auto* PBlueTrait = dynamic_cast<CBlueTrait*>(PTrait);
+                        if (PTrait->getLevel() != 0 || !PBlueTrait || PBlueTrait->getCategory() != category || weight < PBlueTrait->getPoints() ||
+                            PBlueTrait->getJobPointsOnly())
+                        {
+                            continue;
+                        }
+
+                        std::erase_if(traitsToAdd, [&](CBlueTrait* have)
+                                      { return have->getID() == PBlueTrait->getID() && have->getMod() == PBlueTrait->getMod() && have->getRank() <= PBlueTrait->getRank(); });
+                        traitsToAdd.push_back(PBlueTrait);
+                    }
+                }
+            }
+
+            for (auto* PBlueTrait : traitsToAdd)
+            {
+                PTrust->addTrait(PBlueTrait);
+            }
+
+            PTrust->SetLocalVar("SQUAD_BLU_SLOTS", slots);
+            PTrust->SetLocalVar("SQUAD_BLU_POINTS", points);
+            PTrust->SetLocalVar("SQUAD_BLU_USED", used);
+            PTrust->SetLocalVar("SQUAD_BLU_AUTO", spec->blueSet.empty() ? 1 : 0);
+            PTrust->SetLocalVar("SQUAD_BLU_COUNT", static_cast<uint32>(set.size()));
+            for (size_t i = 0; i < set.size(); ++i)
+            {
+                PTrust->SetLocalVar(fmt::format("SQUAD_BLU_{}", i + 1), static_cast<uint32>(set[i]->getID()));
+            }
+
+            PTrust->UpdateHealth();
         }
 
         PTrust->setSquadSpellList(known);

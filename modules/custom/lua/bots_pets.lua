@@ -80,10 +80,25 @@ local function owned(bot, frame)
     return out
 end
 
+-- the launcher's "spells from scrolls" switch also covers attachments: on = a Puppetmaster buys them (buyAttachments,
+-- in town); off = it gets the ones for its level by itself, more as it levels
+local function mustBuy()
+    return xi.bots and xi.bots.scrollsOn and xi.bots.scrollsOn() or false
+end
+
 -- fits what it owns (BotSetAttachments, bots.cpp), up to its count for its level; again only when that changes
 local function fitAttachments(bot, frame)
     if not BotSetAttachments then
         return
+    end
+
+    if not mustBuy() then
+        local list, n = ATTACH[frame] or ATTACH.HARLEQUIN, attachCount(pupLevel(bot))
+        for i = 1, math.min(n, #list) do
+            if not bot:hasAttachment(list[i]) then
+                bot:unlockAttachment(list[i])
+            end
+        end
     end
 
     local have = owned(bot, frame)
@@ -96,11 +111,11 @@ local function fitAttachments(bot, frame)
     BotSetAttachments(bot:getID(), have, attachCount(pupLevel(bot)))
 end
 
--- in town now and then (with its gear shopping, bots.lua): a Puppetmaster buys the next attachments on its list it
+-- (switch on) in town now and then (with its gear shopping, bots.lua): a Puppetmaster buys the next attachments on its list it
 -- doesn't own yet, up to its count for its level, when it can spare the gil (about the shop price; keeps half its
 -- gil). They are fitted the next time it calls its automaton. Returns how many it bought.
 function Pets.buyAttachments(bot)
-    if bot:getMainJob() ~= xi.job.PUP and bot:getSubJob() ~= xi.job.PUP then
+    if not mustBuy() or (bot:getMainJob() ~= xi.job.PUP and bot:getSubJob() ~= xi.job.PUP) then
         return 0
     end
 

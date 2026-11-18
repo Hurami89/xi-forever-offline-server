@@ -258,6 +258,7 @@ local function usage(player)
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
+    say(player, '!squad blu <slot> [set | unset <spell>] | auto   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
     say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
     say(player, '!squad camp rest on | off   - mates sit and rest at camp while the pull is out')
@@ -1891,6 +1892,8 @@ local function callMate(player, mate)
         size     = player:getCharVar('SQUAD_SIZE_' .. mate.id), -- 0 = not chosen, 1-3 = small / medium / large
         ws       = player:getCharVar('SQUAD_WS_' .. mate.id),   -- 0 = every weapon skill it can use, else only this one
         scrolls  = squadScrollsOn(),                              -- spells 18+ only when the squad learned them
+        blueSet    = squadBlueSetGet(player, mate.id),            -- (a Blue Mage) your chosen set; empty = automatic
+        bluePrefer = squadBluePrefer(),
         equip    = outfit,
     })
 
@@ -1992,6 +1995,73 @@ end
 -- Learned spells are squad_unlock rows 60000 + spell id. (Globals: squad.lua is near Lua's 200-local limit.)
 SQUAD_SPELL_KEY = 60000
 SQUAD_BLUE_LEARN_CHANCE = 15 -- percent per spell, per defeated monster
+
+-- (2026-11-17) A squad Blue Mage's set blue magic (trustutils.cpp sets it with a player's slots and points and gives
+-- its traits). Automatic until you pick spells yourself (!squad blu, or the Squad window): your set is kept in char
+-- vars SQUAD_BLUN_<mate id> (how many, 0 = automatic) and SQUAD_BLU_<mate id>_<n> (the spell ids).
+SQUAD_BLUE_PREFER = { 'MAGIC_FRUIT', 'WILD_CARROT', 'HEALING_BREEZE', 'POLLEN', 'COCOON', 'METALLIC_BODY', 'JET_STREAM',
+    'UPPERCUT', 'SCREWDRIVER', 'BLUDGEON', 'HEAD_BUTT', 'BATTLE_DANCE', 'POWER_ATTACK', 'SPROUT_SMACK', 'WILD_OATS' }
+
+function squadBluePrefer()
+    local out = {}
+    local spells = xi.magic and type(xi.magic.spell) == 'table' and xi.magic.spell or {}
+    for _, name in ipairs(SQUAD_BLUE_PREFER) do
+        local id = spells[name]
+        if id then
+            out[#out + 1] = id
+        end
+    end
+
+    return out
+end
+
+function squadBlueSetGet(player, mateId)
+    local out = {}
+    for n = 1, math.min(20, player:getCharVar('SQUAD_BLUN_' .. mateId)) do
+        local id = player:getCharVar('SQUAD_BLU_' .. mateId .. '_' .. n)
+        if id > 0 then
+            out[#out + 1] = id
+        end
+    end
+
+    return out
+end
+
+function squadBlueSetPut(player, mateId, list)
+    local old = player:getCharVar('SQUAD_BLUN_' .. mateId)
+    for n = 1, 20 do
+        local id = list and list[n] or 0
+        if id > 0 or n <= old then
+            player:setCharVar('SQUAD_BLU_' .. mateId .. '_' .. n, id)
+        end
+    end
+
+    player:setCharVar('SQUAD_BLUN_' .. mateId, list and math.min(#list, 20) or 0)
+end
+
+-- the mate's blue magic now: { slots, points, used, auto, known = SquadKnownBlue list, set = { ids } } (nil if not out)
+function squadBlueState(player, mate)
+    if not SquadKnownBlue then
+        return nil
+    end
+
+    for _, member in pairs(player:getPartyWithTrusts()) do
+        if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') == mate.id then
+            local st = {
+                slots = member:getLocalVar('SQUAD_BLU_SLOTS'), points = member:getLocalVar('SQUAD_BLU_POINTS'),
+                used = member:getLocalVar('SQUAD_BLU_USED'), auto = member:getLocalVar('SQUAD_BLU_AUTO') == 1,
+                known = SquadKnownBlue(member, squadScrollsOn()) or {}, set = {},
+            }
+            for n = 1, member:getLocalVar('SQUAD_BLU_COUNT') do
+                st.set[#st.set + 1] = member:getLocalVar('SQUAD_BLU_' .. n)
+            end
+
+            return st
+        end
+    end
+
+    return nil
+end
 
 function squadScrollsOn()
     local ok, c = pcall(function()
@@ -3453,6 +3523,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         player:setCharVar('SQUAD_WS_' .. mate.id, 0)
         player:setCharVar('SQUAD_RANGE_' .. mate.id, 0)
         player:setCharVar('SQUAD_DELAY_' .. mate.id, 0)
+        squadBlueSetPut(player, mate.id, nil)
         chatSend('DELETE', mate.name)
         DeleteSquadMate(charId, mate.slot)
         say(player, string.format('Deleted %s.', mate.name))
@@ -3537,6 +3608,91 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         player:setCharVar(lookVar, 1)
         say(player, string.format('%s\'s look is now set for good.', mate.name))
         chatSend('UPDATE', mate.name, 'race', race)
+    elseif action == 'blu' then
+        -- A Blue Mage's set blue magic: !squad blu <slot> [set | unset <spell>] | auto (the Squad window does the same)
+        local sub, what = string.lower(arg2 or ''), string.lower(table.concat({ arg3 or '', arg4 or '' }, ' '))
+        local st = squadBlueState(player, mate)
+        if st == nil or st.slots == 0 then
+            say(player, string.format('%s needs to be out, on Blue Mage (main or sub job), to set blue magic.', mate.name))
+            return
+        end
+
+        local function find(text)
+            local key = text:gsub('[%s_\'%-]', '')
+            for _, k in ipairs(st.known) do
+                if tostring(k.spell) == key or string.lower(k.name):gsub('[%s_\'%-]', '') == key then
+                    return k
+                end
+            end
+
+            return nil
+        end
+
+        if sub == 'auto' then
+            squadBlueSetPut(player, mate.id, nil)
+            say(player, string.format('%s picks their own blue magic again. Dismiss and call them again to apply it.', mate.name))
+        elseif sub == 'set' or sub == 'unset' then
+            local k = find(what)
+            if k == nil then
+                say(player, string.format('%s doesn\'t know "%s" (or isn\'t high enough for it). !squad blu %d lists what they know.', mate.name, what, mate.slot))
+                return
+            end
+
+            local list = st.auto and st.set or squadBlueSetGet(player, mate.id) -- (from automatic: start from what is set now)
+            local copy, has = {}, false
+            for _, id in ipairs(list) do
+                if id == k.spell then
+                    has = true
+                    if sub == 'set' then
+                        copy[#copy + 1] = id
+                    end
+                else
+                    copy[#copy + 1] = id
+                end
+            end
+
+            if sub == 'set' and not has then
+                local used = 0
+                for _, kk in ipairs(st.known) do
+                    for _, id in ipairs(copy) do
+                        if kk.spell == id then
+                            used = used + kk.points
+                        end
+                    end
+                end
+
+                if #copy >= st.slots or used + k.points > st.points then
+                    say(player, string.format('No room for %s: %d/%d slots, %d/%d points. Unset something first.', k.name, #copy, st.slots, used, st.points))
+                    return
+                end
+
+                copy[#copy + 1] = k.spell
+            end
+
+            squadBlueSetPut(player, mate.id, copy)
+            say(player, string.format('%s %s %s (your own set now; !squad blu %d auto to let them choose). Dismiss and call them again to apply it.',
+                mate.name, sub == 'set' and 'sets' or 'unsets', k.name, mate.slot))
+        else
+            -- the list, also for the Squad window: blu|slot|slots|points|used|auto, blus|slot|id|name|level|points|set, blue|slot
+            say(player, string.format('squadpanel:blu|%d|%d|%d|%d|%d', mate.slot, st.slots, st.points, st.used, st.auto and 1 or 0))
+            for _, k in ipairs(st.known) do
+                say(player, string.format('squadpanel:blus|%d|%d|%s|%d|%d|%d', mate.slot, k.spell, string.gsub(k.name, ' ', '_'), k.level, k.points, k.set and 1 or 0))
+            end
+
+            say(player, 'squadpanel:blue|' .. mate.slot)
+            local names = {}
+            for _, k in ipairs(st.known) do
+                if k.set then
+                    names[#names + 1] = k.name
+                end
+            end
+
+            say(player, string.format('%s (%s): %d/%d slots, %d/%d points. Set: %s', mate.name, st.auto and 'automatic' or 'your set',
+                #st.set, st.slots, st.used, st.points, #names > 0 and table.concat(names, ', ') or 'nothing'))
+            say(player, string.format('!squad blu %d set <spell> | unset <spell> | auto', mate.slot))
+        end
+
+        return
     elseif action == 'delay' then
         -- Seconds this mate waits after you engage before joining (trust_controller.cpp reads local var SQUAD_ENGAGE_DELAY, ms)
         local secs = tonumber(arg2 or '')

@@ -59,6 +59,7 @@
 #include "map/packets/c2s/0x077_group_change2.h"
 #include "map/mob_spell_container.h"
 #include "map/spell.h"
+#include "map/blue_spell.h"
 #include "map/packets/basic.h"
 #include "map/ai/controllers/trust_controller.h"
 #include "map/ai/helpers/gambits_container.h"
@@ -74,6 +75,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <set>
 #include <sstream>
 #include <map>
 #include <optional>
@@ -268,6 +270,23 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
         FOR_DB_MULTIPLE_RESULTS(lrset)
         {
             squadSpec.learnedSpells.push_back(static_cast<uint16>(lrset->get<uint16>("itemid") - 60000));
+        }
+    }
+
+    // (2026-11-17) a Blue Mage's set: blueSet = the spells the player chose (empty = automatic), bluePrefer = the job
+    // rules' spells, tried first by the automatic set (trustutils.cpp works out slots, points and traits)
+    for (const char* key : { "blueSet", "bluePrefer" })
+    {
+        if (const auto list = spec.get<sol::optional<sol::table>>(key))
+        {
+            auto& out = std::string_view(key) == "blueSet" ? squadSpec.blueSet : squadSpec.bluePrefer;
+            for (const auto& kv : *list)
+            {
+                if (kv.second.is<int>())
+                {
+                    out.push_back(static_cast<uint16>(kv.second.as<int>()));
+                }
+            }
         }
     }
 
@@ -703,6 +722,66 @@ auto squadBlueSpellsOf(CLuaBaseEntity* mob) -> sol::table
         e["spell"]   = spellId;
         e["name"]    = PSpell->getName();
         e["level"]   = PSpell->getJob(xi::Job::BLU);
+        out[index++] = e;
+    }
+
+    return out;
+}
+
+// (2026-11-17) the blue magic a squad Blue Mage could set, for the Squad window and !squad blu: every blue spell the
+// mate is high enough for (and, with "spells from scrolls", has learned when it is 18+), with its level and set
+// points, and whether it is set now (the mate's SQUAD_BLU_* local vars, from trustutils.cpp)
+auto squadKnownBlue(CLuaBaseEntity* mate, bool scrolls) -> sol::table
+{
+    auto  out    = ::lua.create_table();
+    auto* PTrust = mate ? dynamic_cast<CTrustEntity*>(mate->GetBaseEntity()) : nullptr;
+    if (PTrust == nullptr || (PTrust->GetMJob() != xi::Job::BLU && PTrust->GetSJob() != xi::Job::BLU))
+    {
+        return out;
+    }
+
+    const uint8 bluLevel = PTrust->GetMJob() == xi::Job::BLU ? PTrust->GetMLevel() : PTrust->GetSLevel();
+    std::set<uint16> learned;
+    if (scrolls)
+    {
+        if (auto* PMaster = dynamic_cast<CCharEntity*>(PTrust->PMaster))
+        {
+            const auto rset = db::preparedStmt("SELECT itemid FROM squad_unlock WHERE charid = ? AND itemid >= 60000", PMaster->id);
+            FOR_DB_MULTIPLE_RESULTS(rset)
+            {
+                learned.insert(static_cast<uint16>(rset->get<uint16>("itemid") - 60000));
+            }
+        }
+    }
+
+    std::set<uint16> isSet;
+    const uint32     count = PTrust->GetLocalVar("SQUAD_BLU_COUNT");
+    for (uint32 i = 1; i <= count && i <= 20; ++i)
+    {
+        isSet.insert(static_cast<uint16>(PTrust->GetLocalVar(fmt::format("SQUAD_BLU_{}", i))));
+    }
+
+    int index = 1;
+    for (uint16 id = 0x200; id < 0x300; ++id)
+    {
+        auto* PBlue = dynamic_cast<CBlueSpell*>(spell::GetSpell(static_cast<SpellID>(id)));
+        if (PBlue == nullptr)
+        {
+            continue;
+        }
+
+        const uint8 level = PBlue->getJob(xi::Job::BLU);
+        if (level == 0 || level > bluLevel || (scrolls && level >= 18 && !learned.contains(id)))
+        {
+            continue;
+        }
+
+        auto e       = ::lua.create_table();
+        e["spell"]   = id;
+        e["name"]    = PBlue->getName();
+        e["level"]   = level;
+        e["points"]  = PBlue->getSetPoints();
+        e["set"]     = isSet.contains(id);
         out[index++] = e;
     }
 
@@ -1662,6 +1741,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("GetSquadItemInfo", getSquadItemInfo);
         ::lua.set_function("SquadScrollSpell", squadScrollSpell);
         ::lua.set_function("SquadBlueSpellsOf", squadBlueSpellsOf);
+        ::lua.set_function("SquadKnownBlue", squadKnownBlue);
         ::lua.set_function("BuildStarterGear", buildStarterGear);
         ::lua.set_function("SquadSpawnPet", squadSpawnPet);
         ::lua.set_function("SquadHasPet", squadHasPet);

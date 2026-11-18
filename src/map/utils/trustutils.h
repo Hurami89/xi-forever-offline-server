@@ -62,6 +62,12 @@ struct SquadSpec
     // when the squad learned them: a scroll given to the squad, or blue magic learned from a monster
     bool                spellScrolls{ false };
     std::vector<uint16> learnedSpells;
+
+    // (2026-11-17) a squad Blue Mage's set blue magic, like a player's Set Spells menu: blueSet = the spells the player
+    // chose (empty = automatic), bluePrefer = the order the automatic set tries first (the job rules' spells). The
+    // slots and set points are a player's at that level; the mate only casts what is set and gets its traits.
+    std::vector<uint16> blueSet;
+    std::vector<uint16> bluePrefer;
 };
 
 // We cache all of this so we don't have to hit the database every time a trust is spawned
