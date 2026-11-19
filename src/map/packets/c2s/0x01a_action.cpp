@@ -202,6 +202,10 @@ void GP_CLI_COMMAND_ACTION::process(MapSession* PSession, CCharEntity* PChar) co
             CBaseEntity* PNpc = PChar->GetEntity(this->ActIndex, TYPE_NPC | TYPE_MOB | TYPE_TRUST);
             if (!PNpc)
             {
+                // XI: Forever Offline (2026-11-18, Senna, Abbot): something the game still shows but the server no longer
+                // has (a town crowd NPC that left, seen as an invisible name): answer anyway, or the player stays frozen
+                // waiting for the talk to end
+                PChar->pushPacket<GP_SERV_COMMAND_EVENTUCOFF>(PChar, GP_SERV_COMMAND_EVENTUCOFF_MODE::Standard);
                 return;
             }
 
@@ -210,6 +214,8 @@ void GP_CLI_COMMAND_ACTION::process(MapSession* PSession, CCharEntity* PChar) co
             {
                 if (PTrust->PMaster != PChar || PTrust->released())
                 {
+                    // (someone else's trust or squad mate, e.g. in co-op: answer so the player isn't left frozen)
+                    PChar->pushPacket<GP_SERV_COMMAND_EVENTUCOFF>(PChar, GP_SERV_COMMAND_EVENTUCOFF_MODE::Standard);
                     return;
                 }
 

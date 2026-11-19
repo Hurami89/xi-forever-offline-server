@@ -859,11 +859,14 @@ think = function(bot, token)
                     end
 
                     BotMoveTo(id, spot.x, spot.y, spot.z)
-                elseif not BotIsMoving(id) then
+                else
+                    -- (2026-11-18, Impending Descent: at camp they never sat) they also sit when you /heal, and when a
+                    -- little low (the same as away from camp); a last step towards the spot no longer keeps them up
                     local restOn = not (xi.squad and xi.squad.campRestOn) or xi.squad.campRestOn(leader)
-                    local low = bot:getHPP() < 80 or (bot:getMaxMP() > 0 and bot:getMPP() < 70)
-                    if restOn and low and not st.resting then
+                    local low = bot:getHPP() < 80 or (bot:getMaxMP() > 0 and bot:getMPP() < 75)
+                    if restOn and (low or leaderRests) and not full and not st.resting then
                         st.resting = true
+                        BotStop(id)
                         BotHeal(id, true)
                     elseif st.resting and full then
                         st.resting = nil

@@ -248,9 +248,11 @@ void CAttackRound::CreateAttacks(CItemWeapon* PWeapon, PHYSICAL_ATTACK_DIRECTION
     }
 
     // Existance of "Occasionally attacks X times" overwrites PWeapon hit count
-    if (isPC && m_attacker->getMod(xi::Mod::MAX_SWINGS))
+    // (XI: Forever Offline, 2026-11-18, sparkiie) squad mates too: weapons like Mercurial Kris give MAX_SWINGS through their
+    // mods, which a squad mate gets from its gear, but only player characters used it
+    if ((isPC || m_attacker->objtype == TYPE_TRUST) && m_attacker->getMod(xi::Mod::MAX_SWINGS))
     {
-        auto modSwings = std::min<uint8>((uint8)PChar->getMod(xi::Mod::MAX_SWINGS), 8);
+        auto modSwings = std::min<uint8>((uint8)m_attacker->getMod(xi::Mod::MAX_SWINGS), 8);
         num            = battleutils::getHitCount(modSwings);
     }
 
