@@ -10,6 +10,9 @@
 --     Citadel) and Loadstone (Lokpix, quest Open Sesame) are un-hidden in this module's zone data. The Magicked
 --     Astrolabe (Churano-Shurano, Windurst Waters, 10,000 gil) is sold by trade here: his menu is missing from the era
 --     game files, so talking to him only tells you to trade the gil.
+--  3. (2026-11-19) Garlaige Citadel Banishing Gates: each gate needs all four of its levers held down at once. When you
+--     step on a lever, your squad mates take the other levers: with enough mates out (you + mates = 4, counting anyone
+--     already standing on a lever), the gate opens as if four people held them.
 -----------------------------------
 require('modules/module_utils')
 -----------------------------------
@@ -106,6 +109,69 @@ m:addOverride('xi.zones.Windurst_Waters.npcs.Churano-Shurano.onTrade', function(
     else
         player:printToPlayer(string.format('That is not enough. It costs %d gil.', ASTROLABE_COST), xi.msg.channel.NS_SAY, npc:getPacketName())
     end
+end)
+
+-- Garlaige Citadel Banishing Gates: squad mates pull the other levers
+local LEVER_MATE_RANGE = 80 -- yalms: mates this close to you run to the other levers (gate #2's levers are ~100 apart)
+
+local function leverMates(player)
+    local count = 0
+    for _, member in pairs(player:getPartyWithTrusts()) do
+        if member:getObjType() == xi.objType.TRUST and member:isAlive() and member:getMaster() ~= nil and
+            member:getMaster():getID() == player:getID() and player:checkDistance(member) <= LEVER_MATE_RANGE then
+            count = count + 1
+        end
+    end
+
+    return count
+end
+
+m:addOverride('xi.zones.Garlaige_Citadel.Zone.onTriggerAreaEnter', function(player, triggerArea)
+    super(player, triggerArea)
+
+    local ID = zones[xi.zone.GARLAIGE_CITADEL]
+    local areaId = triggerArea:getTriggerAreaID()
+    if player == nil or ID == nil or ID.npc.BANISHING_GATE_OFFSET == nil then
+        return
+    end
+
+    local gateId = ID.npc.BANISHING_GATE_OFFSET + 9 * math.floor(areaId / 9)
+    local gate   = GetNPCByID(gateId)
+    if gate == nil or gate:getAnimation() ~= xi.animation.CLOSE_DOOR then
+        return
+    end
+
+    -- levers still up in this set, and who can take them
+    local up = {}
+    for i = 1, 4 do
+        local lever = GetNPCByID(gateId + i)
+        if lever ~= nil and lever:getAnimation() ~= xi.animation.OPEN_DOOR then
+            up[#up + 1] = lever
+        end
+    end
+
+    if #up == 0 or leverMates(player) < #up then
+        if #up > 0 and leverMates(player) > 0 then
+            player:printToPlayer(string.format('Your squad mates can only hold %d of the %d other levers. Call more mates to open this gate.',
+                leverMates(player), #up), xi.msg.channel.SYSTEM_3)
+        end
+
+        return
+    end
+
+    for _, lever in ipairs(up) do
+        lever:setAnimation(xi.animation.OPEN_DOOR)
+    end
+
+    player:printToPlayer('Your squad mates run to the other levers and pull them down.', xi.msg.channel.SYSTEM_3)
+    super(player, triggerArea) -- the zone's own check now finds all four levers down and opens the gate
+
+    -- the mates let go a moment later (the gate stays open for its usual time)
+    gate:timer(3000, function()
+        for _, lever in ipairs(up) do
+            lever:setAnimation(xi.animation.CLOSE_DOOR)
+        end
+    end)
 end)
 
 return m
