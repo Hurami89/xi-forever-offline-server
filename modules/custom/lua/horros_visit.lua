@@ -12,6 +12,9 @@
 --     Wearing a full set (hat, shield, earring) of one slime family adds 1 coin per capture.
 --  4. Spend the coins with the town slime: the slime, she-slime and metal slime gear sets and candies.
 --     She-slime gear unlocks after your first She-Slime, metal slime gear after your first Metal Slime.
+--  5. The first time you talk to a town slime you also get a Crystal Boy and the first Dragonland part (once per
+--     character); the other four parts are prizes at 15 coins each. The five games ship in crystalboy-games, and
+--     finishing one (8 hours each) is what the Crystal Boy addon reports back for the memories.
 --
 -- Runs on the DATES below unless the launcher's Seasonal events setting is Always on or Off (events_mode.lua).
 -- Left out from retail: the Monstrosity rewards (Slime Fetish, spirits). Left out from Eventide: the shinies.
@@ -71,6 +74,18 @@ local ITEM =
     METAL_CANDY        = itemId('METAL_SLIME_CANDY', 6189),
 }
 
+-- Horro brought his games along. The first part comes free with the Crystal Boy, the rest are prizes.
+local CRYSTAL_BOY = itemId('CRYSTAL_BOY', 8100)
+
+local DRAGONLAND =
+{
+    { id = 8105, name = 'Dragonland I'   },
+    { id = 8106, name = 'Dragonland II'  },
+    { id = 8107, name = 'Dragonland III' },
+    { id = 8108, name = 'Dragonland IV'  },
+    { id = 8109, name = 'Dragonland V'   },
+}
+
 -- Retail 2026 tiers: earring 5, shield 10, cap 15, she/metal earrings 15. The she/metal hats and shields (20/30)
 -- are our split of retail's unnamed 20 and 30 coin tiers.
 local SHOP =
@@ -88,6 +103,10 @@ local SHOP =
     { id = ITEM.SHE_CANDY,          name = 'She-Slime Candy',    cost = 1, candy = true, needs = 'she' },
     { id = ITEM.METAL_CANDY,        name = 'Metal Slime Candy',  cost = 1, candy = true, needs = 'metal' },
 }
+
+for _, game in ipairs(DRAGONLAND) do
+    table.insert(SHOP, { id = game.id, name = game.name, cost = 15 })
+end
 
 local SETS =
 {
@@ -301,6 +320,25 @@ local function explain(player, who)
     say(player, who, 'Metal Slimes take hits badly but dodge a lot and run away fast. Wear a full slime set for +1 coin a catch!')
 end
 
+-- First visit: a Crystal Boy and the first Dragonland part, once per character. If the bags are full it is offered
+-- again next time instead of being lost.
+local function welcomeGift(player, who)
+    if player:getCharVar('Horro_CB') ~= 0 then
+        return
+    end
+
+    if player:getFreeSlotsCount() < 2 then
+        say(player, who, 'Splish! I have a present for you, but your bags are full. Make room for two things and ask me again.')
+        return
+    end
+
+    if npcUtil.giveItem(player, { CRYSTAL_BOY, DRAGONLAND[1].id }) then
+        player:setCharVar('Horro_CB', 1)
+        say(player, who, 'Splish! Take these: a Crystal Boy, and a Recollection that came all the way from Dragonland.')
+        sys(player, 'The other four parts of Dragonland are prizes: 15 slime coins each, from this slime.')
+    end
+end
+
 local function onTownSlime(player, npc)
     local city = CITIES[player:getZoneID()]
     if not city or not isActive() then
@@ -308,6 +346,7 @@ local function onTownSlime(player, npc)
     end
 
     local who  = npc:getPacketName()
+    welcomeGift(player, who)
     local camp = CAMPS[city.camp]
     sendMenu(player,
     {
