@@ -1561,6 +1561,12 @@ auto CParty::IsFormedByTrusts() const -> bool
 void CParty::RefreshFlags(std::vector<partyInfo_t>& info)
 {
     // Clear pointers in case they no longer exist on this instance
+    // (2026-11-19, Yumainai) a sync to a squad mate keeps the leader as the target plus the mate's level and name; this
+    // runs on every party reload (each mate call, every level up), and clearing those made the sync fall back to the
+    // leader's own level and stop following the mate. They stay when the same member is still the sync target.
+    const auto*       oldSync      = m_PSyncTarget; // (compared, never read: it may be stale here)
+    const uint8       oldSyncLevel = m_SyncLevel;
+    const std::string oldSyncName  = m_SyncName;
     m_PLeader        = nullptr;
     m_PQuarterMaster = nullptr;
     m_PSyncTarget    = nullptr;
@@ -1612,6 +1618,11 @@ void CParty::RefreshFlags(std::vector<partyInfo_t>& info)
                     {
                         m_PSyncTarget = member;
                         found         = true;
+                        if (oldSync == member)
+                        {
+                            m_SyncLevel = oldSyncLevel;
+                            m_SyncName  = oldSyncName;
+                        }
                     }
                 }
                 if (!found)
