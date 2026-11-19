@@ -4536,19 +4536,76 @@ jobs[jobIds.BST] =
 }
 
 -- Bard: Minuet and March for you and the party, ranged attacks from a distance
+-- (2026-11-19, user) A bard picks its two songs for the party it plays in (looked at when it is called):
+--   mostly casters: Mage's Ballad + Minuet; no healer: Knight's Minne + Army's Paeon; otherwise Minuet + March.
+--   A song it doesn't know yet is skipped for the next one in the list (Minne 1, Minuet 3, Paeon 5, Ballad 25,
+--   March 29). Era bards hold two songs. On the monster: Battlefield Elegy (39) then Foe Requiem (7).
+--   Bots build their list without a party, so they get the Minuet + March list.
+SQUAD_BRD_SONGS =
+{
+    caster   = { 'BALLAD', 'MINUET', 'PAEON', 'MINNE' },
+    nohealer = { 'MINNE', 'PAEON', 'MINUET' },
+    melee    = { 'MINUET', 'MARCH', 'PAEON', 'MINNE' },
+}
+SQUAD_BRD_SONG_INFO =
+{
+    MINNE  = { level = 1,  effect = 'MINNE',  family = 'KNIGHTS_MINNE' },
+    MINUET = { level = 3,  effect = 'MINUET', family = 'VALOR_MINUET' },
+    PAEON  = { level = 5,  effect = 'PAEON',  family = 'ARMYS_PAEON' },
+    BALLAD = { level = 25, effect = 'BALLAD', family = 'MAGES_BALLAD' },
+    MARCH  = { level = 29, effect = 'MARCH',  family = 'MARCH' },
+}
+
+function squadBardParty(mob)
+    local ok, kind = pcall(function()
+        local master = mob:getMaster()
+        if type(master) ~= 'userdata' then
+            return 'melee'
+        end
+
+        local casters, melee, healer, tank = 0, 0, false, false
+        local members = master:getPartyWithTrusts() or {}
+        for _, m in pairs(members) do
+            if m:getID() ~= mob:getID() then
+                local j = m:getMainJob()
+                if j == 3 or j == 4 or j == 5 or j == 15 or j == 20 or j == 21 then
+                    casters = casters + 1
+                else
+                    melee = melee + 1
+                end
+                healer = healer or j == 3 or j == 5 or j == 20
+                tank = tank or j == 1 or j == 7 or j == 13
+            end
+        end
+
+        if casters > 0 and casters >= melee then
+            return 'caster'
+        elseif not healer and tank then
+            return 'nohealer'
+        end
+
+        return 'melee'
+    end)
+    return ok and kind or 'melee'
+end
+
 jobs[jobIds.BRD] =
 {
     magic = function(mob)
-        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'MINUET'), family('VALOR_MINUET'))
-        addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'MARCH'), family('MARCH'))
-        -- (2026-11-19, Boxxking88: a level 10 bard only sang Minuet) March comes at 29; before that the second song
-        -- is Army's Paeon (5), then Mage's Ballad (25). From 29 it is Minuet + March as before (two songs only).
-        if profileLevel < 29 then -- (the level this part is built for: main or sub, squad mate or bot)
-            if profileLevel >= 25 then
-                addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'BALLAD'), family('MAGES_BALLAD'))
-            else
-                addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'PAEON'), family('ARMYS_PAEON'))
+        local picked = 0
+        for _, name in ipairs(SQUAD_BRD_SONGS[squadBardParty(mob)]) do
+            local song = SQUAD_BRD_SONG_INFO[name]
+            if picked < 2 and profileLevel >= song.level then
+                addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, song.effect), family(song.family))
+                picked = picked + 1
             end
+        end
+
+        if profileLevel >= 39 then
+            addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'ELEGY'), family('ELEGY'), 30)
+        end
+        if profileLevel >= 7 then
+            addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'REQUIEM'), family('FOE_REQUIEM'), 30)
         end
         addGambit(mob, ai.t.TARGET, cond(ai.c.ALWAYS, 0), { ai.r.RATTACK, 0, 0 }, 60)
     end,
