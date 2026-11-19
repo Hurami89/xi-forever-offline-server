@@ -4541,6 +4541,15 @@ jobs[jobIds.BRD] =
     magic = function(mob)
         addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'MINUET'), family('VALOR_MINUET'))
         addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'MARCH'), family('MARCH'))
+        -- (2026-11-19, Boxxking88: a level 10 bard only sang Minuet) March comes at 29; before that the second song
+        -- is Army's Paeon (5), then Mage's Ballad (25). From 29 it is Minuet + March as before (two songs only).
+        if profileLevel < 29 then -- (the level this part is built for: main or sub, squad mate or bot)
+            if profileLevel >= 25 then
+                addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'BALLAD'), family('MAGES_BALLAD'))
+            else
+                addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'PAEON'), family('ARMYS_PAEON'))
+            end
+        end
         addGambit(mob, ai.t.TARGET, cond(ai.c.ALWAYS, 0), { ai.r.RATTACK, 0, 0 }, 60)
     end,
     stance = function(mob)
