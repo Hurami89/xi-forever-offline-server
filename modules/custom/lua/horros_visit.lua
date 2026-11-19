@@ -121,25 +121,25 @@ local CITIES =
     [xi.zone.SOUTHERN_SAN_DORIA] =
     {
         key = 'Slarin', name = 'Slarin', camp = xi.zone.EAST_RONFAURE,
-        pos = { 47.0, 2.0, -31.5, 170 }, horro = { 49.5, 2.0, -29.5, 170 }, where = 'by the Home Point near the Lion Springs Tavern',
+        pos = { 46.5, 1.6, -32.4, 170 }, horro = { 44.22, 1.63, -32.1, 170 }, back = { 45.36, 1.6, -32.25, 170 }, where = 'by the Home Point near the Lion Springs Tavern',
     },
     [xi.zone.BASTOK_MARKETS] =
     {
         key = 'Sludge', name = 'Sludge', camp = xi.zone.SOUTH_GUSTABERG,
-        pos = { -290.5, -10.0, -100.0, 160 }, horro = { -288.0, -10.0, -98.0, 160 }, where = 'by the Home Point at the south end',
+        pos = { -290.79, -10.4, -102.54, 160 }, horro = { -292.29, -10.4, -105.14, 160 }, back = { -291.54, -10.4, -103.84, 160 }, where = 'by the Home Point at the south end',
     },
     [xi.zone.WINDURST_WOODS] =
     {
         key = 'UltraSlime', name = 'Ultra Slime', camp = xi.zone.EAST_SARUTABARUTA,
-        pos = { -40.5, 0.0, -142.0, 0 }, horro = { -38.0, 0.0, -140.0, 0 }, where = 'by the Home Point at the south end',
+        pos = { -42.0, -0.28, -142.4, 0 }, horro = { -44.28, -0.24, -142.1, 0 }, back = { -43.14, -0.26, -142.25, 0 }, where = 'by the Home Point at the south end',
     },
 }
 
 local CAMPS =
 {
-    [xi.zone.EAST_RONFAURE]     = { key = 'Slabble',    name = 'Slabble',     home = xi.zone.SOUTHERN_SAN_DORIA, arrive = { 86.131, -65.817, 273.861, 25 } },
-    [xi.zone.SOUTH_GUSTABERG]   = { key = 'SlimeTarou', name = 'Slime Tarou', home = xi.zone.BASTOK_MARKETS,     arrive = { 579.0, 0.0, -305.0, 62 } },
-    [xi.zone.EAST_SARUTABARUTA] = { key = 'Sline',      name = 'Sline',       home = xi.zone.WINDURST_WOODS,     arrive = { -125.0, -3.0, -519.0, 4 } },
+    [xi.zone.EAST_RONFAURE]     = { key = 'Slabble',    name = 'Slabble',     home = xi.zone.SOUTHERN_SAN_DORIA, arrive = { 86.131, -62.1, 273.861, 25 }, npc = { 88.63, -62.1, 273.86, 25 } },
+    [xi.zone.SOUTH_GUSTABERG]   = { key = 'SlimeTarou', name = 'Slime Tarou', home = xi.zone.BASTOK_MARKETS,     arrive = { 579.0, 0.6, -305.0, 62 }, npc = { 581.0, 0.6, -303.0, 62 } },
+    [xi.zone.EAST_SARUTABARUTA] = { key = 'Sline',      name = 'Sline',       home = xi.zone.WINDURST_WOODS,     arrive = { -125.0, -4.1, -519.0, 4 }, npc = { -122.5, -4.1, -519.0, 4 } },
 }
 
 local HORRO_LINES =
@@ -385,7 +385,8 @@ local function onCampSlime(player, npc)
                 p:delStatusEffect(xi.effect.LEVEL_RESTRICTION)
             end
 
-            p:addStatusEffect(xi.effect.LEVEL_RESTRICTION, 1, 0, GOO_SECONDS)
+            -- (2026-11-19) this server's addStatusEffect takes a table; the old positional call failed, so nobody was gooed
+            p:addStatusEffect(xi.effect.LEVEL_RESTRICTION, { origin = p, power = 1, duration = GOO_SECONDS })
             p:setCharVar('Horro_Goo', 1)
             say(p, who, 'Splish! Now you can catch slimes. Come back to me when you want to go home.')
         end })
@@ -393,8 +394,8 @@ local function onCampSlime(player, npc)
 
     table.insert(options, { 'Take me back to town', function(p)
         unGoo(p)
-        local pos = city.pos
-        p:setPos(pos[1] + 1.5, pos[2], pos[3] + 1.5, pos[4], camp.home)
+        local pos = city.back or city.pos
+        p:setPos(pos[1], pos[2], pos[3], pos[4], camp.home)
     end })
     table.insert(options, { 'Never mind', function(p)
     end })
@@ -732,7 +733,7 @@ local function initCamp(zone)
     local zoneId = zone:getID()
     local camp   = CAMPS[zoneId]
     local a      = camp.arrive
-    local npc    = addNpc(zone, camp.key, camp.name, LOOK.slime, { a[1] + 2.0, a[2], a[3] + 2.0, a[4] }, onCampSlime)
+    local npc    = addNpc(zone, camp.key, camp.name, LOOK.slime, camp.npc or { a[1] + 2.0, a[2], a[3] + 2.0, a[4] }, onCampSlime)
     state.camps[zoneId] = { npc = npc and npc:getID(), points = {}, mobs = {} }
     local on = isActive()
     showNpcs(zoneId, on)
