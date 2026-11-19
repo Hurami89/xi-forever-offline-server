@@ -3028,6 +3028,19 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
 
     if action == 'dismiss' then
         zoneOut[player:getID()] = nil
+        -- (2026-11-18) a party of you and your mates no longer breaks up (and so stays synced) while they are away for a
+        -- moment; dismissing them all for good ends a Level Sync that only they were part of
+        if player:hasStatusEffect(xi.effect.LEVEL_SYNC) and type(SquadLevelSync) == 'function' then
+            local others = 0
+            for _, member in pairs(player:getParty() or {}) do
+                if member:getID() ~= player:getID() then
+                    others = others + 1
+                end
+            end
+            if others == 0 then
+                pcall(SquadLevelSync, player, '')
+            end
+        end
         player:clearTrusts()
         chatSend('CTX', player:getZoneName(), player:getMainLvl(), 0, '', player:getName(), player:getRace())
         say(player, 'Your trusts and squad mates have been dismissed.')

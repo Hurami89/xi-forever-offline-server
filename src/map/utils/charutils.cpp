@@ -6682,7 +6682,11 @@ void ReloadParty(CCharEntity* PChar)
 
     // A party that was created with trusts disbands if they get dismissed
     // (FFXI Offline: not while other players are in it - a bot may have joined a party that calling the squad made)
-    if (PChar->PParty && PChar->PParty->IsFormedByTrusts() && PChar->PTrusts.empty() && PChar->PParty->members.size() <= 1)
+    // (XI: Forever Offline, 2026-11-18, Tasou) nor while it is level synced: the squad is called again at the synced level
+    // a few seconds after the sync starts, and the empty moment in between disbanded the party, which ended the sync, so
+    // the mates came back at their own level, the player synced again... forever. !squad dismiss ends the sync itself.
+    if (PChar->PParty && PChar->PParty->IsFormedByTrusts() && PChar->PTrusts.empty() && PChar->PParty->members.size() <= 1 &&
+        PChar->PParty->GetSyncTarget() == nullptr)
     {
         PChar->PParty->DisbandParty();
     }
