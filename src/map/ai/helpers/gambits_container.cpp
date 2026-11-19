@@ -430,6 +430,53 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                     resonanceProperties.emplace_back((xi::SkillchainType)(power >> 8));
                 }
 
+                // XI: Forever Offline (2026-11-19): burst with the element's nuke family (Fire, Blizzard, Aero,
+                // Stone, Thunder, Water, Banish, Drain) at the best tier with MP and no recast. The old pick took
+                // the last damage spell of the element, which is the elemental DoT (Rasp, Drown, Shock, ...) once
+                // a mage knows it (Bob Roberts: a BLM bursting with Rasp in Qufim).
+                auto nukeFamily = [](uint8 element) -> SPELLFAMILY
+                {
+                    switch (element)
+                    {
+                        case ELEMENT_FIRE:
+                            return SPELLFAMILY_FIRE;
+                        case ELEMENT_ICE:
+                            return SPELLFAMILY_BLIZZARD;
+                        case ELEMENT_WIND:
+                            return SPELLFAMILY_AERO;
+                        case ELEMENT_EARTH:
+                            return SPELLFAMILY_STONE;
+                        case ELEMENT_THUNDER:
+                            return SPELLFAMILY_THUNDER;
+                        case ELEMENT_WATER:
+                            return SPELLFAMILY_WATER;
+                        case ELEMENT_LIGHT:
+                            return SPELLFAMILY_BANISH;
+                        case ELEMENT_DARK:
+                            return SPELLFAMILY_DRAIN;
+                        default:
+                            return SPELLFAMILY_NONE;
+                    }
+                };
+
+                for (auto& resonance_element : resonanceProperties)
+                {
+                    for (auto& chain_element : battleutils::GetSkillchainMagicElement(resonance_element))
+                    {
+                        auto family = nukeFamily(static_cast<uint8>(chain_element));
+                        if (family == SPELLFAMILY_NONE)
+                        {
+                            continue;
+                        }
+
+                        if (auto nuke = POwner->SpellContainer->GetBestAvailable(family))
+                        {
+                            return nuke;
+                        }
+                    }
+                }
+
+                // No nuke of a burst element ready: the old pick, minus the elemental DoTs (Burn ... Drown)
                 Maybe<SpellID> spell_id;
                 for (auto& resonance_element : resonanceProperties)
                 {
@@ -438,8 +485,9 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         for (size_t ii = POwner->SpellContainer->m_damageList.size(); ii > 0; --ii)
                         {
                             auto spell         = POwner->SpellContainer->m_damageList[ii - 1];
+                            auto id            = static_cast<uint16>(spell);
                             auto spell_element = spell::GetSpell(spell)->getElement();
-                            if (spell_element == chain_element)
+                            if (spell_element == chain_element && (id < 235 || id > 240))
                             {
                                 spell_id = spell;
                                 break;
