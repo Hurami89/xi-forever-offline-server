@@ -77,6 +77,8 @@ phoenix/dynamis/lua/
 # Squad mates
 custom/cpp/squad.cpp
 custom/lua/squad.lua
+custom/lua/squad_space.lua
+custom/lua/squad_chain.lua
 custom/sql/squad.sql
 
 # Fast travel

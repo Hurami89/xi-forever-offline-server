@@ -6,6 +6,21 @@
 -- Squad mates do not go through xi.trust.canCast, so the usual Trust zone/battlefield limits do not apply.
 -----------------------------------
 require('modules/module_utils')
+
+-- (2026-11-19, from Jon Tanta's Squad Update) the server's Lua print goes through a format string, so a "{" or "}" in a message threw
+-- "Encountered logging exception: argument not found" (hundreds of times a session, hiding real errors). Braces are dropped; the rest
+-- prints as before. Global, so every module's print is covered.
+if SQUAD_PRINT_RAW == nil then
+    SQUAD_PRINT_RAW = print
+    print = function(...)
+        local n, parts = select('#', ...), {}
+        for i = 1, n do
+            parts[i] = tostring((select(i, ...)))
+        end
+
+        SQUAD_PRINT_RAW((table.concat(parts, '\t'):gsub('[{}]', '')))
+    end
+end
 -----------------------------------
 
 local MAX_SLOTS = 6         -- squad mates you can keep
@@ -616,11 +631,12 @@ end
 -- This file keeps the camp and picks what to pull. The trust controller (core trust_controller.cpp) does the holding,
 -- the run out and back, and the fighting at camp, through the mates' local vars SQUAD_CAMP* and SQUAD_PULL_*.
 -----------------------------------
-local CAMP_PULL_RANGE   = 80        -- yalms from camp the puller goes for a monster: your own area, not the far
+CAMP_MAX_DY = CAMP_MAX_DY or 14 -- (2026-11-19) only monsters within this height of the camp: zones with floors (Crawlers' Nest) stack monsters over each other
+local CAMP_PULL_RANGE   = 60        -- yalms from camp the puller goes for a monster: your own area, not the far
                                     -- side of the zone (!squad camp range <10-500> changes yours)
 local CAMP_RANGE_LIMITS = { 10, 500 }
-local CAMP_WANT_ABOVE   = 5         -- a kind of monster you picked: pulled up to this many levels above you
-local CAMP_LIST_MAX     = 24        -- kinds of monster listed in the menu
+local CAMP_WANT_ABOVE   = 25        -- a kind of monster you picked: pulled up to this many levels above you
+local CAMP_LIST_MAX     = 80        -- kinds of monster listed in the menu
 
 -- the kinds of monster around the camp (within the pull range), for the menu: { name, lo, hi, count, fits }
 local function campKinds(player, c)
@@ -636,6 +652,7 @@ local function campKinds(player, c)
     end
 
     local byName = {}
+    local kd = { all = 0, flat = 0, high = 0 }
     for _, mob in ipairs(zone:getMobs() or {}) do
         pcall(function()
             if mob:isNM() or (xi.allegiance and xi.allegiance.MOB and mob:getAllegiance() ~= xi.allegiance.MOB) then
@@ -644,7 +661,14 @@ local function campKinds(player, c)
 
             local pos = mob:getPos()
             local dx, dz = pos.x - c.x, pos.z - c.z
+            kd.all = kd.all + 1
             if dx * dx + dz * dz > range * range then
+                return
+            end
+
+            kd.flat = kd.flat + 1
+            if math.abs(pos.y - c.y) > CAMP_MAX_DY then
+                kd.high = kd.high + 1
                 return
             end
 
@@ -657,6 +681,13 @@ local function campKinds(player, c)
 
             k.lo, k.hi, k.count = math.min(k.lo, ml), math.max(k.hi, ml), k.count + 1
         end)
+    end
+
+    local nowK = os.time()
+    if nowK - (SQUAD_KINDDIAG or 0) >= 10 then
+        SQUAD_KINDDIAG = nowK
+        print(string.format('[squad] camp kinds: camp at %.0f,%.0f,%.0f; %d monsters in the zone, %d within %d yalms flat, %d of those on another floor (more than %d up or down)',
+            c.x, c.y, c.z, kd.all, kd.flat, range, kd.high, CAMP_MAX_DY))
     end
 
     local list = {}
@@ -792,6 +823,44 @@ local function campWantLabel(c)
     return table.concat(out, ', ')
 end
 
+-- Links: monsters of the same kind close together come as a group when one is pulled. The puller counts the ones around a
+-- target and leaves a target with more than `max` of them beside it (global: squad.lua is at the local limit).
+SQUAD_LINK = SQUAD_LINK or { on = true }
+-- (set every load, so a reload applies them) 2026-11-19: Nishiko kept pulling links. Now a target is skipped when ANY same-kind
+-- monster is within `radius`, or any other monster is within `near` (they wake to the fight, or link by family); the nearest clean one wins.
+SQUAD_LINK.radius = 20
+SQUAD_LINK.max = 0
+SQUAD_LINK.near = 12
+
+function squadLinkPool(zone)
+    local pool = {}
+    pcall(function()
+        for _, m in ipairs(zone:getMobs() or {}) do
+            if m:isAlive() and not m:isEngaged() then
+                local pos = m:getPos()
+                pool[#pool + 1] = { id = m:getID(), name = m:getName(), x = pos.x, z = pos.z }
+            end
+        end
+    end)
+
+    return pool
+end
+
+function squadLinkCount(pool, mob, pos)
+    local n, name, id, R = 0, mob:getName(), mob:getID(), SQUAD_LINK.radius
+    for _, o in ipairs(pool) do
+        if o.id ~= id then
+            local dx, dz = o.x - pos.x, o.z - pos.z
+            local d2 = dx * dx + dz * dz
+            if (o.name == name and d2 <= R * R) or d2 <= (SQUAD_LINK.near or 12) ^ 2 then
+                n = n + 1
+            end
+        end
+    end
+
+    return n
+end
+
 -- the next monster for the puller: in range of camp, the right level, nobody else's, nearest to camp first
 local function campPick(player, c)
     local zone = player:getZone()
@@ -813,10 +882,23 @@ local function campPick(player, c)
         end
     end
 
+    -- 2026-11-19: the level window is measured from the weakest one in the party, not from you (Nishiko pulled a level 46 Doom Scorpion
+    -- onto a level 40 squad because you are higher): a pull has to be fair for everyone who has to fight it
     local lvl = player:getMainLvl()
+    pcall(function()
+        for _, t in ipairs(squadTrusts(player)) do
+            if t:isAlive() and t:getMainLvl() > 0 and t:getMainLvl() < lvl then
+                lvl = t:getMainLvl()
+            end
+        end
+    end)
+
     local range = campRange(player)
     local wants = campWants(c)
     local best, bestD = nil, math.huge
+    local linkPool = SQUAD_LINK.on and squadLinkPool(zone) or {}
+    local skippedLinks = 0
+    local dg = { alive = 0, kind = 0, range = 0, others = 0 }
     for _, mob in ipairs(zone:getMobs() or {}) do
         local ok, usable = pcall(function()
             if not mob:isAlive() or mob:isNM() or mob:isEngaged() then
@@ -850,7 +932,21 @@ local function campPick(player, c)
         if ok and usable then
             local pos = mob:getPos()
             local d = campDistance(c, pos)
-            if d <= range and d < bestD then
+            if math.abs(pos.y - c.y) > CAMP_MAX_DY then
+                d = math.huge -- (another floor)
+            end
+
+            dg.kind = dg.kind + 1
+            if d <= range then
+                dg.range = dg.range + 1
+            end
+
+            -- 2026-11-19: a monster whose pull ran far off the leash (a detour round a ledge or wall) is left alone for two minutes
+            if c.skip ~= nil and (c.skip[mob:getID()] or 0) > os.time() then
+                d = math.huge
+            end
+
+            if d <= range then
                 local free = true
                 for _, op in ipairs(others) do
                     local dx, dz = op.x - pos.x, op.z - pos.z
@@ -859,11 +955,36 @@ local function campPick(player, c)
                     end
                 end
 
-                if free then
-                    best, bestD = mob, d
+                -- 2026-11-19: the puller goes for the CLOSEST monster. One that would link counts as farther away by SQUAD_LINK.penalty yalms
+                -- (25), so a clean one is taken only when it is not much farther than the closest; a linked one is never a hard "no".
+                local score = d
+                if free and SQUAD_LINK.on then
+                    local okL, links = pcall(squadLinkCount, linkPool, mob, pos)
+                    if okL and links > SQUAD_LINK.max then
+                        score = score + (SQUAD_LINK.penalty or 25)
+                        skippedLinks = skippedLinks + 1
+                    end
+                end
+
+                if free and score < bestD then
+                    best, bestD = mob, score
                 end
             end
         end
+    end
+
+    if best == nil then
+        -- (2026-11-19) why nothing was picked: how many monsters matched the kind or level window, and how many of those are inside the range
+        local nowT = os.time()
+        if nowT - (SQUAD_PICKDIAG or 0) >= 15 then
+            SQUAD_PICKDIAG = nowT
+            print(string.format('[squad] pull: nothing to pull: %d match the kind or level window (party level %d, window %s), %d of them within %d yalms of camp, %d skipped as links',
+                dg.kind, lvl, (#wants > 0) and ('kinds ' .. table.concat(wants, ',') .. ' up to +' .. CAMP_WANT_ABOVE) or table.concat({ squadCampLevels(player) }, '..', 1, 2), dg.range, range, skippedLinks))
+        end
+    end
+
+    if best == nil and skippedLinks > 0 then
+        print(string.format('[squad] pull: %d target(s) skipped, too many of the same kind close together (they link)', skippedLinks))
     end
 
     return best
@@ -895,7 +1016,7 @@ end
 -----------------------------------
 local SC_MELEE    = { [1] = true, [2] = true, [5] = true, [6] = true, [7] = true, [8] = true, [9] = true, [12] = true, [13] = true,
                       [14] = true, [16] = true, [17] = true, [18] = true }
-local SC_HOLD     = 2000  -- a closer weapon skills anyway at this much TP
+local SC_HOLD     = 1500  -- a closer weapon skills anyway at this much TP (was 2000)
 local SC_HOLD_ONE = 1500  -- a lone melee mate (holding for yours)
 local SC_ROLE     = { opener = 1, closer = 2, alone = 3 }
 local wsNames     = nil
@@ -1005,6 +1126,21 @@ local function campStop(puller)
     puller:setLocalVar('SQUAD_PULL_TARGET', 0)
 end
 
+-- A monster that casts or shoots stops short of the camp. far = how far from camp it may stand before the puller runs past the
+-- camp to bring it in, past = how far beyond the camp that run goes, near = close enough to the camp, max = tries per pull,
+-- timeout = seconds. (global: squad.lua is at the local limit)
+SQUAD_HOLD = SQUAD_HOLD or {}
+SQUAD_DRAG = SQUAD_DRAG or { on = true, far = 14, past = 16, near = 10, max = 2, timeout = 14 }
+
+-- why the camp is not pulling (map log, at most every 10 s)
+function squadCampWhy(c, text)
+    local now = os.time()
+    if now >= (c.whyAt or 0) then
+        c.whyAt = now + 10
+        print('[squad] camp: ' .. text)
+    end
+end
+
 -- once a second (from the mates' ticks): the puller's next pull, when the camp is quiet and everyone is ready
 local function campTick(mob)
     local player = mob:getMaster()
@@ -1026,7 +1162,25 @@ local function campTick(mob)
         return
     end
 
+    -- 2026-11-19: a zone with floors (Crawlers' Nest): when you stand on another floor than the camp for a few seconds (not mid pull or fight),
+    -- the camp moves to where you are, and the menu's monster list and the pulls follow that floor. Same settings, same Start / Pause state.
+    local okF = pcall(function()
+        local py = player:getYPos()
+        if c.state ~= 'pulling' and not player:isEngaged() and math.abs(py - c.y) > CAMP_MAX_DY then
+            c.floorAt = c.floorAt or now
+            if now - c.floorAt >= 6 then
+                c.x, c.y, c.z = player:getXPos(), py, player:getZPos()
+                c.floorAt = nil
+                campApplyAll(player)
+                say(player, 'Camp moved to the floor you are on. The monsters around you are the ones it pulls now.')
+            end
+        else
+            c.floorAt = nil
+        end
+    end)
+
     if c.puller == 0 then
+        squadCampWhy(c, 'puller is set to you (!squad camp puller <slot> to give it to a mate)')
         return -- (you pull: the mates hold and fight what you bring)
     end
 
@@ -1040,6 +1194,7 @@ local function campTick(mob)
 
     if puller == nil or not puller:isAlive() then
         c.state = 'idle'
+        squadCampWhy(c, string.format('the puller (mate id %s) is not out or is down; mates out: %d', tostring(c.puller), #trusts))
         return
     end
 
@@ -1059,6 +1214,24 @@ local function campTick(mob)
             c.logAt = now + 3
         end
 
+        -- 2026-11-19 leash: a puller that has strayed this far past the pull range is taking a long way round (a ledge, a wall, a
+        -- drop); that is where mates fell off. Give the pull up, run for camp, and leave that monster alone for two minutes.
+        do
+            local okL, farL = pcall(function() return campDistance(c, puller:getPos()) end)
+            if okL and farL ~= nil and farL > campRange(player) + 25 and puller:getLocalVar('SQUAD_PULL_PHASE') == 1 then
+                if c.targetEnt ~= nil then
+                    c.skip = c.skip or {}
+                    c.skip[c.targetEnt:getID()] = now + 120
+                end
+
+                campStop(puller)
+                c.state, c.nextPull = 'idle', now + 10
+                campSay(player, puller, 'too far round, coming back')
+                print(string.format('[squad] pull: %s is %.0f yalms from camp, past the leash; giving this one up', puller:getPacketName(), farL))
+                return
+            end
+        end
+
         -- Being chewed on while dragging a monster home is what killed the
         -- puller: give the pull up and run for camp instead.
         local hpPct = percentOf(puller, 'getHP', 'getMaxHP')
@@ -1070,7 +1243,68 @@ local function campTick(mob)
             return
         end
 
-        if puller:getLocalVar('SQUAD_PULL_PHASE') == 0 then
+        local phase = puller:getLocalVar('SQUAD_PULL_PHASE')
+        local D = SQUAD_DRAG
+        -- The mates at camp stand their ground until the monster is at camp: nobody runs out to catch it.
+        do
+            local foe, far = c.targetEnt, true
+            pcall(function()
+                far = foe ~= nil and foe:isAlive() and campDistance(c, foe:getPos()) > D.near
+            end)
+            if far then
+                SQUAD_HOLD[player:getID()] = { puller = c.puller, untilT = now + 2 }
+                for _, trust in ipairs(trusts) do
+                    if trust:getLocalVar('SQUAD_ID') ~= c.puller and trust:isEngaged() then
+                        pcall(function() trust:disengage() end)
+                    end
+                end
+            else
+                SQUAD_HOLD[player:getID()] = nil
+            end
+        end
+        if c.dragging then
+            -- Running past the camp so a monster that stopped short (a ranged or magic one) follows to the party.
+            local foe, near = c.targetEnt, false
+            pcall(function()
+                near = foe == nil or not foe:isAlive() or campDistance(c, foe:getPos()) <= D.near
+            end)
+            if phase == 0 or near or now - (c.dragSince or now) > D.timeout then
+                c.dragging = nil
+                campApply(player, puller) -- the real camp again
+                puller:setLocalVar('SQUAD_PULL_PHASE', 2) -- and back to it with the monster, then he engages it like after any pull
+                print(string.format('[squad] pull: %s finished the drag after %ds (monster near camp: %s), heading back to camp', puller:getPacketName(),
+                    now - (c.dragSince or now), tostring(near)))
+            end
+
+            return
+        end
+
+        if phase == 0 then
+            -- back at camp. A monster that stopped short of it (it casts or shoots from a distance) is not brought home
+            -- yet: the puller runs past the camp, on the far side from the monster, and it follows to the party.
+            local foe, drag = c.targetEnt, false
+            pcall(function()
+                if D.on and foe ~= nil and foe:isAlive() and foe:isEngaged() and (c.drags or 0) < D.max and now - (c.pullStart or now) < 120 then
+                    local fp = foe:getPos()
+                    local dx, dz = c.x - fp.x, c.z - fp.z
+                    local len = math.sqrt(dx * dx + dz * dz)
+                    if len > D.far then
+                        local px, pz = c.x + dx / len * D.past, c.z + dz / len * D.past
+                        puller:setLocalVar('SQUAD_CAMP_X', campEncode(px))
+                        puller:setLocalVar('SQUAD_CAMP_Y', campEncode(c.y))
+                        puller:setLocalVar('SQUAD_CAMP_Z', campEncode(pz))
+                        puller:setLocalVar('SQUAD_PULL_PHASE', 2)
+                        c.dragging, c.dragSince, c.drags, drag = true, now, (c.drags or 0) + 1, true
+                        print(string.format('[squad] pull: %s is home but %s stopped %.0f yalms from camp, running past the camp to bring it in',
+                            puller:getPacketName(), foe:getName(), len))
+                    end
+                end
+            end)
+            if drag then
+                return
+            end
+
+            c.drags = nil
             c.state, c.since = 'fighting', now -- back at camp with it (or it is gone)
             print(string.format('[squad] pull: %s is back (or the target is gone) after %ds', puller:getPacketName(), now - (c.pullStart or now)))
         elseif now - c.since > CAMP_PULL_TIMEOUT then
@@ -1083,13 +1317,17 @@ local function campTick(mob)
         return
     end
 
-    local busy = player:isEngaged()
+    local busy, busyWho = player:isEngaged(), player:isEngaged() and 'you' or nil
     for _, trust in ipairs(trusts) do
-        busy = busy or trust:isEngaged()
+        if trust:isEngaged() then
+            busy = true
+            busyWho = busyWho or trust:getPacketName()
+        end
     end
 
     if busy then
         c.state = 'fighting'
+        squadCampWhy(c, string.format('not pulling: %s is still engaged', tostring(busyWho)))
         return
     end
 
@@ -1098,6 +1336,10 @@ local function campTick(mob)
     end
 
     if now < (c.nextPull or 0) or c.paused then
+        if c.paused then
+            squadCampWhy(c, 'not pulling: the camp is paused')
+        end
+
         return
     end
 
@@ -1119,6 +1361,7 @@ local function campTick(mob)
                 campSay(player, puller, 'waiting a bit, need hp/mp')
             end
 
+            squadCampWhy(c, string.format('waiting: %s (you or a character) needs HP/MP or is resting', member:getName()))
             c.nextPull = now + 5
             return
         end
@@ -1132,6 +1375,8 @@ local function campTick(mob)
                 campSay(player, puller, 'waiting a bit, need hp/mp')
             end
 
+            squadCampWhy(c, string.format('waiting: %s HP %d%% MP %d%% (needs %d%% HP, %d%% MP)', trust:getPacketName(), percentOf(trust, 'getHP', 'getMaxHP'),
+                percentOf(trust, 'getMP', 'getMaxMP'), CAMP_READY_HP, CAMP_READY_MP))
             c.nextPull = now + 5
             return
         end
@@ -1141,16 +1386,52 @@ local function campTick(mob)
     local target = campPick(player, c)
     if target == nil then
         c.nextPull = now + 10
+        squadCampWhy(c, 'no target found within range and level window')
         if not c.noneSaid then
             c.noneSaid = true
             local wantLabel = campWantLabel(c)
-            campSay(player, wantLabel and ('no ' .. wantLabel .. ' around right now, waiting for pops') or 'nothing to pull nearby, waiting for pops')
+            campSay(player, nil, wantLabel and ('no ' .. wantLabel .. ' around right now, waiting for pops') or 'nothing to pull nearby, waiting for pops')
         end
 
         return
     end
 
     c.noneSaid = nil
+
+    -- 2026-11-19: a puller with Ninjutsu (sub job Ninja) puts up Utsusemi: Ichi before the run out. One try per 20 seconds, so a failed cast never stalls the pull.
+    local okU, castU = pcall(function()
+        if puller:getSubJob() == 13 and puller:getSubLvl() >= 12 and not puller:hasStatusEffect(xi.effect.COPY_IMAGE)
+            and puller:getMP() >= 24 and now >= puller:getLocalVar('SQUAD_UTSU_AT')
+        then
+            puller:setLocalVar('SQUAD_UTSU_AT', now + 20)
+            puller:castSpell(338, puller)
+            return true
+        end
+
+        return false
+    end)
+    if okU and castU then
+        c.nextPull = now + 4
+        return
+    end
+
+    -- ... and Monomi: Ichi (Sneak) from sub level 25, so the run out is quiet
+    local okM, castM = pcall(function()
+        if puller:getSubJob() == 13 and puller:getSubLvl() >= 25 and not puller:hasStatusEffect(xi.effect.SNEAK)
+            and puller:getMP() >= 20 and now >= puller:getLocalVar('SQUAD_MONOMI_AT')
+        then
+            puller:setLocalVar('SQUAD_MONOMI_AT', now + 20)
+            puller:castSpell(318, puller)
+            return true
+        end
+
+        return false
+    end)
+    if okM and castM then
+        c.nextPull = now + 4
+        return
+    end
+
     puller:setLocalVar('SQUAD_PULL_TARGET', target:getTargID())
     puller:setLocalVar('SQUAD_PULL_PHASE', 1)
     c.state, c.since = 'pulling', now
@@ -1891,6 +2172,42 @@ function squadAutoEquip(player, mate)
     return changed
 end
 
+-- (2026-11-19, from Jon Tanta's Squad Update) once a second per mate: its range from the foe (squad_space.lua) and the
+-- skillchain wait (squad_chain.lua). A module that is missing is skipped; an error is printed at most every 20 seconds.
+SQUAD_TEAM_ERR = SQUAD_TEAM_ERR or 0
+function squadTeamTick(mob)
+    local now = os.time()
+    if mob:getLocalVar('SQUAD_TEAM_T') == now or not mob:isAlive() then
+        return
+    end
+
+    mob:setLocalVar('SQUAD_TEAM_T', now)
+    local boss = mob:getMaster()
+    if boss == nil or boss:getObjType() ~= xi.objType.PC then
+        return
+    end
+
+    local foe = nil
+    if mob:isEngaged() then
+        foe = mob:getTarget()
+    end
+
+    if type(foe) ~= 'userdata' and type(foe) ~= 'table' then
+        foe = nil
+    end
+
+    local fighting = foe ~= nil and foe:isAlive() and foe:getObjType() == xi.objType.MOB
+    for _, mod in ipairs({ SQUAD_SPACE, SQUAD_CHAIN }) do
+        if type(mod) == 'table' and mod.tick ~= nil then
+            local ok, err = pcall(mod.tick, mob, boss, foe, fighting, now, mob:getMainLvl(), mob:getMainJob())
+            if not ok and now - SQUAD_TEAM_ERR >= 20 then
+                SQUAD_TEAM_ERR = now
+                print('[squad] team tick error: ' .. tostring(err))
+            end
+        end
+    end
+end
+
 local function callMate(player, mate)
     if isSummoned(player, mate.id) then
         say(player, string.format('%s is already with you.', mate.name))
@@ -2000,6 +2317,7 @@ local function callMate(player, mate)
         if squadThiefTick ~= nil and mobArg:isAlive() and mobArg:getMaster() ~= nil then
             pcall(squadThiefTick, mobArg)
         end
+        squadTeamTick(mobArg) -- (spacing and the skillchain wait, once a second)
         chatTick(mobArg)
         if type(xi.squad.pack) == 'table' then
             pcall(xi.squad.pack.tick, mobArg) -- (pack lines: fights and quiet moments while the AI is quiet)
@@ -2007,6 +2325,12 @@ local function callMate(player, mate)
     end)
 
     trust:addListener('WEAPONSKILL_USE', 'SQUAD_WS_SHOUT', function(mobArg, target, skill, tp, action)
+        -- 2026-11-19: every mate weapon skill goes in the log with the chain state of the foe, so the chains can be read back
+        pcall(function()
+            local fx = target and target:getStatusEffect(xi.effect.SKILLCHAIN)
+            print(string.format('[ws] %s used %s at %d TP; chain on foe: %s', mobArg:getPacketName(), wsName(skill and skill.getID and skill:getID() or 0),
+                tp or 0, fx and ('tier ' .. tostring(fx:getTier())) or 'none'))
+        end)
         if (dialogue.wsShoutChance or 0) > 0 and math.random(100) <= dialogue.wsShoutChance then
             speakFromMob(mobArg, 'weaponskill')
         end
@@ -2878,13 +3202,22 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             else
                 say(player, string.format('Pull range is %d yalms. Change it with !squad camp range <%d-%d>.', campRange(player), CAMP_RANGE_LIMITS[1], CAMP_RANGE_LIMITS[2]))
             end
+        elseif what == 'links' then
+            -- 2026-11-19: how many other monsters may come along with the one the puller goes for (0 = none: a monster with a same-kind
+            -- neighbour close by is skipped). Hornflies, Crawlers and the like stand in swarms: 1 or 2 lets the puller take them.
+            local n = tonumber(arg2 or '')
+            if n and n >= 0 and n <= 5 then
+                SQUAD_LINK.max = math.floor(n)
+            end
+
+            say(player, string.format('The puller may bring up to %d extra monster(s) along with its target (!squad camp links 0-5; 0 skips any monster with a neighbour close by).', SQUAD_LINK.max or 0))
         elseif what == 'levels' then
             local low, high = tonumber(arg2 or ''), tonumber(arg3 or '')
             if string.lower(arg2 or '') == 'reset' then
                 player:setCharVar('SQUAD_PULL_LOW', 0)
                 player:setCharVar('SQUAD_PULL_HIGH', 0)
                 say(player, string.format('Your puller is back to monsters from %d below to %d above your level.', -CAMP_LEVELS[1], CAMP_LEVELS[2]))
-            elseif low and high and low >= -30 and high <= 10 and low <= high then
+            elseif low and high and low >= -30 and high <= 30 and low <= high then
                 player:setCharVar('SQUAD_PULL_LOW', math.floor(low) + 100)
                 player:setCharVar('SQUAD_PULL_HIGH', math.floor(high) + 100)
                 say(player, string.format('Your puller now goes for monsters from level %+d to %+d against yours (now %d-%d).',
@@ -2902,11 +3235,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
 
             say(player, player:getCharVar('SQUAD_CAMP_NOREST') == 1 and 'At camp your mates stay standing between fights (!squad camp rest on to change).'
                 or 'At camp your mates sit and rest between fights while the pull is out (!squad camp rest off to change).')
-        elseif what == 'pause' or what == 'resume' then
+        elseif what == 'pause' or what == 'resume' or what == 'start' then
             local c = camps[charId]
             if c then
                 c.paused = what == 'pause'
-                say(player, what == 'pause' and 'Pulls paused (the squad still holds camp).' or 'Pulls resume.')
+                say(player, what == 'pause' and 'Pulls paused (the squad still holds camp).' or (what == 'start' and 'Pulling starts.' or 'Pulls resume.'))
             else
                 say(player, campStatus(player))
             end
@@ -2914,9 +3247,10 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             local pos = player:getPos()
             local old = camps[charId]
             camps[charId] = { zone = player:getZoneID(), x = pos.x, y = pos.y, z = pos.z, puller = old and old.puller or 0, state = 'idle', pulls = old and old.pulls or 0,
-                              want = old and old.zone == player:getZoneID() and old.want or nil }
+                              want = old and old.zone == player:getZoneID() and old.want or nil,
+                              paused = true } -- (waits for Start: !squad camp start, or the Start button)
             campApplyAll(player)
-            say(player, 'Camp set here. Your squad holds this spot and fights whatever comes within 20 yalms of it.')
+            say(player, 'Camp set here. Your squad holds this spot and fights whatever comes within 20 yalms of it. Nothing is pulled until you press Start (!squad camp start).')
             if type(xi.squad.pack) == 'table' then
                 pcall(xi.squad.pack.onCommand, player, 'hold')
             end
@@ -5223,6 +5557,49 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
         end)
     end
 
+    -- 2026-11-19: the game takes the Trusts away when you are knocked out. When you are back on your feet (a Raise, or the home point) the mates who
+    -- were out come back by themselves a few seconds later, without the call timer.
+    player:addListener('DEATH', 'SQUAD_DEATH_RETURN', function(dead)
+        local diedAt = os.time()
+        dead:setLocalVar('SQUAD_DEATH_TOKEN', diedAt)
+        local function poll(entity)
+            if entity:getLocalVar('SQUAD_DEATH_TOKEN') ~= diedAt or os.time() - diedAt > 1800 then
+                return
+            end
+
+            if entity:getHP() > 0 then
+                entity:setLocalVar('SQUAD_DEATH_TOKEN', 0)
+                local seenNow = zoneOut[entity:getID()]
+                if seenNow == nil then
+                    return
+                end
+
+                local back = {}
+                for _, mate in ipairs(orderedSquad(entity, GetSquad(entity:getID()))) do
+                    local at = seenNow[mate.id]
+                    if at ~= nil and at >= diedAt - 90 then
+                        back[#back + 1] = mate
+                    end
+                end
+
+                for index, mate in ipairs(back) do
+                    entity:timer(3000 + (index - 1) * CALL_GAP_MS, function(e)
+                        if not e:inMogHouse() and not isSummoned(e, mate.id) then
+                            callMate(e, mate)
+                        end
+                    end)
+                end
+
+                print(string.format('[squad] %s is back on his feet: %d mate(s) coming back', entity:getName(), #back))
+                return
+            end
+
+            entity:timer(2000, poll)
+        end
+
+        dead:timer(4000, poll)
+    end)
+
     local seen = zoneOut[player:getID()]
     if not zoning or firstLogin or seen == nil then
         return result
@@ -5419,6 +5796,19 @@ if rawget(_G, '__SQUAD_TEST') ~= nil then
         switchesOf = switchesOf, withBit = withBit, switchSummary = switchSummary, switchForAction = switchForAction,
         chatFight = chatFight, chatWorld = chatWorld, chatHookPlayer = chatHookPlayer,
     }
+end
+
+-- 2026-11-19: any error inside a !squad command is written to the log with its traceback (the client only shows "A command error occurred")
+if commandObj ~= nil and commandObj.onTrigger ~= nil then
+    local innerTrigger = commandObj.onTrigger
+    commandObj.onTrigger = function(...)
+        local n, args = select('#', ...), { ... }
+        local okC, errC = xpcall(function() return innerTrigger(unpack(args, 1, n)) end, debug.traceback)
+        if not okC then
+            print('[squad] COMMAND ERROR: ' .. tostring(errC):gsub('[{}]', ''):gsub('\n', ' | '))
+            error(errC, 0)
+        end
+    end
 end
 
 return m
