@@ -688,8 +688,19 @@ auto campPullSpell(CTrustEntity* PTrust) -> Maybe<SpellID>
         return std::nullopt;
     }
 
+    // (2026-11-18, sparkiie) a Bard pulls with a song first: Carnage / Battlefield Elegy, then Foe Requiem VI..I
+    std::vector<uint16> order;
+    if (PTrust->GetMJob() == xi::Job::BRD)
+    {
+        order = { 422, 421, 373, 372, 371, 370, 369, 368 };
+    }
     // Dia, Dia II, Bio, Poison, Stone, Water, Aero, Fire, Blizzard, Thunder, Banish
     for (const uint16 n : { 23, 24, 230, 220, 159, 169, 154, 144, 149, 164, 28 })
+    {
+        order.push_back(n);
+    }
+
+    for (const uint16 n : order)
     {
         const auto id = static_cast<SpellID>(n);
         auto*      sc = PTrust->SpellContainer;
