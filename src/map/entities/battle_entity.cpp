@@ -269,7 +269,9 @@ void CBattleEntity::UpdateHealth()
     health.modhp = baseHPBonus + foodHPBonus;
     health.modmp = baseMPBonus + foodMPBonus;
 
-    if (dynamic_cast<const CCharEntity*>(this) != nullptr)
+    // (XI: Forever Offline, 2026-11-19, Meli) squad mates too: a -MP item on a job with no MP made modmp negative,
+    // and clamping mp to [0, -1] below is undefined (the mate showed -1 / 0 / -1 MP)
+    if (dynamic_cast<const CCharEntity*>(this) != nullptr || objtype == TYPE_TRUST)
     {
         health.modhp = std::clamp(health.modhp, 1, 9999);
         health.modmp = std::clamp(health.modmp, 0, 9999);

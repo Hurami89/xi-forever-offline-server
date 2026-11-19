@@ -470,11 +470,45 @@ end
 -- its own spot around the camp (so a few bots don't stand inside each other)
 local function campSpot(bot, st, c)
     if not st.campSpot or st.campSpot.zone ~= c.zone or st.campSpot.cx ~= c.x or st.campSpot.cz ~= c.z then
-        local a, r = math.random() * 2 * math.pi, 2 + math.random() * 2
-        st.campSpot = { zone = c.zone, cx = c.x, cz = c.z, x = c.x + math.cos(a) * r, y = c.y, z = c.z + math.sin(a) * r }
+        -- (2026-11-19, Impending Descent: still no rest at camp) a random spot could be inside a rock or off the
+        -- navmesh; the bot then walked at it for ever and never counted as there, so it never sat. Only walkable spots
+        -- now (else the camp spot itself), and campStuck() below settles a bot that can't get any closer.
+        local zone = bot:getZone()
+        local spot = nil
+        for _ = 1, 8 do
+            local a, r = math.random() * 2 * math.pi, 2 + math.random() * 2
+            local p = { x = c.x + math.cos(a) * r, y = c.y, z = c.z + math.sin(a) * r }
+            if not zone or not zone.isNavigablePoint or zone:isNavigablePoint(p) then
+                spot = p
+                break
+            end
+        end
+
+        spot = spot or { x = c.x, y = c.y, z = c.z }
+        st.campSpot = { zone = c.zone, cx = c.x, cz = c.z, x = spot.x, y = spot.y, z = spot.z }
+        st.campNear, st.campStuck = nil, 0
     end
 
     return st.campSpot
+end
+
+-- true once a bot walking to its camp spot stops getting closer (a few checks in a row): it takes where it stands
+local function campStuck(bot, st, d2)
+    if st.campNear and d2 >= st.campNear - 0.25 then
+        st.campStuck = (st.campStuck or 0) + 1
+    else
+        st.campStuck = 0
+    end
+
+    st.campNear = d2
+    if (st.campStuck or 0) >= 4 and d2 < 10 * 10 then
+        local bp = bot:getPos()
+        st.campSpot.x, st.campSpot.y, st.campSpot.z = bp.x, bp.y, bp.z
+        st.campNear, st.campStuck = nil, 0
+        return true
+    end
+
+    return false
 end
 
 -- the bot puller, once a second; true while it is busy with a pull
@@ -698,6 +732,13 @@ think = function(bot, token)
     -- the bot waits a tick instead of using a dead handle (that is what crashed the map server).
     if leader then
         leader = GetPlayerByName(leader:getName()) or nil
+        -- (2026-11-19, Impending Descent: a WHM came back from a party death as a BLM) between zones the lookup
+        -- finds nothing, and with no leader the bot ran its town life for that tick: subjob levelling, back to its
+        -- main job, job quests. A bot in your party just waits for you instead.
+        if leader == nil then
+            schedule(bot, token)
+            return
+        end
     end
 
     -- when it was last seen playing (bots_growth.lua: what it does while you are away is counted from here).
@@ -852,7 +893,8 @@ think = function(bot, token)
                 -- holding camp: back to its spot, then rest there when low (the camp rest switch)
                 local spot = campSpot(bot, st, camp)
                 local bp = bot:getPos()
-                if (bp.x - spot.x) ^ 2 + (bp.z - spot.z) ^ 2 > 2.5 * 2.5 then
+                local d2 = (bp.x - spot.x) ^ 2 + (bp.z - spot.z) ^ 2
+                if d2 > 2.5 * 2.5 and not campStuck(bot, st, d2) then
                     if st.resting then
                         st.resting = nil
                         BotHeal(id, false)
