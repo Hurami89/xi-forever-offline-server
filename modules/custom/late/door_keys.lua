@@ -174,4 +174,28 @@ m:addOverride('xi.zones.Garlaige_Citadel.Zone.onTriggerAreaEnter', function(play
     end)
 end)
 
+-- (2026-11-19, Yache, Tasou: the pouch did nothing) the era module weighted_stones_hint empties the three Banishing Gates'
+-- triggers (before 2012 the pouch could not open them). We give the pouch out, so with it the gate opens for you alone again,
+-- as in the core scripts: a short delay, open for 15 seconds, from either side.
+for _, gateName in ipairs({ '_5k0', '_5k9', '_5ki' }) do
+    m:addOverride('xi.zones.Garlaige_Citadel.npcs.' .. gateName .. '.onTrigger', function(player, npc)
+        if npc:getAnimation() ~= xi.animation.CLOSE_DOOR then
+            return
+        end
+
+        local ID = zones[xi.zone.GARLAIGE_CITADEL]
+        if player:hasKeyItem(xi.keyItem.POUCH_OF_WEIGHTED_STONES) then
+            if ID and ID.text and ID.text.THE_GATE_OPENS_FOR_YOU then
+                player:messageSpecial(ID.text.THE_GATE_OPENS_FOR_YOU, xi.keyItem.POUCH_OF_WEIGHTED_STONES)
+            end
+
+            npc:timer(1500, function(npcArg)
+                npcArg:openDoor(15)
+            end)
+        else
+            player:printToPlayer('The gate is shut fast. Four levers nearby must be held down together, or something heavy might do.', xi.msg.channel.SYSTEM_3)
+        end
+    end)
+end
+
 return m
