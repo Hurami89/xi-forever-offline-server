@@ -33,6 +33,7 @@
 #include "common/lua.h"
 #include "common/utils.h"
 
+#include "map/ability.h"
 #include "map/ai/ai_container.h"
 #include "map/ai/states/magic_state.h"
 #include "map/entities/char_entity.h"
@@ -1522,7 +1523,26 @@ class BotsModule : public CPPModule
                            { return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::Weaponskill, targetOf(target), wsId); });
 
         ::lua.set_function("BotAbility", [](uint32 charId, uint32 abilityId, const sol::object& target) -> bool
-                           { return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::JobAbility, targetOf(target), abilityId); });
+                           {
+                               // job profile lines say "target: self" for Provoke and the like (the squad's trust AI aims those
+                               // at its battle target by itself); a bot sent them at itself and the server refused, so WAR bots
+                               // never provoked (2026-11-18). An enemy-only ability goes to the monster it is fighting.
+                               CBaseEntity* PTarget = targetOf(target);
+                               if (CAbility* PAbility = ability::GetAbility(static_cast<uint16>(abilityId)))
+                               {
+                                   const uint16 valid = PAbility->getValidTarget();
+                                   if ((valid & TARGET_ENEMY) && !(valid & TARGET_SELF) && (!PTarget || PTarget->objtype != TYPE_MOB))
+                                   {
+                                       CCharEntity* PChar = charOf(botOf(charId));
+                                       PTarget = PChar ? PChar->GetBattleTarget() : nullptr;
+                                       if (!PTarget)
+                                       {
+                                           return false;
+                                       }
+                                   }
+                               }
+                               return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::JobAbility, PTarget, abilityId);
+                           });
 
         // A Blue Mage bot sets its blue magic (what the client's "Set Spells" menu does: 0x102): every set spell is
         // taken off, then the spells in `wanted` (blue spell ids, the bot's preference first) go into the free slots
