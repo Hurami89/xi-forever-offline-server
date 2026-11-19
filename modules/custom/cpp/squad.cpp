@@ -224,6 +224,27 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
                 }
             }
         }
+
+        // (2026-11-18, Egon/ChazDingle) a bow, gun, boomerang or throwing ammo: the mate's own ranged "weapon" only ever
+        // had the trust stand-in (no skill), so a camp puller never saw a ranged weapon and ran in to melee.
+        if (slot == 2 || slot == 3)
+        {
+            const auto* weapon = dynamic_cast<const CItemWeapon*>(item);
+            auto*       target = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[slot == 2 ? SLOT_RANGED : SLOT_AMMO]);
+            if (weapon != nullptr && target != nullptr && weapon->getSkillType() != xi::SkillType::None)
+            {
+                target->setSkillType(weapon->getSkillType());
+                if (weapon->getDamage() > 0)
+                {
+                    target->setDamage(weapon->getDamage());
+                }
+                if (weapon->getBaseDelay() > 0)
+                {
+                    target->setDelay(weapon->getBaseDelay());
+                    target->setBaseDelay(weapon->getBaseDelay());
+                }
+            }
+        }
     }
 
     // (2026-11-18) a second weapon in the sub slot: dual wield, as a player with the trait (NIN 10+ and the like:

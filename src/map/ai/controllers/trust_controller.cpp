@@ -715,15 +715,17 @@ auto campPullSpell(CTrustEntity* PTrust) -> Maybe<SpellID>
 
 auto hasRangedWeapon(const CTrustEntity* PTrust) -> bool
 {
+    // A squad mate's weapons are the trust's stand-ins (item id 0); squad.cpp copies the skill of the bow, gun or
+    // boomerang it wears onto them, so the skill is what tells (2026-11-18).
     const auto* ranged = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[SLOT_RANGED]);
-    if (ranged && ranged->getID() != 0 && (ranged->getSkillType() == xi::SkillType::Archery || ranged->getSkillType() == xi::SkillType::Marksmanship ||
-                                           ranged->getSkillType() == xi::SkillType::Throwing))
+    if (ranged && (ranged->getSkillType() == xi::SkillType::Archery || ranged->getSkillType() == xi::SkillType::Marksmanship ||
+                   ranged->getSkillType() == xi::SkillType::Throwing))
     {
         return true;
     }
 
     const auto* ammo = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[SLOT_AMMO]);
-    return ammo && ammo->getID() != 0 && ammo->isThrowing();
+    return ammo && ammo->getSkillType() == xi::SkillType::Throwing;
 }
 } // namespace
 
