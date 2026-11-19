@@ -567,7 +567,10 @@ void CEntityUpdatePacket::updateWith(CBaseEntity* PEntity, ENTITYUPDATE type, ui
     }
 
     // Slightly bigger packet to encompass both name and model on first spawn, and only for dynamic entities.
-    if (type == ENTITY_SPAWN && PEntity->isRenamed && PEntity->look.size == MODEL_EQUIPPED && PEntity->targid >= 0x700)
+    // XI: Forever Offline (2026-11-18, sparkiie): also for a later update that carries the look. The plain renamed layout
+    // below writes the name at 0x34, inside the 20-byte equipped look, so a squad mate whose look was re-sent (zoning,
+    // level ups, sync) showed random armor (an apron) or nothing; this layout keeps the look whole and the name after it.
+    if ((type == ENTITY_SPAWN || (updatemask & UPDATE_LOOK)) && PEntity->isRenamed && PEntity->look.size == MODEL_EQUIPPED && PEntity->targid >= 0x700)
     {
         this->setSize(0x56);
 
