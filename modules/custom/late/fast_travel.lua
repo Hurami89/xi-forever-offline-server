@@ -354,8 +354,14 @@ local function homepointTeleport(player, from, to)
         player:delGil(cost)
     end
 
-    player:setFreezeFlag(false)
-    player:setPos(target.pos[1], target.pos[2], target.pos[3], target.pos[4], target.zone)
+    -- (2026-11-18, Yumainai) the game's own window plays a warp effect before the jump; the text menu teleported
+    -- instantly. Play the Warp spell's animation (261) on the player, then move after it.
+    player:setFreezeFlag(true)
+    player:injectActionPacket(player:getID(), 4, 261, 0, 0, 0, 0, 0)
+    player:timer(2500, function(entity)
+        entity:setFreezeFlag(false)
+        entity:setPos(target.pos[1], target.pos[2], target.pos[3], target.pos[4], target.zone)
+    end)
 end
 
 local function homepointDestinations(player, origin, group)
@@ -517,10 +523,13 @@ end
 -- Zones whose era files keep the retail Home Point entries but the era text (Yumainai, 2026-11-17: the Metalworks
 -- crystals showed chocobo text, one did nothing; Qufim Island is the same) can't show the game's window, so their
 -- crystals use the text menu above.
+-- (2026-11-18) Back to the game's own window everywhere (the user: retail-like menus). A re-check found the era text
+-- and Home Point events in Metalworks and Qufim match each other (same event program and the same Home Point text
+-- lines as Bastok Mines), so the text menu is off; add a zone here again only if a crystal is shown to break.
 local TEXT_MENU_ZONES =
 {
-    [xi.zone.METALWORKS]   = true,
-    [xi.zone.QUFIM_ISLAND] = true,
+    -- [xi.zone.METALWORKS]   = true,
+    -- [xi.zone.QUFIM_ISLAND] = true,
 }
 
 if not USE_CUSTOM_HOMEPOINT_MENU then
