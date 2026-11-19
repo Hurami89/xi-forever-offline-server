@@ -1164,6 +1164,47 @@ class BotsModule : public CPPModule
         // which needs a query built at runtime, and the database layer now only accepts compile-time queries.
         // Every bot made since already lives in the new id range.
 
+        // (2026-11-18, Reika) a PLAYER account made after the bots (a dual box account, from the setup script or the
+        // game's own "create account") got the next id after the last bot, so it was loaded below as a bot and played
+        // while its owner was away. Bot accounts are named bot_<id>; anything else in the bot range moves below it.
+        if (auto rset = db::preparedStmt("SELECT id, login FROM accounts WHERE id >= ? AND login NOT LIKE 'bot\\_%' AND password <> '!bot-account-no-login!'", BotAccBase))
+        {
+            std::vector<uint32> misplaced;
+            while (rset->next())
+            {
+                misplaced.push_back(rset->get<uint32>("id"));
+            }
+
+            for (const uint32 oldId : misplaced)
+            {
+                uint32 newId = 1000;
+                if (auto top = db::preparedStmt("SELECT COALESCE(MAX(id), 999) AS m FROM accounts WHERE id < ?", BotAccBase); top && top->next())
+                {
+                    newId = std::max<uint32>(1000, top->get<uint32>("m") + 1);
+                }
+
+                // a copy of the account under the new id first (other tables point at accounts.id with foreign keys), then
+                // the rows that belong to it, then the old row (whatever still points at it goes with it: login tokens)
+                db::preparedStmt("DELETE FROM accounts_sessions WHERE accid = ?", oldId);
+                if (!db::preparedStmt("INSERT INTO accounts (id, login, password, current_email, registration_email, timecreate, timelastmodify, "
+                                      "content_ids, expansions, features, status, priv) SELECT ?, login, password, current_email, registration_email, "
+                                      "timecreate, timelastmodify, content_ids, expansions, features, status, priv FROM accounts WHERE id = ?",
+                                      newId, oldId))
+                {
+                    ShowWarningFmt("[bots] player account {} is in the bot id range and could not be moved", oldId);
+                    continue;
+                }
+                db::preparedStmt("UPDATE chars SET accid = ? WHERE accid = ?", newId, oldId);
+                db::preparedStmt("UPDATE accounts_friends SET accid = ? WHERE accid = ?", newId, oldId);
+                db::preparedStmt("UPDATE accounts_friends SET friend_accid = ? WHERE friend_accid = ?", newId, oldId);
+                db::preparedStmt("UPDATE accounts_messages SET accid = ? WHERE accid = ?", newId, oldId);
+                db::preparedStmt("UPDATE accounts_messages SET sender_accid = ? WHERE sender_accid = ?", newId, oldId);
+                db::preparedStmt("UPDATE accounts_banned SET accid = ? WHERE accid = ?", newId, oldId);
+                db::preparedStmt("DELETE FROM accounts WHERE id = ?", oldId);
+                ShowWarningFmt("[bots] player account {} was in the bot id range; moved to id {} (it is no longer played as a bot)", oldId, newId);
+            }
+        }
+
         // Every bot account/character this module ever made
         if (auto rset = db::preparedStmt("SELECT c.charid, c.accid, c.charname, c.pos_zone FROM chars c WHERE c.accid >= ?", BotAccBase))
         {

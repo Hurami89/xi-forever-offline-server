@@ -776,7 +776,8 @@ auto createCharacter(session_t& session, uint8* buf, lpkt_chr_info_sub2& charInf
         }
     }
 
-    const auto rset = db::preparedStmt("SELECT COALESCE(MAX(charid), 0) AS max_id FROM chars");
+    // (XI: Forever Offline, 2026-11-18) below the bot characters (16000000 up), so a new character never shares their id range
+    const auto rset = db::preparedStmt("SELECT COALESCE(MAX(charid), 0) AS max_id FROM chars WHERE charid < 16000000");
     if (!rset)
     {
         return -1;
