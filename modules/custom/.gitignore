@@ -10,6 +10,11 @@ lua/crowds_chat_ai.json
 lua/kit_paths.lua
 # written by the launcher from each player's greeting lines (personal)
 lua/squad_greetings_data.lua
+# each player's own squad Rule Sets (Gambits v2, squad_rulesets.lua reads it; personal)
+lua/squad_rulesets_data.lua
+# the in-game editor's save steps (gambits_squad.lua / squad_rulesets_store.lua; *.bak is above)
+lua/squad_rulesets_data.lua.tmp
+lua/squad_rulesets_data.lua.old
 # rewritten by the launcher on every launch from each player's settings
 lua/bots_config.lua
 lua/crowds_config.lua

@@ -44,6 +44,7 @@
 #include "map/autotranslate.h"
 #include "common/lua.h"
 #include "map/entities/char_entity.h"
+#include "map/merit.h" // Gambits v2 U13: the owner's merit unlocks (CMeritPoints::GetMerit)
 #include "map/entities/mob_entity.h"
 #include "map/entities/trust_entity.h"
 #include "map/item_container.h"
@@ -1313,10 +1314,68 @@ auto isTwoHourWord(const std::string& name) -> bool
            name == "1hr" || name == "1_hr" || name == "sp" || name == "sp1" || name == "sp_ability";
 }
 
+// (Gambits v2 U13) How many upgrades a player has in a merit, whatever job they have on now: the count the server's own
+// check uses (charutils::CheckAbilityAddtype), not CMeritPoints::GetMeritValue (that one is 0 unless the merit's job is
+// the current main job at 75+). 0 for no player, no merit data or an unknown merit id (GetMerit returns nullptr then).
+auto ownerMeritCount(CCharEntity* PChar, const uint16 meritId) -> uint8
+{
+    if (PChar == nullptr || PChar->PMeritPoints == nullptr || meritId == 0)
+    {
+        return 0;
+    }
+
+    const Merit_t* PMerit = PChar->PMeritPoints->GetMerit(static_cast<xi::Merit>(meritId));
+    return PMerit != nullptr ? PMerit->count : 0;
+}
+
+// Lua: SquadOwnerMerit(player, meritId) -> upgrades (squad_ability_rules.lua: merit abilities of the player's squad mates)
+// (int32, not uint8: sol2 must hand Lua a number, never a one-character string)
+auto squadOwnerMerit(CLuaBaseEntity* player, const uint16 meritId) -> int32
+{
+    auto* PChar = player != nullptr ? dynamic_cast<CCharEntity*>(player->GetBaseEntity()) : nullptr;
+    return static_cast<int32>(ownerMeritCount(PChar, meritId));
+}
+
+// (Gambits v2 U13) A squad mate may use a job ability only as a player could (charutils::BuildingCharAbilityTable and
+// CheckAbilityAddtype; the trust engine checks none of this for a trust): its main job at the level, or its sub job at the
+// sub level but never a level-0 (two-hour) or ADDTYPE_MAIN_ONLY ability; never a pet ability or the pet command menu;
+// and a merit ability only when the mate's OWNER (its master) has that merit unlocked. The same rules as
+// squad_ability_rules.lua. Other player conditions (learned rolls, pets present, Arts) are not applied here.
+auto squadMateMayUse(CTrustEntity* PTrust, CAbility* PAbility) -> bool
+{
+    if (PTrust == nullptr || PAbility == nullptr || PAbility->getID() >= ABILITY_HEALING_RUBY || PAbility->getID() == ABILITY_PET_COMMANDS)
+    {
+        return false;
+    }
+
+    const xi::Job job     = PAbility->getJob();
+    const uint8   level   = PAbility->getLevel();
+    const uint16  addType = PAbility->getAddType();
+    const bool    asMain  = PTrust->GetMJob() == job && PTrust->GetMLevel() >= level;
+    const bool    asSub   = PTrust->GetSJob() == job && PTrust->GetSLevel() >= level && level != 0 && !(addType & ADDTYPE_MAIN_ONLY);
+    if (!asMain && !asSub)
+    {
+        return false;
+    }
+
+    if (addType & ADDTYPE_MERIT)
+    {
+        return ownerMeritCount(dynamic_cast<CCharEntity*>(PTrust->PMaster), PAbility->getMeritModID()) > 0;
+    }
+
+    return true;
+}
+
 // Asks one squad mate to use a job ability: self abilities on themselves, enemy abilities on your enemy, the rest on you
 auto trySquadAbility(CCharEntity* PChar, CTrustEntity* PTrust, CAbility* PAbility) -> SpellCastResult
 {
     if (PAbility == nullptr || !ability::CanLearnAbility(PTrust, PAbility->getID()))
+    {
+        return SpellCastResult::Unknown;
+    }
+
+    // (Gambits v2 U13) the player rules: main-job-only and two-hour abilities, pet abilities, the owner's merits
+    if (!squadMateMayUse(PTrust, PAbility))
     {
         return SpellCastResult::Unknown;
     }
@@ -1904,6 +1963,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("SquadNewSpells", squadNewSpells);
         ::lua.set_function("UnlockSquadItem", unlockSquadItem);
         ::lua.set_function("GetSquadUnlocks", getSquadUnlocks);
+        ::lua.set_function("SquadOwnerMerit", squadOwnerMerit); // Gambits v2 U13
     }
 };
 
