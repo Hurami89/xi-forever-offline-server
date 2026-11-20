@@ -5400,6 +5400,26 @@ local function squadSpawn(mob)
             xi.trust.movementType.LONG_RANGE })[rangeChoice])
     end
 
+    -- (2026-11-20, Badtouch) a mate you set to mid or long range with a bow, gun or throwing weapon shoots with it.
+    -- Only Ranger and Corsair had a ranged-attack rule, so a Thief with a bow at range just stood there. The weapon
+    -- is put on after this runs (squad.cpp applyEquipment), so this looks a moment later. Not for a chosen Rule Set
+    -- (it has its own rules) or with the Ranged switch off; instruments never count.
+    local ownJob = mob:getMainJob()
+    if (rangeChoice == 2 or rangeChoice == 3) and customSet == nil and ownJob ~= xi.job.RNG and ownJob ~= xi.job.COR
+        and hasBit(switches, SW_BIT.ranged)
+        and (role == 'auto' or ROLE_KEEPS.ranged[role] ~= false) then
+        local shootCond = cond(ai.c.ALWAYS, 0)
+        mob:timer(1500, function(m)
+            if m == nil or not m:isAlive() then
+                return
+            end
+            local okSk, skill = pcall(function() return m:getWeaponSkillType(xi.slot.RANGED) end)
+            if okSk and (skill == xi.skill.ARCHERY or skill == xi.skill.MARKSMANSHIP or skill == xi.skill.THROWING) then
+                m:addGambit(ai.t.TARGET, shootCond, { ai.r.RATTACK, 0, 0 }, 10)
+            end
+        end)
+    end
+
     activeBehavior = nil
     activeSwitches = nil
     return true
