@@ -2774,6 +2774,18 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         return
     end
 
+    -- (Gambits v2, milestone 1) !squad ruleset [slot] [number|off]: a Rule Set per mate and main job (squad_rulesets.lua)
+    if action == 'ruleset' or action == 'rulesets' then
+        local okRs, rulesets = pcall(require, 'modules/custom/lua/squad_rulesets')
+        if okRs and type(rulesets) == 'table' then
+            rulesets.command(player, squad, arg1, arg2, { say = say, findMate = findMate, jobNames = jobNames })
+        else
+            say(player, 'Rule Sets are not available: ' .. tostring(rulesets))
+        end
+
+        return
+    end
+
     -- what each mate out with you has eaten, and how long it lasts
     if action == 'food' then
         if not food.enabled then
@@ -5265,19 +5277,33 @@ local function squadSpawn(mob)
     activeBehavior = { role = role, mode = mode }
     activeSwitches = switches
 
-    profileLevel = mob:getMainLvl()
-    runPart(mob, mob:getMainJob(), 'ja', false)
-    runPart(mob, mob:getMainJob(), 'magic', false)
+    -- (Gambits v2, milestone 1) a Rule Set chosen for this mate and main job (squad_rulesets.lua) replaces the job
+    -- rules of the main AND the sub job, in its own order, untouched by role/mode (the on/off switches still apply).
+    -- No set chosen, or the module missing: everything below runs exactly as before.
+    local okRs, rulesets = pcall(require, 'modules/custom/lua/squad_rulesets')
+    local customSet = okRs and type(rulesets) == 'table' and rulesets.forMob(mob) or nil
+    if customSet ~= nil then
+        activeBehavior = nil
+        profileLevel = mob:getMainLvl()
+        applyRules(mob, customSet.rules, false)
+        if main.stance then
+            main.stance(mob)
+        end
+    else
+        profileLevel = mob:getMainLvl()
+        runPart(mob, mob:getMainJob(), 'ja', false)
+        runPart(mob, mob:getMainJob(), 'magic', false)
 
-    if main.stance then
-        main.stance(mob)
-    end
+        if main.stance then
+            main.stance(mob)
+        end
 
-    local sub = jobs[mob:getSubJob()]
-    if sub ~= nil then
-        profileLevel = mob:getSubLvl()
-        runPart(mob, mob:getSubJob(), 'ja', true)
-        runPart(mob, mob:getSubJob(), 'magic', true)
+        local sub = jobs[mob:getSubJob()]
+        if sub ~= nil then
+            profileLevel = mob:getSubLvl()
+            runPart(mob, mob:getSubJob(), 'ja', true)
+            runPart(mob, mob:getSubJob(), 'magic', true)
+        end
     end
 
     -- Melee off: the mate swings at nothing and, if its job does not already keep it at a distance, stands at casting range.

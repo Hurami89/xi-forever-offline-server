@@ -1,0 +1,665 @@
+-----------------------------------
+-- Gambits v2, milestone 1: Rule Sets for individual squad mates (XI: Forever Offline).
+--
+-- A Rule Set is an ordered list of rules for one main job, in the same rule shape the launcher's job-rule editor
+-- already uses (squad.lua "Editable job rules"):
+--   { id = 'r1', on = true, target = 'PARTY', cond = { 'HPP_LT', 40 }, cond2 = nil, action = { 'family', 'CURE' },
+--     retry = nil, level = nil }
+-- A player chooses one set per squad mate and main job with   !squad ruleset <slot> <number|off>
+-- (stored on the player as the char vars SQUAD_RS_<mate id>_<job id> = the set's number, 0 = none, the default, and
+-- SQUAD_RSH_<mate id>_<job id> = a check number made from the set's id, so a number later reused by another set is noticed).
+-- When a mate is called with a set chosen for its main job, squad.lua applies that set's rules INSTEAD of the job's
+-- built-in or launcher-edited rules (main and sub job), without the role/mode filter. The on/off switches still apply.
+-- Without a chosen set nothing changes. Built-in job rules are never modified. Bots (xi.squad.profileFor) do not use sets.
+--
+-- The sets live in modules/custom/lua/squad_rulesets_data.lua (no file = no sets), re-read every time a mate is called,
+-- so a changed file applies with "Apply now" (!squad reapply), without restarting the server:
+--   return { format = 'xifo-ruleset-store', version = 1, sets = { { format = 'xifo-ruleset', version = 1, num = 1,
+--            id = 'custom.whm.cure-basics', name = 'WHM - Cure basics', job = 'WHM', rules = { ... } } } }
+-- A set with anything wrong in it is left out (and logged). When the mate is called, a rule it cannot use (a spell or
+-- ability the server does not know, above its level, or a job ability of neither its main nor its sub job) is left out
+-- for that call; if that leaves no rule at all, the mate uses its normal job rules and the player is told.
+-- This file defines no globals; squad.lua loads it with require (squad.lua is at Lua's 200-local limit).
+--
+-- M1.1 (2026-11-19): condition arguments are checked per condition (types and ranges from gambits_container.cpp
+-- CheckTrigger), conditions the engine handles unsafely are refused, the choice is protected by the id check number,
+-- unusable sets fall back to the job rules with a message, and job abilities are checked against the main AND sub job
+-- and their levels (squad_ja_jobs_data.lua, made from sql/abilities.sql). That check fails closed: without the table a
+-- Rule Set's job abilities are left out (its other rules still apply).
+-- U13 (2026-11-19): the job ability rules moved to squad_ability_rules.lua, shared with the built-in and launcher-edited
+-- job rules (squad.lua addGambit), and now include merit abilities (the owner's merit must be unlocked).
+-----------------------------------
+local R = {}
+
+R.STORE_FORMAT  = 'xifo-ruleset-store'
+R.SET_FORMAT    = 'xifo-ruleset'
+R.VERSION       = 1
+R.DATA_MODULE   = 'modules/custom/lua/squad_rulesets_data'
+R.MAX_RULES     = 32
+R.MAX_NUM       = 9999
+R.VAR_PREFIX    = 'SQUAD_RS_'
+R.HASH_PREFIX   = 'SQUAD_RSH_'
+
+-- FFXI job ids (the same numbers squad.lua's jobIds use)
+R.JOB_IDS =
+{
+    WAR = 1, MNK = 2, WHM = 3, BLM = 4, RDM = 5, THF = 6, PLD = 7, DRK = 8, BST = 9, BRD = 10, RNG = 11, SAM = 12,
+    NIN = 13, DRG = 14, SMN = 15, BLU = 16, COR = 17, PUP = 18,
+}
+
+-- What squad.lua's ruleAction understands, and whether the action needs a name
+local ACTION_KINDS = { spell = true, family = true, ja = true, ranged = false, nuke = false, burst = false }
+
+-- The argument each condition takes, as gambits_container.cpp CheckTrigger reads it (condition_arg is a uint32, so a
+-- negative number would wrap around; the TP and HP checks cast it to int16):
+--   'none'                 the engine ignores the argument (it must be left out)
+--   { low, high }          a whole number in that range ({ main = n, sub = n } also allowed, as squad.lua's ruleArg reads it)
+--   'effect'               a status effect name (xi.effect)           STATUS / NOT_STATUS
+--   'flag'                 { flag = NAME } (xi.effectFlag)            STATUS_FLAG
+--   'ecosystem'            { ecosystem = NAME } (xi.ecosystem)        IS_ECOSYSTEM
+-- A condition not listed here is not offered for Rule Sets (yet), so it fails clearly instead of being guessed at.
+R.CONDITIONS =
+{
+    ALWAYS = 'none',
+    HPP_LT = { 0, 100 }, HPP_GTE = { 0, 100 }, MPP_LT = { 0, 100 }, MPP_GTE = { 0, 100 },  -- percent of max HP/MP
+    TP_LT = { 0, 3000 }, TP_GTE = { 0, 3000 },                                              -- TP
+    LVL_LT = { 1, 99 }, LVL_GTE = { 1, 99 },                                                -- the target's main level
+    HP_MISSING = { 1, 9999 },                                                               -- max HP minus HP, in HP
+    RANDOM = { 1, 100 },                                                                    -- percent chance (100 = always)
+    TIMER = { 0, 3600 },                                                                    -- seconds between hits (0 = always)
+    STATUS = 'effect', NOT_STATUS = 'effect',
+    STATUS_FLAG = 'flag',
+    IS_ECOSYSTEM = 'ecosystem',
+    HAS_TOP_ENMITY = 'none', NOT_HAS_TOP_ENMITY = 'none', PT_HAS_TANK = 'none', NOT_PT_HAS_TANK = 'none',
+    SC_AVAILABLE = 'none', NOT_SC_AVAILABLE = 'none', MB_AVAILABLE = 'none', LUNGE_MB_AVAILABLE = 'none',
+    READYING_WS = 'none', READYING_MS = 'none', READYING_JA = 'none',
+    CASTING_MA = 'none', CASTING_DEBUFF = 'none', CASTING_ELEMENT_MA = 'none', CAST_ELE_MA_SELF = 'none',
+    CASTING_ELE_MA_AOE = 'none', NEED_ELE_BAREFFECT = 'none',
+    NO_SAMBA = 'none', NO_STORM = 'none', NO_MAX_RUNE = 'none', HAS_RUNES = 'none',
+}
+
+-- Conditions the engine has but that a Rule Set must not use, and why (gambits_container.cpp CheckTrigger)
+R.REFUSED_CONDITIONS =
+{
+    JA_ON_COOLDOWN  = 'the engine tests the ability\'s fixed recast time, not whether it is on cooldown, and an unknown ability id would crash the server',
+    SUB_ANIMATION   = 'it compares an internal animation number, which has no meaning in a rule',
+    VAL_URIEL_CHECK = 'it is a special check for one trust and assumes its master is in battle',
+}
+
+local lastProblems = nil -- the problem text printed last, so an unchanged broken file is not logged on every call
+
+local function isName(text)
+    return type(text) == 'string' and string.match(text, '^[A-Z][A-Z0-9_]*$') ~= nil
+end
+
+local function isWhole(value, low, high)
+    return type(value) == 'number' and value == math.floor(value) and value >= low and value <= high
+end
+
+-- Looks a name up in one of the server's enum tables (xi.effect, ...). nil = the table is not there (no check possible).
+local function known(tableName, name)
+    local t = type(xi) == 'table' and rawget(xi, tableName) or nil
+    if type(t) ~= 'table' then
+        return nil
+    end
+
+    return t[name] ~= nil
+end
+
+local function rangeProblem(name, value, spec)
+    if not isWhole(value, spec[1], spec[2]) then
+        return string.format('%s needs a whole number %d-%d', name, spec[1], spec[2])
+    end
+end
+
+-- A condition: { NAME, argument }. Returns a problem text or nil.
+local function conditionProblem(cond)
+    if type(cond) ~= 'table' or not isName(cond[1]) then
+        return 'the condition must be { NAME, argument }'
+    end
+
+    local name, arg = cond[1], cond[2]
+    if R.REFUSED_CONDITIONS[name] then
+        return name .. ' cannot be used in a Rule Set: ' .. R.REFUSED_CONDITIONS[name]
+    end
+
+    if ai ~= nil and ai.c ~= nil and ai.c[name] == nil then
+        return 'unknown condition ' .. name
+    end
+
+    local spec = R.CONDITIONS[name]
+    if spec == nil then
+        return name .. ' is not supported in Rule Sets yet'
+    end
+
+    if spec == 'none' then
+        if arg ~= nil and arg ~= 0 then
+            return name .. ' takes no value'
+        end
+
+        return nil
+    end
+
+    if type(spec) == 'table' then
+        if type(arg) == 'table' and (arg.main ~= nil or arg.sub ~= nil) and arg.flag == nil and arg.ecosystem == nil then
+            return (arg.main ~= nil and rangeProblem(name .. ' main', arg.main, spec))
+                or (arg.sub ~= nil and rangeProblem(name .. ' sub', arg.sub, spec)) or nil
+        end
+
+        return rangeProblem(name, arg, spec)
+    end
+
+    if spec == 'effect' then
+        if not isName(arg) then
+            return name .. ' needs a status effect name like HASTE'
+        end
+
+        if known('effect', arg) == false then
+            return 'unknown status effect ' .. arg
+        end
+    elseif spec == 'flag' then
+        if type(arg) ~= 'table' or not isName(arg.flag) then
+            return name .. ' needs { flag = NAME }'
+        end
+
+        if known('effectFlag', arg.flag) == false then
+            return 'unknown effect flag ' .. arg.flag
+        end
+    elseif spec == 'ecosystem' then
+        if type(arg) ~= 'table' or not isName(arg.ecosystem) then
+            return name .. ' needs { ecosystem = NAME }'
+        end
+
+        if known('ecosystem', arg.ecosystem) == false then
+            return 'unknown ecosystem ' .. arg.ecosystem
+        end
+    end
+
+    return nil
+end
+
+-- ---------------------------------------------------------------- job abilities: shared rules (Gambits v2 U13)
+-- Which job abilities a squad mate may use is decided in ONE place, squad_ability_rules.lua, for the built-in, the
+-- launcher-edited and the Rule Set rules alike: main/sub job and level, two-hours and main-job-only abilities never
+-- from the sub job, no pet abilities, and merit abilities only with the merit unlocked by the owner. It fails closed.
+-- Here it is used to leave unusable rules out when the mate is called (so the fallback to the job rules still works),
+-- and to refuse, at load, abilities no squad mate could ever use (no job, pet abilities).
+local function abilityRules()
+    local ok, rules = pcall(require, 'modules/custom/lua/squad_ability_rules')
+    if ok and type(rules) == 'table' then
+        return rules
+    end
+
+    return nil
+end
+
+-- Forgets the job ability table so the next check reads it again (after it was regenerated; also used by the tests)
+function R.reloadJaTable()
+    local rules = abilityRules()
+    if rules then
+        rules.reload()
+    end
+end
+
+-- Returns info, id:  info = { job, level, sp, mainOnly, merit, pet } | false (no valid row for it) | nil (no table, or
+-- the shared rules are missing)   id = the ability id from xi.ja, or nil for a name the server does not know
+function R.jaInfo(name)
+    local rules = abilityRules()
+    local jaIds = type(xi) == 'table' and rawget(xi, 'ja') or nil
+    local id = type(jaIds) == 'table' and jaIds[name] or nil
+    if rules == nil or id == nil then
+        return nil, id
+    end
+
+    return rules.info(id), id
+end
+
+-- Problems with a job ability action that do not depend on the mate (an empty list = fine)
+local function jaProblem(name)
+    local info, id = R.jaInfo(name)
+    if id == nil then
+        return nil -- unknown name: left out when the mate is called, as squad.lua always did (and logged then)
+    end
+
+    -- no table, or no valid row (an incomplete table): the set stays usable, and this rule is left out when the mate is
+    -- called (R.unusableReason), so the set's other rules still apply
+    if info and info.job == 0 then
+        return 'job ability ' .. name .. ' belongs to no job'
+    elseif info and info.pet then
+        return name .. ' is a pet ability or the pet command menu, which a squad mate does not use itself'
+    end
+
+    return nil
+end
+
+-- Problems with one rule (an empty list = fine)
+function R.ruleProblems(rule)
+    local out = {}
+    if type(rule) ~= 'table' then
+        return { 'not a rule' }
+    end
+
+    if rule.id ~= nil and (type(rule.id) ~= 'string' or not string.match(rule.id, '^[%w%._%-]+$')) then
+        out[#out + 1] = 'id must be letters, digits, dots, dashes or underscores'
+    end
+
+    if rule.on ~= nil and type(rule.on) ~= 'boolean' then
+        out[#out + 1] = 'on must be true or false'
+    end
+
+    if not isName(rule.target) then
+        out[#out + 1] = 'target must be a name like PARTY'
+    elseif ai ~= nil and ai.t ~= nil and ai.t[rule.target] == nil then
+        out[#out + 1] = 'unknown target ' .. rule.target
+    end
+
+    local problem = conditionProblem(rule.cond)
+    if problem then
+        out[#out + 1] = 'cond: ' .. problem
+    end
+
+    if rule.cond2 ~= nil then
+        problem = conditionProblem(rule.cond2)
+        if problem then
+            out[#out + 1] = 'cond2: ' .. problem
+        end
+    end
+
+    local action = rule.action
+    local named = type(action) == 'table' and ACTION_KINDS[action[1]]
+    if named == nil then
+        out[#out + 1] = 'action must be { spell|family|ja, NAME } or { ranged|nuke|burst }'
+    elseif named and not isName(action[2]) then
+        out[#out + 1] = 'action ' .. action[1] .. ' needs a NAME'
+    elseif action[1] == 'ja' then
+        problem = jaProblem(action[2])
+        if problem then
+            out[#out + 1] = problem
+        end
+    end
+
+    if rule.retry ~= nil and not isWhole(rule.retry, 0, 3600) then
+        out[#out + 1] = 'retry must be a whole number of seconds, 0-3600'
+    end
+
+    if rule.level ~= nil and not isWhole(rule.level, 0, 75) then
+        out[#out + 1] = 'level must be a whole number, 0-75'
+    end
+
+    return out
+end
+
+-- Problems with one set (an empty list = fine)
+function R.setProblems(set)
+    if type(set) ~= 'table' then
+        return { 'not a table' }
+    end
+
+    local out = {}
+    if set.format ~= R.SET_FORMAT or set.version ~= R.VERSION then
+        out[#out + 1] = string.format("format must be '%s' version %d", R.SET_FORMAT, R.VERSION)
+    end
+
+    if not isWhole(set.num, 1, R.MAX_NUM) then
+        out[#out + 1] = 'num must be a whole number, 1-' .. R.MAX_NUM
+    end
+
+    if type(set.id) ~= 'string' or not string.match(set.id, '^[%w%._%-]+$') then
+        out[#out + 1] = 'id must be letters, digits, dots, dashes or underscores'
+    end
+
+    if type(set.name) ~= 'string' or set.name == '' then
+        out[#out + 1] = 'name is missing'
+    end
+
+    if R.JOB_IDS[set.job] == nil then
+        out[#out + 1] = 'job must be a main job like WHM'
+    end
+
+    if set.readonly ~= nil and type(set.readonly) ~= 'boolean' then
+        out[#out + 1] = 'readonly must be true or false'
+    end
+
+    if type(set.rules) ~= 'table' or #set.rules == 0 then
+        out[#out + 1] = 'rules must list at least one rule'
+    elseif #set.rules > R.MAX_RULES then
+        out[#out + 1] = 'at most ' .. R.MAX_RULES .. ' rules'
+    else
+        local seen, enabled = {}, 0
+        for i, rule in ipairs(set.rules) do
+            for _, problem in ipairs(R.ruleProblems(rule)) do
+                out[#out + 1] = string.format('rule %d: %s', i, problem)
+            end
+
+            if type(rule) == 'table' then
+                if rule.id ~= nil then
+                    if seen[rule.id] then
+                        out[#out + 1] = string.format('rule %d: id %s is used twice', i, tostring(rule.id))
+                    end
+
+                    seen[rule.id] = true
+                end
+
+                if rule.on ~= false then
+                    enabled = enabled + 1
+                end
+            end
+        end
+
+        if enabled == 0 then
+            out[#out + 1] = 'no rule is switched on'
+        end
+    end
+
+    return out
+end
+
+-- Reads the store again (the file may have changed). Returns { byNum = {}, byId = {}, list = {}, problems = {} }.
+function R.load()
+    local store = { byNum = {}, byId = {}, list = {}, problems = {} }
+    package.loaded[R.DATA_MODULE] = nil
+    local ok, data = pcall(require, R.DATA_MODULE)
+    package.loaded[R.DATA_MODULE] = nil
+
+    if not ok then
+        if not string.find(tostring(data), 'not found', 1, true) then
+            store.problems[#store.problems + 1] = 'squad_rulesets_data.lua could not be read: ' .. tostring(data)
+        end
+    elseif type(data) ~= 'table' or data.format ~= R.STORE_FORMAT or data.version ~= R.VERSION or type(data.sets) ~= 'table' then
+        store.problems[#store.problems + 1] = string.format("squad_rulesets_data.lua must return { format = '%s', version = %d, sets = { ... } }",
+            R.STORE_FORMAT, R.VERSION)
+    else
+        for index, set in ipairs(data.sets) do
+            local problems = R.setProblems(set)
+            if #problems == 0 and store.byNum[set.num] ~= nil then
+                problems[#problems + 1] = 'num ' .. set.num .. ' is used by another set'
+            end
+
+            if #problems == 0 and store.byId[set.id] ~= nil then
+                problems[#problems + 1] = 'id ' .. set.id .. ' is used by another set'
+            end
+
+            if #problems == 0 then
+                store.byNum[set.num], store.byId[set.id] = set, set
+                store.list[#store.list + 1] = set
+            else
+                store.problems[#store.problems + 1] = string.format('set %d (%s): %s', index,
+                    type(set) == 'table' and tostring(set.id) or '?', table.concat(problems, '; '))
+            end
+        end
+    end
+
+    local text = table.concat(store.problems, '\n')
+    if text ~= '' and text ~= lastProblems then
+        print('[squad] Rule Sets: ' .. string.gsub(text, '\n', '\n[squad] Rule Sets: '))
+    end
+
+    lastProblems = text
+    return store
+end
+
+-- ---------------------------------------------------------------- selection (per squad mate and main job)
+function R.varName(mateId, jobId)
+    return string.format('%s%d_%d', R.VAR_PREFIX, mateId, jobId)
+end
+
+function R.hashVarName(mateId, jobId)
+    return string.format('%s%d_%d', R.HASH_PREFIX, mateId, jobId)
+end
+
+-- The check number of a set id: 1 .. 2^31-2, the same in LuaJIT and Lua 5.4 (fits a char var, which is int(11))
+function R.idHash(id)
+    local h = 7
+    for i = 1, #id do
+        h = (h * 31 + string.byte(id, i)) % 2147483647
+    end
+
+    return h == 0 and 1 or h
+end
+
+function R.selectedNum(player, mateId, jobId)
+    return tonumber(player:getCharVar(R.varName(mateId, jobId))) or 0
+end
+
+-- Stores the choice; a set (table) also stores its id check number, nil/0 clears both
+function R.select(player, mateId, jobId, set)
+    local num = type(set) == 'table' and set.num or set or 0
+    player:setCharVar(R.varName(mateId, jobId), num)
+    player:setCharVar(R.hashVarName(mateId, jobId), type(set) == 'table' and R.idHash(set.id) or 0)
+end
+
+-- The set chosen for this mate and job: returns set, nil  or  nil, reason  (reason nil = nothing chosen).
+-- The number finds the set; the id check number (when stored) must match, so a reused number is never followed. A set
+-- that only got a new number is still found by its id. A choice without a check number (made before M1.1) uses the number.
+function R.resolve(player, mateId, jobId, store)
+    if player == nil or mateId == nil or mateId == 0 or jobId == nil then
+        return nil, nil
+    end
+
+    local num = R.selectedNum(player, mateId, jobId)
+    if num <= 0 then
+        return nil, nil
+    end
+
+    store = store or R.load()
+    local hash = tonumber(player:getCharVar(R.hashVarName(mateId, jobId))) or 0
+    local set = store.byNum[num]
+    if set ~= nil and R.JOB_IDS[set.job] == jobId and (hash == 0 or R.idHash(set.id) == hash) then
+        return set, nil
+    end
+
+    if hash ~= 0 then
+        local found = {}
+        for _, other in ipairs(store.list) do
+            if R.JOB_IDS[other.job] == jobId and R.idHash(other.id) == hash then
+                found[#found + 1] = other
+            end
+        end
+
+        if #found == 1 then
+            print(string.format('[squad] Rule Sets: mate %d: set %s now has number %d (was %d); following it by its id',
+                mateId, found[1].id, found[1].num, num))
+            return found[1], nil
+        end
+    end
+
+    local reason = (set ~= nil and R.JOB_IDS[set.job] == jobId) and 'replaced' or 'gone'
+    print(string.format('[squad] Rule Sets: mate %d has set %d chosen for job %d, but that set is %s; its job rules are used',
+        mateId, num, jobId, reason == 'replaced' and 'now a different set' or 'not there or not valid'))
+    return nil, reason
+end
+
+-- Kept for M1 callers: the chosen set or nil
+function R.selectedSet(player, mateId, jobId, store)
+    local set = R.resolve(player, mateId, jobId, store)
+    return set
+end
+
+-- ---------------------------------------------------------------- what a mate can use when it is called
+-- Why one rule cannot be used by this mate now, or nil. Mirrors what squad.lua's applyRules/ruleAction would drop
+-- (off, above the level, unknown names), plus the job ability check. On/off SWITCHES are deliberately not looked at:
+-- turning magic off is the player's choice and must not bring the job rules back.
+function R.unusableReason(rule, m)
+    if rule.on == false then
+        return 'off'
+    end
+
+    if (rule.level or 0) > m.level then
+        return string.format('needs level %d', rule.level)
+    end
+
+    local action = rule.action
+    local kind, name = action[1], action[2]
+    -- Spells: only the NAME is checked here. A known spell is not guaranteed to be castable by this mate at its level
+    -- (or from its sub job); that is left to the engine (spell::CanUseSpell in gambits_container.cpp), as for job rules.
+    local magic = type(xi) == 'table' and rawget(xi, 'magic') or nil
+    if kind == 'spell' and magic and type(magic.spell) == 'table' and magic.spell[name] == nil then
+        return 'unknown spell ' .. name
+    elseif kind == 'family' and magic and type(magic.spellFamily) == 'table' and magic.spellFamily[name] == nil then
+        return 'unknown spell family ' .. name
+    elseif kind == 'ja' then
+        -- the shared rules (squad_ability_rules.lua), the same squad.lua addGambit applies; fail closed without them
+        local rules = abilityRules()
+        local id = rules and rules.idOf(name) or nil
+        if rules == nil then
+            return name .. ': the job ability rules (squad_ability_rules.lua) are not available'
+        elseif id == nil then
+            return 'unknown job ability ' .. name
+        end
+
+        return rules.reason(m, id, name)
+    end
+
+    return nil
+end
+
+-- The rules of a set this mate can use now: usable, dropped ({ index, reason })
+function R.usableRules(set, m)
+    local usable, dropped = {}, {}
+    for i, rule in ipairs(set.rules) do
+        local reason = R.unusableReason(rule, m)
+        if reason == nil then
+            usable[#usable + 1] = rule
+        elseif reason ~= 'off' then
+            dropped[#dropped + 1] = { i, reason }
+        end
+    end
+
+    return usable, dropped
+end
+
+local function tell(master, text)
+    if master ~= nil and master.printToPlayer ~= nil then
+        master:printToPlayer(text)
+    end
+end
+
+-- squad.lua calls this while a mate spawns. Returns the set to apply (with only the usable rules) or nil for the
+-- mate's normal job rules.
+function R.forMob(mob)
+    local master = mob:getMaster()
+    local mateId = mob:getLocalVar('SQUAD_ID')
+    if master == nil or mateId == 0 then
+        return nil
+    end
+
+    local jobId = mob:getMainJob()
+    local set, reason = R.resolve(master, mateId, jobId)
+    if set == nil then
+        if reason ~= nil then
+            tell(master, string.format('Squad: the Rule Set chosen for your %s squad mate is %s, so it uses its job rules. See !squad ruleset.',
+                R.jobName(jobId), reason == 'replaced' and 'now a different set' or 'no longer usable'))
+        end
+
+        return nil
+    end
+
+    -- owner = the player whose merits count for merit abilities (U13)
+    local m = { job = jobId, level = mob:getMainLvl(), subJob = mob:getSubJob() or 0, subLevel = mob:getSubLvl() or 0,
+                owner = master }
+    local usable, dropped = R.usableRules(set, m)
+    for _, d in ipairs(dropped) do
+        print(string.format('[squad] Rule Sets: mate %d, set %s rule %d left out this call: %s', mateId, set.id, d[1], d[2]))
+    end
+
+    if #usable == 0 then
+        print(string.format('[squad] Rule Sets: mate %d, set %s has no rule it can use; its job rules are used', mateId, set.id))
+        tell(master, string.format('Squad: Rule Set %d (%s) has no rule your %s squad mate can use at level %d, so it uses its job rules.',
+            set.num, set.name, R.jobName(jobId), m.level))
+        return nil
+    end
+
+    if #dropped == 0 then
+        return set
+    end
+
+    local copy = {}
+    for k, v in pairs(set) do
+        copy[k] = v
+    end
+
+    copy.rules = usable
+    return copy
+end
+
+function R.jobName(jobId)
+    for name, id in pairs(R.JOB_IDS) do
+        if id == jobId then
+            return name
+        end
+    end
+
+    return tostring(jobId)
+end
+
+-- ---------------------------------------------------------------- !squad ruleset [slot] [number|off]
+-- deps: { say = fn(player, text), findMate = fn(squad, slot), jobNames = { [id] = 'WHM' } } from squad.lua
+function R.command(player, squad, slotArg, choiceArg, deps)
+    local say = deps.say
+    local store = R.load()
+
+    if slotArg == nil or slotArg == '' then
+        if #store.list == 0 then
+            say(player, 'No Rule Sets yet (modules/custom/lua/squad_rulesets_data.lua).')
+        end
+
+        for _, set in ipairs(store.list) do
+            say(player, string.format('Rule Set %d: %s (%s, %d rules) [%s]', set.num, set.name, set.job, #set.rules, set.id))
+        end
+
+        for _, problem in ipairs(store.problems) do
+            say(player, 'Not usable: ' .. problem)
+        end
+
+        say(player, 'Use: !squad ruleset <slot> <number|off>   (applies when the mate is called again: Apply now)')
+        return
+    end
+
+    local mate = deps.findMate(squad, tonumber(slotArg) or 0)
+    if mate == nil then
+        say(player, 'No squad mate in that slot. Use !squad to list them.')
+        return
+    end
+
+    local jobName = deps.jobNames[mate.mjob] or tostring(mate.mjob)
+    local choice = string.lower(tostring(choiceArg or ''))
+
+    if choice == '' then
+        local set, reason = R.resolve(player, mate.id, mate.mjob, store)
+        local text = 'its job rules (no Rule Set)'
+        if set then
+            text = string.format('Rule Set %d, %s [%s]', set.num, set.name, set.id)
+        elseif reason == 'replaced' then
+            text = 'its job rules: the Rule Set chosen earlier was replaced by a different set with the same number. Choose again'
+        elseif reason == 'gone' then
+            text = 'its job rules: the Rule Set chosen earlier is no longer usable. Choose again'
+        end
+
+        say(player, string.format('%s (%s): %s', mate.name, jobName, text))
+        return
+    end
+
+    if choice == 'off' or choice == 'none' or choice == '0' then
+        R.select(player, mate.id, mate.mjob, nil)
+        say(player, string.format('%s uses its %s job rules again. Call it again to apply (Apply now).', mate.name, jobName))
+        return
+    end
+
+    local set = store.byNum[tonumber(choice) or -1]
+    if set == nil then
+        say(player, 'There is no usable Rule Set with that number. Use !squad ruleset to list them.')
+        return
+    end
+
+    if R.JOB_IDS[set.job] ~= mate.mjob then
+        say(player, string.format('Rule Set %d is for %s, but %s is a %s. Change its job first, or pick a %s set.',
+            set.num, set.job, mate.name, jobName, jobName))
+        return
+    end
+
+    R.select(player, mate.id, mate.mjob, set)
+    say(player, string.format('%s (%s) now follows Rule Set %d, %s [%s]. Call it again to apply (Apply now).',
+        mate.name, jobName, set.num, set.name, set.id))
+end
+
+return R
