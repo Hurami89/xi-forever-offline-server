@@ -4639,6 +4639,21 @@ local function addGambit(mob, target, condition, action, retry)
         return
     end
 
+    -- (Gambits v2 U13) a player's squad mate uses a job ability only as a player could: its main or sub job at the
+    -- level, never a two-hour or main-job-only ability from the sub job, and a merit ability only with the merit unlocked
+    -- by its owner. One rule for the built-in, launcher-edited and Rule Set rules (squad_ability_rules.lua). A bot's
+    -- profile (xi.squad.profileFor: no player owner) is not checked here. Without the rules file: fail closed.
+    if action[1] == ai.r.JA and action[2] == ai.s.SPECIFIC then
+        local okAr, abilityRules = pcall(require, 'modules/custom/lua/squad_ability_rules')
+        if okAr and type(abilityRules) == 'table' then
+            if not abilityRules.allowGambit(mob, action[3]) then
+                return
+            end
+        elseif type(mob:getMaster()) == 'userdata' or type(mob:getMaster()) == 'table' then
+            return
+        end
+    end
+
     if activeSwitches ~= nil then
         local needed = switchForAction(action)
         if needed ~= nil and not hasBit(activeSwitches, SW_BIT[needed]) then
