@@ -10,7 +10,9 @@ itemObject.onItemCheck = function(target, user)
 end
 
 itemObject.onItemUse = function(target, user)
-    target:addStatusEffect(xi.effect.COSTUME, { duration = 10000, origin = user, subType = 6189 })
+    -- (2026-11-20, Sunie: the candy gave the costume status but no slime) the effect runs scripts/effects/costume.lua, which
+    -- shows the model in the effect's power; without one it set costume 0
+    target:addStatusEffect(xi.effect.COSTUME, { power = 2439, duration = 10000, origin = user, subType = 6189 })
 end
 
 itemObject.onEffectGain = function(target, effect)

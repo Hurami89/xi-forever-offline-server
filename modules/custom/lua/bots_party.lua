@@ -512,7 +512,16 @@ function P.act(bot, st, leader, mob)
     st.partyCheck = now() + CHECK_EVERY
     P.learn(bot)
     local ctx = { self = bot, leader = leader, mob = (mob and mob:isAlive()) and mob or nil, members = {} }
-    for _, m in pairs(bot:getParty() or {}) do
+    -- (2026-11-20, Sunie: a bot healer cured the player and ignored the squad mate at low HP next to it) the party as the
+    -- bot sees it includes the squad mates of its members: they are trusts, which getParty() leaves out
+    local okParty, party = pcall(function()
+        return bot:getPartyWithTrusts()
+    end)
+    if not okParty or type(party) ~= 'table' or #party == 0 then
+        party = bot:getParty() or {}
+    end
+
+    for _, m in pairs(party) do
         if m:getZoneID() == bot:getZoneID() and m:isAlive() and dist2(m, bot) <= RANGE * RANGE then
             ctx.members[#ctx.members + 1] = m
             if not ctx.tank and TANKS[m:getMainJob()] then
