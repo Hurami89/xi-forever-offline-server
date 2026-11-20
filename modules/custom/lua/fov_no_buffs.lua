@@ -58,14 +58,20 @@ m:addOverride('xi.regime.bookOnEventFinish', function(player, option, regimeType
 end)
 
 -- Era cap for one page's exp: the same as the era cap for one monster (era_exp.lua): 200 / 250 / 300.
+-- (2026-11-20, Ricc: "pages only give 200 with the page rate at x3") a monster's exp is capped first and multiplied by its
+-- rate afterwards; a page was multiplied first and capped afterwards, so a page rate above 1 did nothing once the cap
+-- was reached. The cap now rises with the page rate when that is above 1 (x3: 600 / 750 / 900); at 1 or below it is
+-- the same as before.
 local function eraCap(level)
+    local rate = math.max(1, tonumber(xi.settings.main.BOOK_EXP_RATE) or 1)
+    local cap  = 300
     if level <= 50 then
-        return 200
+        cap = 200
     elseif level <= 60 then
-        return 250
+        cap = 250
     end
 
-    return 300
+    return math.floor(cap * rate)
 end
 
 local prowessBuff, prowessMessage = {}, {}
