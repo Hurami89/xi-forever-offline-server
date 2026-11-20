@@ -372,7 +372,7 @@ local function goTo(bot, giver)
     local a = math.random() * 2 * math.pi
     local x, z = giver.x + 2.5 * math.cos(a), giver.z + 2.5 * math.sin(a)
     if bot:getZoneID() ~= giver.zone then
-        bot:setPos(x, giver.y, z, 0, giver.zone)
+        if xi.navguard then xi.navguard.setPos(bot, x, giver.y, z, 0, giver.zone, { x = giver.x, y = giver.y, z = giver.z }) else bot:setPos(x, giver.y, z, 0, giver.zone) end
         return 'zoning'
     end
 

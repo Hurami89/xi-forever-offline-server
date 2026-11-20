@@ -542,7 +542,7 @@ local function startMarket(bot, st, p)
     st.task = { kind = 'market', at = now() + rnd(6, 12), sold = 0, bought = 0, steps = rnd(3, 7), thrift = p.thrift, craft = p.craft }
     BotHeal(bot:getID(), false)
     if bot:getZoneID() ~= zoneId then
-        bot:setPos(spot.x, spot.y, spot.z, spot.rot or 0, zoneId)
+        if xi.navguard then xi.navguard.setPos(bot, spot.x, spot.y, spot.z, spot.rot or 0, zoneId, nil) else bot:setPos(spot.x, spot.y, spot.z, spot.rot or 0, zoneId) end
         return 'zoning'
     end
 
@@ -758,7 +758,7 @@ local function startGather(bot, st, p)
     st.life = nil
     local a = math.random() * 2 * math.pi
     if bot:getZoneID() ~= zoneId then
-        bot:setPos(np.x + 6 * math.cos(a), np.y, np.z + 6 * math.sin(a), 0, zoneId)
+        if xi.navguard then xi.navguard.setPos(bot, np.x + 6 * math.cos(a), np.y, np.z + 6 * math.sin(a), 0, zoneId, np) else bot:setPos(np.x + 6 * math.cos(a), np.y, np.z + 6 * math.sin(a), 0, zoneId) end
         return 'zoning'
     end
 
@@ -939,7 +939,7 @@ local function startFish(bot, st, p)
     st.life = nil
     note(string.format('%s goes fishing (fishing %d)', bot:getName(), math.floor(((bot:getCharSkillLevel(FISH_SKILL) or 0)) / 10)))
     if bot:getZoneID() ~= zoneId then
-        bot:setPos(spot.x, spot.y, spot.z, spot.rot or 0, zoneId)
+        if xi.navguard then xi.navguard.setPos(bot, spot.x, spot.y, spot.z, spot.rot or 0, zoneId, nil) else bot:setPos(spot.x, spot.y, spot.z, spot.rot or 0, zoneId) end
         return 'zoning'
     end
 

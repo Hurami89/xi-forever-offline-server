@@ -436,7 +436,7 @@ local function intoArena(bot, battlefield)
 
     local p = mob:getPos()
     local a = math.random() * 2 * math.pi
-    bot:setPos(p.x + 6 * math.cos(a), p.y, p.z + 6 * math.sin(a), 0)
+    if xi.navguard then xi.navguard.setPos(bot, p.x + 6 * math.cos(a), p.y, p.z + 6 * math.sin(a), 0, nil, p) else bot:setPos(p.x + 6 * math.cos(a), p.y, p.z + 6 * math.sin(a), 0) end
     return true
 end
 
@@ -465,7 +465,7 @@ local function thinkOrb(bot, st)
     local bf = st.bf
     local t = now()
     if bot:getZoneID() ~= SHAMI.zone then
-        bot:setPos(SHAMI.x + rnd(-2, 2), SHAMI.y, SHAMI.z + rnd(-2, 2), 0, SHAMI.zone)
+        if xi.navguard then xi.navguard.setPos(bot, SHAMI.x + rnd(-2, 2), SHAMI.y, SHAMI.z + rnd(-2, 2), 0, SHAMI.zone, { x = SHAMI.x, y = SHAMI.y, z = SHAMI.z }) else bot:setPos(SHAMI.x + rnd(-2, 2), SHAMI.y, SHAMI.z + rnd(-2, 2), 0, SHAMI.zone) end
         return 'zoning'
     end
 
@@ -535,7 +535,7 @@ function BF.think(bot, st)
 
         if bf.phase == 'gather' then
             if bot:getZoneID() ~= bf.b.zone then
-                bot:setPos(bf.pos.x + rnd(-3, 3), bf.pos.y, bf.pos.z + rnd(-3, 3), 0, bf.b.zone)
+                if xi.navguard then xi.navguard.setPos(bot, bf.pos.x + rnd(-3, 3), bf.pos.y, bf.pos.z + rnd(-3, 3), 0, bf.b.zone, bf.pos) else bot:setPos(bf.pos.x + rnd(-3, 3), bf.pos.y, bf.pos.z + rnd(-3, 3), 0, bf.b.zone) end
                 return 'zoning'
             end
 
@@ -550,7 +550,7 @@ function BF.think(bot, st)
 
     if bf.phase == 'gather' then
         if bot:getZoneID() ~= bf.b.zone then
-            bot:setPos(bf.pos.x + rnd(-2, 2), bf.pos.y, bf.pos.z + rnd(-2, 2), 0, bf.b.zone)
+            if xi.navguard then xi.navguard.setPos(bot, bf.pos.x + rnd(-2, 2), bf.pos.y, bf.pos.z + rnd(-2, 2), 0, bf.b.zone, bf.pos) else bot:setPos(bf.pos.x + rnd(-2, 2), bf.pos.y, bf.pos.z + rnd(-2, 2), 0, bf.b.zone) end
             return 'zoning'
         end
 
@@ -615,7 +615,7 @@ function BF.think(bot, st)
         end
 
         if bot:getZoneID() == bf.b.zone and bot:isAlive() then
-            bot:setPos(bf.pos.x + rnd(-3, 3), bf.pos.y, bf.pos.z + rnd(-3, 3), 0)
+            if xi.navguard then xi.navguard.setPos(bot, bf.pos.x + rnd(-3, 3), bf.pos.y, bf.pos.z + rnd(-3, 3), 0, nil, bf.pos) else bot:setPos(bf.pos.x + rnd(-3, 3), bf.pos.y, bf.pos.z + rnd(-3, 3), 0) end
         end
 
         finish(bot, st, won and pick({ 'gg all, thanks!', 'nice run!', 'that went well :)' }) or pick({ 'that was rough, sorry guys', 'well we tried', 'next time...' }))

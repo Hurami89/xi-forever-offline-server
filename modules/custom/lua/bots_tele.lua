@@ -398,7 +398,7 @@ local function playerShout(player, text)
             local pos = p:getPos()
             deal.stage, deal.untilT = 'coming', now() + 150
             BotTell(id, name, string.format('I can tele you to %s for %s - on my way!', d.name, gilText(deal.price)))
-            b:setPos(pos.x + 2, pos.y, pos.z + 2, pos.rot, p:getZoneID())
+            if xi.navguard then xi.navguard.setPos(b, pos.x + 2, pos.y, pos.z + 2, pos.rot, p:getZoneID(), pos) else b:setPos(pos.x + 2, pos.y, pos.z + 2, pos.rot, p:getZoneID()) end
             return
         end
 
@@ -578,7 +578,7 @@ local function botJobTick(wid, job)
                 local c = botEntity(cid)
                 botJobs[wid] = nil
                 if c and c:getZoneID() ~= d.zone then
-                    c:setPos(d.at[1] + 1, d.at[2], d.at[3] + 1, 0, d.zone) -- (the customer lands beside it)
+                    if xi.navguard then xi.navguard.setPos(c, d.at[1] + 1, d.at[2], d.at[3] + 1, 0, d.zone, { x = d.at[1], y = d.at[2], z = d.at[3] }) else c:setPos(d.at[1] + 1, d.at[2], d.at[3] + 1, 0, d.zone) end -- (the customer lands beside it)
                 end
             end)
         end

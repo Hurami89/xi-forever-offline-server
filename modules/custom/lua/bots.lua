@@ -30,6 +30,7 @@
 -- In party chat: "follow" / "stay" / "attack" (your target) / "stop".
 -----------------------------------
 require('modules/module_utils')
+pcall(require, 'modules/custom/lua/nav_guard') -- (xi.navguard: keeps units out of walls, nav_guard.lua)
 -----------------------------------
 local m = Module:new('bot_players') -- (module names need 5+ letters)
 
@@ -741,6 +742,11 @@ think = function(bot, token)
         end
     end
 
+    -- walls: inside one, behind one from its leader, or cut off from a leader it follows: walked back (then put back)
+    if xi.navguard and not bot:isDead() then
+        xi.navguard.watch(bot, { kind = 'bot', owner = leader, follow = leader ~= nil and st.mode == 'follow' and not st.hunt and not bot:isEngaged() })
+    end
+
     -- when it was last seen playing (bots_growth.lua: what it does while you are away is counted from here).
     -- (This sat inside the "dead" branch below by mistake, so it only ran for a bot that had just died.)
     if growth and os.time() >= (st.seenAt or 0) then
@@ -900,7 +906,11 @@ think = function(bot, token)
                         BotHeal(id, false)
                     end
 
-                    BotMoveTo(id, spot.x, spot.y, spot.z)
+                    -- (a new plan every think made the walk restart each second: now when it stands, or every 3 s)
+                    if not BotIsMoving(id) or os.time() >= (st.campMoveAt or 0) then
+                        st.campMoveAt = os.time() + 3
+                        BotMoveTo(id, spot.x, spot.y, spot.z)
+                    end
                 else
                     -- (2026-11-18, Impending Descent: at camp they never sat) they also sit when you /heal, and when a
                     -- little low (the same as away from camp); a last step towards the spot no longer keeps them up
@@ -959,7 +969,7 @@ think = function(bot, token)
         if os.time() - st.awaySince >= ZONE_FOLLOW_S then
             st.awaySince = nil
             local pos = leader:getPos()
-            bot:setPos(pos.x + 1, pos.y, pos.z + 1, pos.rot, leader:getZoneID())
+            if xi.navguard then xi.navguard.setPos(bot, pos.x + 1, pos.y, pos.z + 1, pos.rot, leader:getZoneID(), pos) else bot:setPos(pos.x + 1, pos.y, pos.z + 1, pos.rot, leader:getZoneID()) end
             return -- it zones now: a new brain starts in the new area (xi.bots.onZoneIn)
         end
     else
@@ -1997,7 +2007,7 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
             BotMoveTo(id, pos.x, pos.y, pos.z)
             tell(player, bot:getName() .. ' is coming.')
         else
-            bot:setPos(pos.x + 1, pos.y, pos.z + 1, pos.rot, player:getZoneID())
+            if xi.navguard then xi.navguard.setPos(bot, pos.x + 1, pos.y, pos.z + 1, pos.rot, player:getZoneID(), pos) else bot:setPos(pos.x + 1, pos.y, pos.z + 1, pos.rot, player:getZoneID()) end
             tell(player, bot:getName() .. ' is on the way (zoning).')
         end
     elseif action == 'invite' then

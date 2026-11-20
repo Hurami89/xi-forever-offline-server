@@ -469,7 +469,7 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
 
 // Weapon skills like a player's (squad 1.16): a Trust gets every move on its template's list from level 1, including
 // Trust-only moves. A squad mate instead gets exactly the player weapon skills for the weapon in its main hand that its
-// job may use, that need no quest, and that its skill in that weapon has reached (its skills are the max for job and level).
+// job may use, that need no quest (or whose quest its player has done), and that its skill in that weapon has reached (its skills are the max for job and level).
 void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
 {
     auto* controller = dynamic_cast<CTrustController*>(PTrust->PAI->GetController());
@@ -489,16 +489,29 @@ void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
     }
 
     // Exactly the weapon skills a player of this job could use with this weapon right now: no Trust-only moves
-    // (Peacebreaker and the like), none for another weapon, none above the skill level, none that needs a quest.
+    // (Peacebreaker and the like), none for another weapon, none above the skill level, none whose quest the player has not done.
+    auto* owner = dynamic_cast<CCharEntity*>(PTrust->PMaster);
     auto& skills = controller->m_GambitsContainer->tp_skills;
     skills.clear();
     std::string kept;
     for (uint16 id = 1; id < MAX_WEAPONSKILL_ID; ++id)
     {
         auto* ws = battleutils::GetWeaponSkill(id);
-        if (ws == nullptr || weaponType == 0 || ws->getType() != weaponType || ws->getJob(job) == 0 || ws->getUnlockId() != 0)
+        if (ws == nullptr || weaponType == 0 || ws->getType() != weaponType || ws->getJob(job) == 0)
         {
             continue;
+        }
+
+        // (2026-11-20, sparkiie) weapon skills that need a quest (Asuran Fists, Evisceration, Rampage...): the mate gets
+        // the ones its player has unlocked. Ones with no skill level of their own need level 75, as for a player
+        // (battleutils::CanUseWeaponskill). Before this they were always left out.
+        if (ws->getUnlockId() != 0)
+        {
+            if (owner == nullptr || !charutils::hasLearnedWeaponskill(owner, ws->getUnlockId()) ||
+                (ws->getSkillLevel() == 0 && PTrust->GetMLevel() < 75))
+            {
+                continue;
+            }
         }
 
         if (PTrust->GetSkill(static_cast<xi::SkillType>(ws->getType())) < ws->getSkillLevel())

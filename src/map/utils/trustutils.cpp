@@ -375,6 +375,30 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
 
     // spawn me randomly around master
     PTrust->loc.p = nearPosition(PMaster->loc.p, CTrustController::SpawnDistance + (PMaster->PTrusts.size() * CTrustController::SpawnDistance), (float)M_PI);
+
+    // Keep the spawn spot on the navmesh and on the master's side of any wall: walking the navmesh from the master
+    // toward the spot stops at the first wall (pulled 1 yalm back so the body is not half in it), so a mate can no longer spawn inside or behind one.
+    if (PMaster->loc.zone != nullptr)
+    {
+        if (auto* navMesh = PMaster->loc.zone->navMesh())
+        {
+            if (const auto walked = walkTowardsWithMargin(*navMesh, PMaster->loc.p, PTrust->loc.p, 1.0f))
+            {
+                PTrust->loc.p.x = walked->x;
+                PTrust->loc.p.y = walked->y;
+                PTrust->loc.p.z = walked->z;
+            }
+            else if (!navMesh->validPosition(PTrust->loc.p))
+            {
+                if (const auto closest = navMesh->findClosestValidPoint(PTrust->loc.p))
+                {
+                    PTrust->loc.p.x = closest->x;
+                    PTrust->loc.p.y = closest->y;
+                    PTrust->loc.p.z = closest->z;
+                }
+            }
+        }
+    }
     PTrust->look  = trustData->look;
     PTrust->name  = trustData->name;
 

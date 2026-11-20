@@ -235,7 +235,7 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
 
             if (!inCamp && !PMaster->PAI->IsEngaged() && currentDistanceToTarget > WarpDistance)
             {
-                PTrust->PAI->PathFind->WarpTo(PTarget->loc.p);
+                PTrust->PAI->PathFind->WarpToOnMesh(PTarget->loc.p);
             }
 
             PTrust->PAI->PathFind->LookAt(PTarget->loc.p);
@@ -275,7 +275,7 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
                     //  well moved the thief twice a tick, so players saw it snap behind the monster - Frost)
                     if (!PTrust->PAI->PathFind->PathTo(*spot, PATHFLAG_RUN))
                     {
-                        PTrust->PAI->PathFind->StepTo(*spot, true);
+                        PTrust->PAI->PathFind->StepToOnMesh(*spot, true);
                     }
                 }
             }
@@ -311,7 +311,7 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
                         }
                         else if (PTrust->GetSpeed() > 0)
                         {
-                            PTrust->PAI->PathFind->StepTo(PTarget->loc.p, true);
+                            PTrust->PAI->PathFind->StepToOnMesh(PTarget->loc.p, true);
                         }
                     }
                     break;
@@ -410,7 +410,7 @@ auto CTrustController::DoNonCombatTick(const timer::time_point tick) -> Task<voi
 
     if (currentDistance > WarpDistance)
     {
-        PTrust->PAI->PathFind->WarpTo(PFollowTarget->loc.p);
+        PTrust->PAI->PathFind->WarpToOnMesh(PFollowTarget->loc.p);
     }
     else if (currentDistance > desiredFollowDistance)
     {
@@ -421,7 +421,7 @@ auto CTrustController::DoNonCombatTick(const timer::time_point tick) -> Task<voi
         }
         else if (PTrust->GetSpeed() > 0)
         {
-            PTrust->PAI->PathFind->StepTo(PFollowTarget->loc.p, true);
+            PTrust->PAI->PathFind->StepToOnMesh(PFollowTarget->loc.p, true);
         }
     }
 
@@ -573,7 +573,7 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
         if (currentDistance > WarpDistance)
         {
             // Warp if extremely too far
-            POwner->PAI->PathFind->WarpTo(PFollowTarget->loc.p);
+            POwner->PAI->PathFind->WarpToOnMesh(PFollowTarget->loc.p);
         }
         else
         {
@@ -584,16 +584,25 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
             }
             else if (POwner->GetSpeed() > 0)
             {
-                POwner->PAI->PathFind->StepTo(PFollowTarget->loc.p, true);
+                POwner->PAI->PathFind->StepToOnMesh(PFollowTarget->loc.p, true);
             }
         }
     }
     else
     {
-        // In formation range - stop pathfinding to prevent circling
+        // In formation range. Stop only once settled near the ideal spot: clearing the path the moment the mate
+        // is inside followMax made it stop and restart every time the player took a step (the stop-start look).
+        // Closer than followTarget + 0.5 still stops, so it still cannot circle.
         if (POwner->PAI->PathFind->IsFollowingPath())
         {
-            POwner->PAI->PathFind->Clear();
+            if (currentDistance <= followTarget + 0.5f)
+            {
+                POwner->PAI->PathFind->Clear();
+            }
+            else
+            {
+                POwner->PAI->PathFind->FollowPath(m_Tick);
+            }
         }
     }
 
@@ -650,7 +659,7 @@ void CTrustController::CampHold(const position_t& camp)
     const float away = distance(POwner->loc.p, spot);
     if (away > 60.0f)
     {
-        POwner->PAI->PathFind->WarpTo(spot);
+        POwner->PAI->PathFind->WarpToOnMesh(spot);
     }
     else if (away > 1.0f)
     {

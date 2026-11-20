@@ -192,6 +192,53 @@ auto CPathFind::WarpTo(const position_t& point, float maxDistance) -> bool
     return true;
 }
 
+auto CPathFind::WarpToOnMesh(const position_t& point, float maxDistance) -> bool
+{
+    TracyZoneScoped;
+    TracyZoneString(owner_->name());
+
+    Clear();
+
+    // Candidate spot behind the target, as WarpTo picks it.
+    auto newPoint = nearPosition(point, maxDistance, static_cast<float>(M_PI));
+
+    // Keep the spot on the navmesh and on the same walkable area as the target: walking the navmesh from the
+    // target toward the candidate stops at the first wall (and is pulled 1 yalm back from it), so the landing spot can never be behind one or half inside it.
+    if (const auto walked = walkTowardsWithMargin(navMesh(), point, newPoint, 1.0f))
+    {
+        newPoint.x = walked->x;
+        newPoint.y = walked->y;
+        newPoint.z = walked->z;
+    }
+    else if (!navMesh().validPosition(newPoint))
+    {
+        if (const auto closest = navMesh().findClosestValidPoint(newPoint))
+        {
+            newPoint.x = closest->x;
+            newPoint.y = closest->y;
+            newPoint.z = closest->z;
+        }
+        else if (const auto closestToTarget = navMesh().findClosestValidPoint(point))
+        {
+            newPoint.x = closestToTarget->x;
+            newPoint.y = closestToTarget->y;
+            newPoint.z = closestToTarget->z;
+        }
+    }
+
+    position_t& ownerPos = owner_->position();
+
+    ownerPos.x      = newPoint.x;
+    ownerPos.y      = newPoint.y;
+    ownerPos.z      = newPoint.z;
+    ownerPos.moving = 0;
+
+    LookAt(point);
+    owner_->markPositionDirty();
+
+    return true;
+}
+
 auto CPathFind::ResumePatrol() -> void
 {
     if (!(patrolFlags_ & PATHFLAG_PATROL))
@@ -394,6 +441,54 @@ auto CPathFind::StepTo(const position_t& pos, bool run) -> void
 {
     // External callers honor the configured stop-short distance, which is 0 unless a range was set.
     StepToInternal(pos, run, distanceFromPoint_);
+}
+
+auto CPathFind::StepToOnMesh(const position_t& pos, bool run) -> void
+{
+    TracyZoneScoped;
+    TracyZoneString(owner_->name());
+
+    const bool  speedChange  = owner_->baseSpeed() != owner_->updateSpeed(run);
+    const float stepDistance = StepBudget();
+
+    position_t& ownerPos = owner_->position();
+    position_t  next     = ownerPos;
+    position_t  slid{};
+
+    // On the mesh: take the normal step toward the goal, then slide it along the navmesh so it stops at walls.
+    position_t goal = pos;
+    next            = ownerPos;
+    pathfind::stepTowards(next, goal, stepDistance, distanceFromPoint_);
+
+    if (navMesh().moveAlongSurface(ownerPos, next, slid))
+    {
+        next.x = slid.x;
+        next.y = slid.y;
+        next.z = slid.z;
+    }
+    else
+    {
+        // The start is not on the mesh (moveAlongSurface only fails there, and always in a zone with no navmesh):
+        // walk back onto the mesh instead of heading for the goal through whatever is in between. With no mesh
+        // point to walk back to (such a zone), keep the plain step, which is what StepTo does.
+        if (const auto closest = navMesh().findClosestValidPoint(ownerPos))
+        {
+            next = ownerPos;
+            goal = *closest;
+            pathfind::stepTowards(next, goal, stepDistance, 0.0f);
+        }
+    }
+
+    distanceMoved_ += distance(ownerPos, next, true);
+
+    ownerPos.x        = next.x;
+    ownerPos.y        = next.y;
+    ownerPos.z        = next.z;
+    ownerPos.rotation = next.rotation;
+
+    ownerPos.moving += speedChange ? 0x28 : 0x35;
+    ownerPos.moving %= 0x2000;
+    owner_->markPositionDirty();
 }
 
 auto CPathFind::StepBudget() const -> float

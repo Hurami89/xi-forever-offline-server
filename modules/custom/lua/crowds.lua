@@ -54,6 +54,7 @@ if not chatOk or type(chat) ~= 'table' then
     chat = nil
 end
 
+pcall(require, 'modules/custom/lua/nav_guard') -- (xi.navguard: keeps units out of walls, nav_guard.lua)
 local fieldOk, field = pcall(require, 'modules/custom/lua/crowds_field')
 if not fieldOk or type(field) ~= 'table' then
     print('[crowds] field parties are off: crowds_field.lua could not be loaded: ' .. tostring(field))
@@ -247,8 +248,23 @@ end
 local function zoneSpots(zoneId)
     local zd = data.zones[zoneId]
     local list = {}
+    -- (walls) each spot is put on the walking map, and one with no walkable ground near it is dropped. If more than
+    -- half would go, the check is not trusted for this area and the spots are kept as they are.
+    local raw, kept = {}, {}
     for _, s in ipairs(zd and zd.spots or {}) do
-        list[#list + 1] = { kind = s.kind, x = s.x, y = s.y, z = s.z, rot = s.rot }
+        raw[#raw + 1] = { kind = s.kind, x = s.x, y = s.y, z = s.z, rot = s.rot }
+        local x, y, z, how = s.x, s.y, s.z, 'unknown'
+        if xi.navguard then
+            x, y, z, how = xi.navguard.snap(zoneId, s, nil, 'goal')
+        end
+
+        if how ~= 'failed' then
+            kept[#kept + 1] = { kind = s.kind, x = x, y = y, z = z, rot = s.rot }
+        end
+    end
+
+    for _, s in ipairs(#kept * 2 >= #raw and kept or raw) do
+        list[#list + 1] = s
     end
 
     for _, s in ipairs(userSpots[zoneId] or {}) do
@@ -491,6 +507,9 @@ think = function(npc, bot)
     end
 
     crowd.emptySince = nil
+    if xi.navguard then
+        xi.navguard.watch(npc, { kind = 'npc' }) -- (walls: one inside one, or off the walking map, is walked back)
+    end
 
     if not cfg.enabled then
         removeBot(npc, crowd, bot, true)

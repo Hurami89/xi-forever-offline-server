@@ -287,6 +287,10 @@ local function spawnMember(zone, party, r, idx)
     local name = env.makeName(race, party.usedNames)
     local a = (idx / 6) * 2 * math.pi
     local x, z = party.camp.x + 2.5 * math.cos(a), party.camp.z + 2.5 * math.sin(a)
+    if xi.navguard then
+        local sx, _, sz = xi.navguard.spot(zone, x, party.camp.y, z, party.camp) -- (walls: beside the camp, in a clear line)
+        x, z = sx or x, sz or z
+    end
     serial = serial + 1
     local mob = zone:insertDynamicEntity({
         objtype               = xi.objType.MOB,
@@ -942,6 +946,16 @@ brain = function(party)
     end
 
     local zone = GetZone(party.zoneId)
+    if xi.navguard then
+        -- walls: a member inside one, behind one from its leader, or off the walking map is walked back (then put back)
+        for _, m in ipairs(aliveMembers(party)) do
+            local me = memberEntity(m)
+            if me then
+                xi.navguard.watch(me, { owner = me ~= leaderE and leaderE or nil })
+            end
+        end
+    end
+
     local zp = parties[party.zoneId]
     if not zone or not zp then
         endParty(party, 'gone')
@@ -990,7 +1004,7 @@ brain = function(party)
                 party.pullerM = p
                 pe:setAnimation(0)
                 local tp = target:getPos()
-                pe:pathTo(tp.x, tp.y, tp.z)
+                if xi.navguard then xi.navguard.pathTo(pe, tp.x, tp.y, tp.z) else pe:pathTo(tp.x, tp.y, tp.z) end
                 say(party, p, pick({ 'Pulling >> ' .. prettyName(target), 'pulling', 'pulling ' .. prettyName(target), '>> ' .. prettyName(target) }))
             else
                 party.nextPullAt = now() + 10 -- nothing free right now (respawns)
@@ -1007,7 +1021,7 @@ brain = function(party)
                             local a = (i / 6) * 2 * math.pi
                             e:setAnimation(0)
                             m.resting = false
-                            e:pathTo(camp.x + 2.5 * math.cos(a), camp.y, camp.z + 2.5 * math.sin(a))
+                            if xi.navguard then xi.navguard.pathTo(e, camp.x + 2.5 * math.cos(a), camp.y, camp.z + 2.5 * math.sin(a)) else e:pathTo(camp.x + 2.5 * math.cos(a), camp.y, camp.z + 2.5 * math.sin(a)) end
                         end
                     end
                 end
@@ -1026,7 +1040,7 @@ brain = function(party)
                 party.badPull[target:getID()] = now() -- could not get it (out of reach): leave it alone for a while
             end
             if pe then
-                pe:pathTo(party.camp.x, party.camp.y, party.camp.z)
+                if xi.navguard then xi.navguard.pathTo(pe, party.camp.x, party.camp.y, party.camp.z) else pe:pathTo(party.camp.x, party.camp.y, party.camp.z) end
             end
         elseif not party.pulled then
             local tp, pp = target:getPos(), pe:getPos()
@@ -1034,11 +1048,11 @@ brain = function(party)
                 party.pulled = true
                 target:addEnmity(pe, 1, 1) -- (a ranged attack / Provoke from the puller)
                 pe:clearPath()
-                pe:pathTo(party.camp.x, party.camp.y, party.camp.z)
+                if xi.navguard then xi.navguard.pathTo(pe, party.camp.x, party.camp.y, party.camp.z) else pe:pathTo(party.camp.x, party.camp.y, party.camp.z) end
             elseif not free(target, playersOf(zone)) then
                 party.state = 'rest' -- someone else got it, or it wandered near you
                 party.pullingId = nil
-                pe:pathTo(party.camp.x, party.camp.y, party.camp.z)
+                if xi.navguard then xi.navguard.pathTo(pe, party.camp.x, party.camp.y, party.camp.z) else pe:pathTo(party.camp.x, party.camp.y, party.camp.z) end
             end
         else
             local tp = target:getPos()
@@ -1068,7 +1082,7 @@ brain = function(party)
                 for i, m in ipairs(aliveMembers(party)) do
                     local e = memberEntity(m)
                     local a = (i / 6) * 2 * math.pi
-                    e:pathTo(party.camp.x + 2.5 * math.cos(a), party.camp.y, party.camp.z + 2.5 * math.sin(a))
+                    if xi.navguard then xi.navguard.pathTo(e, party.camp.x + 2.5 * math.cos(a), party.camp.y, party.camp.z + 2.5 * math.sin(a)) else e:pathTo(party.camp.x + 2.5 * math.cos(a), party.camp.y, party.camp.z + 2.5 * math.sin(a)) end
                 end
             end
         else

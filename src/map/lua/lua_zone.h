@@ -70,6 +70,9 @@ public:
     auto isNavigablePoint(const sol::table& position) -> bool;
     auto getTerrainType(const sol::table& position) -> xi::TerrainType;
     auto getFloorId(const sol::table& position) -> uint8;
+    auto findClosestNavPoint(const sol::table& position) -> sol::object;
+    auto canReach(const sol::table& from, const sol::table& to) -> bool;
+    auto lineOfSight(const sol::table& from, const sol::table& to) -> bool;
     auto insertDynamicEntity(sol::table table) -> CBaseEntity*;
 
     auto getSoloBattleMusic();

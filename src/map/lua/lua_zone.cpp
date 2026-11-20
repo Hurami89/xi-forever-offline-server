@@ -390,6 +390,69 @@ auto CLuaZone::getFloorId(const sol::table& position) -> uint8
         position["z"].get_or<float>(0));
 }
 
+/************************************************************************
+ *  Function: findClosestNavPoint()
+ *  Purpose : Returns {x=, y=, z=} for the nearest walkable navmesh point, or nil if there is none nearby
+ *  Example : local p = zone:findClosestNavPoint(player:getPos())
+ ************************************************************************/
+
+auto CLuaZone::findClosestNavPoint(const sol::table& position) -> sol::object
+{
+    const position_t pos{
+        position["x"].get_or<float>(0), position["y"].get_or<float>(0), position["z"].get_or<float>(0), 0, 0
+    };
+
+    const auto closest = m_pLuaZone->navMesh()->findClosestValidPoint(pos);
+    if (!closest)
+    {
+        return sol::lua_nil;
+    }
+
+    auto table = lua.create_table();
+    table["x"] = closest->x;
+    table["y"] = closest->y;
+    table["z"] = closest->z;
+    return table;
+}
+
+/************************************************************************
+ *  Function: canReach()
+ *  Purpose : true when a walkable navmesh route exists from one point to the other (not just a straight line)
+ *  Example : zone:canReach(mate:getPos(), player:getPos())
+ ************************************************************************/
+
+auto CLuaZone::canReach(const sol::table& from, const sol::table& to) -> bool
+{
+    const position_t a{ from["x"].get_or<float>(0), from["y"].get_or<float>(0), from["z"].get_or<float>(0), 0, 0 };
+    const position_t b{ to["x"].get_or<float>(0), to["y"].get_or<float>(0), to["z"].get_or<float>(0), 0, 0 };
+
+    const auto path = m_pLuaZone->navMesh()->findPath(a, b, 0.0f, AvoidLinks::No);
+    if (!path || path->points.empty())
+    {
+        return false;
+    }
+
+    // An unreachable goal still yields a path to the closest point; only count a route that ends at the goal.
+    const auto& last = path->points.back().position;
+    return distance(last, b, true) <= 2.0f;
+}
+
+/************************************************************************
+ *  Function: lineOfSight()
+ *  Purpose : true when no wall is between the two points (same test as entity:canSee)
+ *  Example : zone:lineOfSight(mate:getPos(), player:getPos())
+ ************************************************************************/
+
+auto CLuaZone::lineOfSight(const sol::table& from, const sol::table& to) -> bool
+{
+    constexpr float ENTITY_HEIGHT = 2.0f;
+
+    const auto src = Vector3{ from["x"].get_or<float>(0), from["y"].get_or<float>(0) - ENTITY_HEIGHT, from["z"].get_or<float>(0) };
+    const auto dst = Vector3{ to["x"].get_or<float>(0), to["y"].get_or<float>(0) - ENTITY_HEIGHT, to["z"].get_or<float>(0) };
+
+    return !m_pLuaZone->xiMesh()->rayIntersect(src, dst);
+}
+
 //======================================================//
 
 void CLuaZone::Register()
@@ -421,6 +484,9 @@ void CLuaZone::Register()
     SOL_REGISTER("isNavigablePoint", CLuaZone::isNavigablePoint);
     SOL_REGISTER("getTerrainType", CLuaZone::getTerrainType);
     SOL_REGISTER("getFloorId", CLuaZone::getFloorId);
+    SOL_REGISTER("findClosestNavPoint", CLuaZone::findClosestNavPoint);
+    SOL_REGISTER("canReach", CLuaZone::canReach);
+    SOL_REGISTER("lineOfSight", CLuaZone::lineOfSight);
     SOL_REGISTER("insertDynamicEntity", CLuaZone::insertDynamicEntity);
 
     SOL_REGISTER("getSoloBattleMusic", CLuaZone::getSoloBattleMusic);

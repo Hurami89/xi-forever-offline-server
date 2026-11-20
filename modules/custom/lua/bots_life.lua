@@ -354,7 +354,12 @@ local function logIn(id, row)
     local nation = NATION_OF[row.zone or 0] or rnd(0, 2)
     local zoneId, spot = homeSpot(nation)
     if spot then
-        BotPlace(id, zoneId, spot.x + (math.random() - 0.5) * 1.5, spot.y, spot.z + (math.random() - 0.5) * 1.5, spot.rot or 0)
+        local px, py, pz = spot.x + (math.random() - 0.5) * 1.5, spot.y, spot.z + (math.random() - 0.5) * 1.5
+        if xi.navguard then
+            px, py, pz = xi.navguard.spot(zoneId, px, py, pz, spot) -- (beside its spot, never in the wall behind it)
+        end
+
+        BotPlace(id, zoneId, px, py, pz, spot.rot or 0)
     end
 
     local ok = BotLogin(id)
@@ -618,7 +623,7 @@ function L.idle(bot, st)
             local nation = NATION_OF[zoneId] or rnd(0, 2)
             local homeZone, spot = homeSpot(nation)
             if spot then
-                bot:setPos(spot.x, spot.y, spot.z, spot.rot or 0, homeZone)
+                if xi.navguard then xi.navguard.setPos(bot, spot.x, spot.y, spot.z, spot.rot or 0, homeZone, nil) else bot:setPos(spot.x, spot.y, spot.z, spot.rot or 0, homeZone) end
                 return 'zoning'
             end
         end
@@ -697,7 +702,7 @@ function L.goHome(bot)
         return false
     end
 
-    bot:setPos(spot.x, spot.y, spot.z, spot.rot or 0, zoneId)
+    if xi.navguard then xi.navguard.setPos(bot, spot.x, spot.y, spot.z, spot.rot or 0, zoneId, nil) else bot:setPos(spot.x, spot.y, spot.z, spot.rot or 0, zoneId) end
     return true
 end
 

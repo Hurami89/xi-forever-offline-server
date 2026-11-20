@@ -79,6 +79,10 @@ public:
     // Instantly move the entity to `point`, skipping the navmesh - the caller must ensure it is valid.
     auto WarpTo(const position_t& point, float maxDistance = 2.0f) -> bool;
 
+    // Navmesh-safe variants for squad mates (trusts): the landing spot is kept on the navmesh and inside the
+    // area connected to `point`, so a warp can no longer drop a mate inside or behind a wall.
+    auto WarpToOnMesh(const position_t& point, float maxDistance = 2.0f) -> bool;
+
     auto ResumePatrol() -> void;
 
     // Move the mob toward the next point, walking at most stepCap this tick.
@@ -92,6 +96,10 @@ public:
 
     // Take one step toward position.
     auto StepTo(const position_t& pos, bool run = false) -> void;
+
+    // Like StepTo, but each step slides along the navmesh instead of cutting through walls. A unit that is
+    // off the mesh walks back onto it first.
+    auto StepToOnMesh(const position_t& pos, bool run = false) -> void;
 
     // True while the mob is following a path.
     auto IsFollowingPath() const -> bool;

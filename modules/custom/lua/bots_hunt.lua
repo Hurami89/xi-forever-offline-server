@@ -602,7 +602,7 @@ function H.think(bot, st)
             if t - h.awaySince >= 5 then
                 h.awaySince = nil
                 local lp = leader:getPos()
-                bot:setPos(lp.x + 1, lp.y, lp.z + 1, 0, leader:getZoneID())
+                if xi.navguard then xi.navguard.setPos(bot, lp.x + 1, lp.y, lp.z + 1, 0, leader:getZoneID(), lp) else bot:setPos(lp.x + 1, lp.y, lp.z + 1, 0, leader:getZoneID()) end
                 return 'zoning'
             end
 

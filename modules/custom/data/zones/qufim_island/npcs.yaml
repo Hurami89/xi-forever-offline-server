@@ -1,7 +1,12 @@
 # FFXI Offline: keep Home Point crystals for fast travel with RESTRICT_CONTENT on (core tags them as a later expansion).
 # "content: null" removes the tag (merge patch), as Phoenix does in its own data folder.
+# (2026-11-20, Yumainai: no crystal in Qufim) the November 2026 game update moved this area's NPC ids down by one
+# (Home Point #1 is 17293833 now, was 17293834), so this list had stopped covering the real crystal.
 
 npcs:
+
+  17293833:
+    content: null
 
   17293834:
     content: null
@@ -13,7 +18,4 @@ npcs:
     content: null
 
   17293837:
-    content: null
-
-  17293838:
     content: null
