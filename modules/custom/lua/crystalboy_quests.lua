@@ -562,6 +562,20 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
             player:printToPlayer(string.format('Your inventory now holds %d items (your Gobbiebag quests).', want), xi.msg.channel.SYSTEM_3)
         end
 
+        -- (2026-11-20, Trinity: "Mog Satchel at the start, like new players get on Phoenix") Classic bags: the Mog
+        -- Satchel is open from the start at the inventory's size (Phoenix gives it to an account with a security
+        -- token; nobody has one here, so it stayed closed). The Gobbiebag quests grow an open Satchel with the inventory.
+        do
+            local inventory = player:getContainerSize(xi.inv.INVENTORY)
+            local satchel   = player:getContainerSize(xi.inv.MOGSATCHEL)
+            if inventory > 0 and satchel < inventory then
+                player:changeContainerSize(xi.inv.MOGSATCHEL, inventory - satchel)
+                if satchel == 0 then
+                    player:printToPlayer(string.format('Your Mog Satchel is open: %d slots.', inventory), xi.msg.channel.SYSTEM_3)
+                end
+            end
+        end
+
         -- Classic: a brand-new character's Mog Wardrobes 1-8 and Mog Case start closed, as on Phoenix
         -- (disable_optional_storage.sql); Phoenix's mission and quest rewards open them 5 at a time. The database
         -- default is 80, so without this they were all open. Only empty bags on a first log in: bags never shrink.

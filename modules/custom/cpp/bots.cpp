@@ -1916,6 +1916,9 @@ class BotsModule : public CPPModule
                                    return false;
                                }
 
+                               // (2026-11-20) not counted for conquest: see charutils::HomePoint
+                               PChar->SetLocalVar("BotNoConquest", 1);
+
                                return action(charId, GP_CLI_COMMAND_ACTION_ACTIONID::HomepointMenu, nullptr, 0);
                            });
 

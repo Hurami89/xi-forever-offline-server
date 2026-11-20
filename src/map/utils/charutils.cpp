@@ -6999,7 +6999,10 @@ auto HomePoint(CCharEntity* PChar, bool resetHPMP) -> bool
 
         // Homepointing increases beastmen influence.
         const xi::Region deathRegion = PChar->loc.zone->GetRegionID();
+        // [FFXI Offline] a bot's return to its Home Point does not count (BotHomepoint marks it): the bots die far more
+        // often than they kill with Signet on, and their Home Points alone handed almost every region to the beastmen.
         if (deathRegion <= xi::Region::TavnazianArchipelago &&
+            PChar->GetLocalVar("BotNoConquest") == 0 &&
             PChar->GetMLevel() >= settings::get<uint8>("map.MINIMUM_LEVEL_CONQUEST_INFUENCE_LOSS"))
         {
             conquest::AddPlayerHomepoints(1, deathRegion);
