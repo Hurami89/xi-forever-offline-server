@@ -145,6 +145,13 @@ void addFishingMeter(CCharEntity* PChar, const std::string& varName, const int32
         return;
     }
 
+    // [FFXI Offline] map.FISHING_DAILY_LIMITS = false: nothing is counted, so the 200 catches a day and the fatigue
+    // limit are never reached (they exist against fishing bots on public servers; this is your own world)
+    if (!settings::get<bool>("map.FISHING_DAILY_LIMITS"))
+    {
+        return;
+    }
+
     PChar->setCharVar(varName, PChar->getCharVar(varName) + amount, luautils::JstMidnight());
 }
 
@@ -3000,7 +3007,7 @@ void FishingAction(CCharEntity* PChar, const GP_CLI_COMMAND_FISHING_2_MODE mode,
                             return true;
                         }
 
-                        return PChar->getCharVar("[Fish]DailyPoints") < 200 && PChar->getCharVar("[Fish]Fatigue") < 20000; // Daily limits of 200 catches and 20000 fatigue
+                        return !settings::get<bool>("map.FISHING_DAILY_LIMITS") || (PChar->getCharVar("[Fish]DailyPoints") < 200 && PChar->getCharVar("[Fish]Fatigue") < 20000); // Daily limits of 200 catches and 20000 fatigue
                     };
 
                     if (FishingRod != nullptr && FishingBait != nullptr && mayBite())

@@ -152,6 +152,9 @@ xi.settings.map =
     -- Enable/disable all fishing, including quests. ENABLE AT YOUR OWN RISK.
     FISHING_ENABLE = false,
 
+    -- [FFXI Offline] The daily fishing limits (200 catches and the fatigue meter). false = fish as much as you like.
+    FISHING_DAILY_LIMITS = true,
+
     -- Sets the minimum level a character must be to fish.
     FISHING_MIN_LEVEL = 1,
 
