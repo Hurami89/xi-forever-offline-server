@@ -604,6 +604,9 @@ local function levelsFor(mate, cap, player)
     return main, sub, subLevel
 end
 
+-- (Gambits v2, 2026-11-20) read-only access for the Squad Rule Set editor (gambits_squad.lua): the same levels a call uses
+xi.squad.levelsFor = levelsFor
+
 local function describe(mate, player)
     local main, sub, subLevel = levelsFor(mate, nil, player)
     local subText = sub ~= 0 and string.format('/%s%d', jobNames[sub], subLevel) or ''
