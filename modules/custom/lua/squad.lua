@@ -682,7 +682,9 @@ local function campKinds(player, c)
                 byName[name] = k
             end
 
-            k.lo, k.hi, k.count = math.min(k.lo, ml), math.max(k.hi, ml), k.count + 1
+            -- (2026-11-20, Altair: the menu said "Hill Lizard x2" while the puller said none were around) the zone's list
+            -- also holds monsters that are defeated and waiting to respawn; the count is now only the ones that are up
+            k.lo, k.hi, k.count = math.min(k.lo, ml), math.max(k.hi, ml), k.count + (mob:isAlive() and 1 or 0)
         end)
     end
 
