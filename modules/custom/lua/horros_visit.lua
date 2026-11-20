@@ -534,6 +534,13 @@ local function onCaught(mob, rec)
         return
     end
 
+    if rec.spoiled then
+        nearbyPlayers(mob, function(p)
+            sys(p, 'The ' .. KIND[rec.kind].label .. ' got away: someone who is not gooed up hit it (bot players too). Only gooed-up adventurers and their squad mates can catch slimes.')
+        end)
+        return
+    end
+
     local kind = KIND[rec.kind]
     nearbyPlayers(mob, function(p)
         if isGooed(p) then
@@ -634,6 +641,9 @@ spawnSlime = function(zoneId, kind, at)
         if attacker and attacker:getObjType() == xi.objType.PC and not isGooed(attacker) then
             local campSlime = CAMPS[zoneId].name
             sys(attacker, 'Slimes only play with gooed-up adventurers! Talk to ' .. campSlime .. ' first.')
+            -- (2026-11-20, Sunie: bot players in the party keep their own level and one-shot the slimes) a slime that a
+            -- player or bot player who is not gooed up has hit is never caught, even when that hit defeats it
+            rec.spoiled = true
             flee(mb, rec)
             return
         end
