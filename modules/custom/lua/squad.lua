@@ -2717,6 +2717,16 @@ isRareItem = function(itemId)
     return squadCopyItems[itemId] ~= nil
 end
 
+-- (2026-11-20) the launcher's "Squad gear: you keep the item" switch (squad_config.lua keep_gear, off by default):
+-- giving gear to the squad unlocks it for every mate and you keep the piece, the way one-of-a-kind gear always works.
+function squadKeepGear()
+    local ok, c = pcall(function()
+        package.loaded['modules/custom/lua/squad_config'] = nil
+        return require('modules/custom/lua/squad_config')
+    end)
+    return ok and type(c) == 'table' and c.keep_gear == true
+end
+
 xi.squad.onTrade = function(player, trust, items)
     local who = trust:getPacketName()
     -- the squad belongs to the trust's master; the items come from whoever traded (maybe the dualbox character)
@@ -2749,6 +2759,12 @@ xi.squad.onTrade = function(player, trust, items)
             took = took + 1
             speak(player, who, 'thanks', { item = prettyItem(info.name) })
             player:printToPlayer(string.format('%s is one of a kind: the squad gets its own and you keep yours.', prettyItem(info.name)))
+        elseif squadKeepGear() then
+            UnlockSquadItem(owner:getID(), offer.itemId) -- (you keep it: the launcher switch)
+            unlocked[offer.itemId] = true
+            took = took + 1
+            speak(player, who, 'thanks', { item = prettyItem(info.name) })
+            player:printToPlayer(string.format('The squad gets its own %s and you keep yours.', prettyItem(info.name)))
         elseif player:delItemAt(offer.itemId, 1, xi.inv.INVENTORY, offer.slot) then
             UnlockSquadItem(owner:getID(), offer.itemId)
             unlocked[offer.itemId] = true
@@ -3510,6 +3526,12 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         if isRareItem(itemId) then
             UnlockSquadItem(charId, itemId) -- (you keep it: Rare)
             say(player, string.format('%s is one of a kind: your squad gets its own and you keep yours. Every squad mate can wear it now.', info.name))
+            return
+        end
+
+        if squadKeepGear() then
+            UnlockSquadItem(charId, itemId) -- (you keep it: the launcher switch)
+            say(player, string.format('Your squad gets its own %s and you keep yours. Every squad mate can wear it now.', info.name))
             return
         end
 
