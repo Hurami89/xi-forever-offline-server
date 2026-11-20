@@ -652,43 +652,54 @@ local function guideRegionMenu(player, currentZone)
     pagedMenu(player, string.format('Where to? (%s)', fee), entries, 1, nil, PER_PAGE_REGION)
 end
 
-if OVERRIDE_SURVIVAL_GUIDES then
-    m:addOverride('xi.survivalGuide.onTrigger', function(player)
-        local zoneId = player:getZoneID()
-        local guide  = survival.survivalGuides[survival.zoneIdToGuideIdMap[zoneId]]
-        if guide == nil then
-            return
+-- (2026-11-20, Yumainai: the Ru'Lude Gardens guide showed another NPC's lines and a menu with a blank choice) The era
+-- game files replace an area's event file but not its text file. They were made for the October 2026 game version; the
+-- November update added lines to some areas' text, so there the retail Survival Guide window (event 8500) points at
+-- the wrong lines. In the areas listed here the guide opens our own menu instead, which needs nothing from the game
+-- files. Take an area out again once the era files have caught up with the game version (Phoenix's Era-DATs).
+local SURVIVAL_TEXT_ZONES =
+{
+    [xi.zone.RULUDE_GARDENS] = true,
+}
+
+local function guideTextMenu(player, zoneId, guide, ownLines)
+    -- touching a guide registers it
+    if not hasGuide(player, guide) then
+        local text = zones[guide.zoneId].text
+        if not ownLines and text.COMMON_SENSE_SURVIVAL then
+            player:messageSpecial(text.COMMON_SENSE_SURVIVAL)
+        else
+            -- (in a listed area the game's own line for this would be a wrong one too)
+            tell(player, 'You have registered this Survival Guide.')
         end
 
-        -- touching a guide registers it
-        if not hasGuide(player, guide) then
-            local text = zones[guide.zoneId].text
-            if text.COMMON_SENSE_SURVIVAL then
-                player:messageSpecial(text.COMMON_SENSE_SURVIVAL)
-            else
-                tell(player, 'You have registered this Survival Guide.')
-            end
+        player:addTeleport(xi.teleport.type.SURVIVAL, guide.groupIndex - 1, guide.group - 1)
+    end
 
-            player:addTeleport(xi.teleport.type.SURVIVAL, guide.groupIndex - 1, guide.group - 1)
-        end
-
-        player:setFreezeFlag(true)
-        guideRegionMenu(player, zoneId)
-    end)
+    player:setFreezeFlag(true)
+    guideRegionMenu(player, zoneId)
 end
 
 -- Classic switch (launcher CONFIG > Rates "Survival Guide teleports", main.ENABLE_SURVIVAL_GUIDE = 0): the guides do
 -- nothing, like before they existed. (Home Point teleports have their own setting, main.HOMEPOINT_TELEPORT, which the
 -- game's Home Point script already reads.)
-if not OVERRIDE_SURVIVAL_GUIDES then
-    m:addOverride('xi.survivalGuide.onTrigger', function(player)
-        if xi.settings.main.ENABLE_SURVIVAL_GUIDE == 0 then
-            tell(player, 'Survival Guide teleports are switched off on this world (classic travel).')
+m:addOverride('xi.survivalGuide.onTrigger', function(player)
+    if xi.settings.main.ENABLE_SURVIVAL_GUIDE == 0 then
+        tell(player, 'Survival Guide teleports are switched off on this world (classic travel).')
+        return
+    end
+
+    local zoneId   = player:getZoneID()
+    local ownLines = SURVIVAL_TEXT_ZONES[zoneId] == true
+    if OVERRIDE_SURVIVAL_GUIDES or ownLines then
+        local guide = survival.survivalGuides[survival.zoneIdToGuideIdMap[zoneId]]
+        if guide ~= nil then
+            guideTextMenu(player, zoneId, guide, ownLines)
             return
         end
+    end
 
-        return super(player)
-    end)
-end
+    return super(player)
+end)
 
 return m
