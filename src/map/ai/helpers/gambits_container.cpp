@@ -30,6 +30,7 @@
 #include "ai/states/weaponskill_state.h"
 #include "enmity_container.h"
 #include "notoriety_container.h"
+#include "recast_container.h"
 #include "spell.h"
 #include "utils/battleutils.h"
 #include "weapon_skill.h"
@@ -176,6 +177,25 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                     }
                 });
             // clang-format on
+        }
+        else if (targetType == G_TARGET::PARTY_LOWEST_HPP)
+        {
+            // XI: Forever Offline: the same members as PARTY (alive, same zone, within 15 yalms), tried from the lowest HP%
+            // up; equal HP% keeps party order. The first one whose conditions all match is the target.
+            // clang-format off
+                static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
+                {
+                    if (isValidMember(target, PMember))
+                    {
+                        potentialTargets.push_back(PMember);
+                    }
+                });
+            // clang-format on
+            std::stable_sort(potentialTargets.begin(), potentialTargets.end(),
+                             [](const CBattleEntity* a, const CBattleEntity* b)
+                             {
+                                 return a->GetHPP() < b->GetHPP();
+                             });
         }
         else if (targetType == G_TARGET::MASTER)
         {
@@ -564,6 +584,8 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
         }
 
         // Execute actions that passed the pre-checks. Use resolvedSpells for spells where available.
+        // XI: Forever Offline: an action counts as executed only when the controller started it (Cast/Ability/MobSkill
+        // returned true; RangedAttack: its own delay passed). A refused action no longer starts the rule's retry timer.
         bool executedAnyAction = false;
         for (size_t i = 0; i < gambit.actions.size(); ++i)
         {
@@ -576,16 +598,14 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
 
             if (action.reaction == G_REACTION::RATTACK)
             {
-                controller->RangedAttack(target->entityId());
-                executedAnyAction = true;
+                executedAnyAction = controller->RangedAttack(target->entityId()) || executedAnyAction;
             }
             else if (action.reaction == G_REACTION::MA)
             {
                 // Use the pre resolved spell if present, otherwise fall back
                 if (resolvedSpells[i].has_value())
                 {
-                    controller->Cast(target->entityId(), resolvedSpells[i].value());
-                    executedAnyAction = true;
+                    executedAnyAction = controller->Cast(target->entityId(), resolvedSpells[i].value()) || executedAnyAction;
                 }
                 else
                 {
@@ -595,8 +615,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto spell_id = POwner->SpellContainer->GetAvailable(static_cast<SpellID>(action.select_arg));
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::HIGHEST)
@@ -604,8 +623,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto spell_id = POwner->SpellContainer->GetBestAvailable(static_cast<SPELLFAMILY>(action.select_arg));
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::BEST_INDI)
@@ -614,8 +632,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto  spell_id = POwner->SpellContainer->GetBestIndiSpell(PMaster);
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::ENTRUSTED)
@@ -625,8 +642,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         target         = PMaster;
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::BEST_AGAINST_TARGET)
@@ -635,8 +651,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto spell_id      = POwner->SpellContainer->GetBestAgainstTargetWeakness(target, spell_to_cast);
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::DEF_BAR_ELEMENT)
@@ -672,8 +687,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
 
                             if (maybeSpellId.has_value())
                             {
-                                controller->Cast(target->entityId(), maybeSpellId.value());
-                                executedAnyAction = true;
+                                executedAnyAction = controller->Cast(target->entityId(), maybeSpellId.value()) || executedAnyAction;
                             }
                         }
                     }
@@ -682,8 +696,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto spell_id = POwner->SpellContainer->GetStormDay();
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::HELIX_DAY)
@@ -691,8 +704,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto spell_id = POwner->SpellContainer->GetHelixDay();
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::EN_MOB_WEAKNESS)
@@ -701,8 +713,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto           spell_id     = POwner->SpellContainer->EnSpellAgainstTargetWeakness(battleTarget);
                         if (spell_id.has_value())
                         {
-                            controller->Cast(POwner->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(POwner->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::STORM_MOB_WEAKNESS)
@@ -710,8 +721,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto spell_id = POwner->SpellContainer->StormDayAgainstTargetWeakness(target);
                         if (spell_id.has_value())
                         {
-                            controller->Cast(POwner->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(POwner->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::HELIX_MOB_WEAKNESS)
@@ -719,8 +729,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto spell_id = POwner->SpellContainer->HelixAgainstTargetWeakness(target);
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::RANDOM)
@@ -728,8 +737,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                         auto spell_id = POwner->SpellContainer->GetSpell();
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                     else if (action.select == G_SELECT::MB_ELEMENT)
@@ -771,8 +779,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
 
                         if (spell_id.has_value())
                         {
-                            controller->Cast(target->entityId(), spell_id.value());
-                            executedAnyAction = true;
+                            executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
                     }
                 }
@@ -840,16 +847,25 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                             if (tpCost != 0 && currentTP >= tpCost)
                             {
                                 PAbility = PWaltzAbility;
-                                controller->Ability(target->entityId(), PAbility->getID());
-                                executedAnyAction = true;
+                                executedAnyAction = controller->Ability(target->entityId(), PAbility->getID()) || executedAnyAction;
                             }
                         }
                     }
                 }
 
-                if (PAbility->getValidTarget() == TARGET_SELF)
+                // XI: Forever Offline: an ability that can only be used on allies (no enemy flag, e.g. Cover: party) goes to the
+                // rule's own target (MASTER, PARTY, TANK ...); before, every non-self ability went to the enemy and such a rule
+                // could never work. Self-only abilities go to the mate, enemy abilities (Provoke, Shield Bash) to the enemy, as before.
+                const auto validTargets = PAbility->getValidTarget();
+                if (validTargets == TARGET_SELF)
                 {
                     target = POwner;
+                }
+                else if ((validTargets & TARGET_ENEMY) == 0 &&
+                         (validTargets & (TARGET_PLAYER_PARTY | TARGET_PLAYER_ALLIANCE | TARGET_PLAYER | TARGET_NPC)) != 0 && target != nullptr &&
+                         target->objtype != TYPE_MOB)
+                {
+                    // keep the rule's resolved target (the ability's own target check refuses a wrong one)
                 }
                 else
                 {
@@ -860,8 +876,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                 {
                     if (target != nullptr)
                     {
-                        controller->Ability(target->entityId(), PAbility->getID());
-                        executedAnyAction = true;
+                        executedAnyAction = controller->Ability(target->entityId(), PAbility->getID()) || executedAnyAction;
                     }
                 }
 
@@ -930,8 +945,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
 
                     if (tpCost != 0 && (currentTP >= tpCost))
                     {
-                        controller->Ability(target->entityId(), PAbility->getID());
-                        executedAnyAction = true;
+                        executedAnyAction = controller->Ability(target->entityId(), PAbility->getID()) || executedAnyAction;
                     }
                 }
                 else if (action.select == G_SELECT::RUNE_DAY)
@@ -975,16 +989,14 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                             ability = ABILITY_IGNIS;
                             break;
                     }
-                    controller->Ability(target->entityId(), ability);
-                    executedAnyAction = true;
+                    executedAnyAction = controller->Ability(target->entityId(), ability) || executedAnyAction;
                 }
             }
             else if (action.reaction == G_REACTION::MS)
             {
                 if (action.select == G_SELECT::SPECIFIC)
                 {
-                    controller->MobSkill(target->entityId(), action.select_arg, std::nullopt);
-                    executedAnyAction = true;
+                    executedAnyAction = controller->MobSkill(target->entityId(), action.select_arg, std::nullopt) || executedAnyAction;
                 }
             }
             else if (action.reaction == G_REACTION::ANIM_STRING)
@@ -1143,8 +1155,27 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
             }
             case G_CONDITION::JA_ON_COOLDOWN:
             {
-                auto* PAbility = ability::GetAbility(static_cast<ABILITY>(predicate.condition_arg));
-                predicateResults.push_back(PAbility->getRecastTime() > 0s);
+                // XI: Forever Offline: true while the mate's own recast of that ability is running. Before, this tested the
+                // ability's fixed recast time (always true for any ability with a recast) and crashed on an unknown id.
+                // Trust recasts are kept by ability id (CBattleEntity::OnAbility), the same key CTrustController::Ability checks.
+                const auto* PAbility = predicate.condition_arg != 0 ? ability::GetAbility(static_cast<ABILITY>(predicate.condition_arg)) : nullptr;
+                predicateResults.push_back(PAbility != nullptr && POwner->PRecastContainer != nullptr &&
+                                           POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(PAbility->getID()), 0s));
+                continue;
+            }
+            case G_CONDITION::HAS_MP:
+            {
+                predicateResults.push_back(triggerTarget->GetMaxMP() > 0);
+                continue;
+            }
+            case G_CONDITION::HAS_MP_MPP_LT:
+            {
+                predicateResults.push_back(triggerTarget->GetMaxMP() > 0 && triggerTarget->GetMPP() < predicate.condition_arg);
+                continue;
+            }
+            case G_CONDITION::HAS_MP_MPP_GTE:
+            {
+                predicateResults.push_back(triggerTarget->GetMaxMP() > 0 && triggerTarget->GetMPP() >= predicate.condition_arg);
                 continue;
             }
             case G_CONDITION::LVL_LT:
@@ -1563,6 +1594,12 @@ auto CGambitsContainer::TryTrustSkill() -> bool
         return false;
     }
 
+    // XI: Forever Offline: the Gambits weapon skill settings have their own path; the triggers above keep theirs unchanged
+    if (tp_trigger >= G_TP_TRIGGER::OPEN_AT_TP && tp_trigger <= G_TP_TRIGGER::AT_TP)
+    {
+        return TrySettingsTrustSkill(target);
+    }
+
     auto checkTPTrigger = [&]() -> bool
     {
         if (POwner->health.tp >= 3000)
@@ -1853,6 +1890,12 @@ auto CGambitsContainer::TryTrustSkill() -> bool
             else
             {
                 target = POwner->GetBattleTarget();
+                // XI: Forever Offline (beta polish): the weapon skill state spends the TP before CTrustEntity::OnWeaponSkillFinished
+                // checks the range, so a weapon skill started too far away lost all TP. Wait (keep the TP) until in range.
+                if (!InWeaponSkillRange(PWeaponSkill, target))
+                {
+                    return false;
+                }
             }
             controller->WeaponSkill(target->entityId(), PWeaponSkill->getID());
         }
@@ -1871,6 +1914,179 @@ auto CGambitsContainer::TryTrustSkill() -> bool
         return true;
     }
     return false;
+}
+
+// XI: Forever Offline (beta polish): the range test CTrustEntity::OnWeaponSkillFinished applies after the TP is spent, used
+// before the weapon skill starts so an out-of-range attempt keeps the TP instead of wasting it.
+auto CGambitsContainer::InWeaponSkillRange(const CWeaponSkill* PWeaponSkill, const CBattleEntity* target) const -> bool
+{
+    if (PWeaponSkill == nullptr || target == nullptr)
+    {
+        return false;
+    }
+
+    return distance(POwner->loc.p, target->loc.p) <= PWeaponSkill->getRange() + target->modelHitboxSize + POwner->modelHitboxSize;
+}
+
+// XI: Forever Offline (Gambits weapon skill settings): is another party member ready to follow an opening weapon skill?
+// Alive, in the same zone, within 20 yalms of the enemy, with at least 1000 TP, and - for a Trust or squad mate - with
+// weapon skills and a TP setting that closes (not an opener: OPENER / OPEN_AT_TP; AT_TP only once its own threshold is
+// reached). Players (and bots) count when they have the TP: they choose their own weapon skills.
+auto CGambitsContainer::PotentialCloserReady(const CBattleEntity* target) const -> bool
+{
+    auto* PMaster = dynamic_cast<CCharEntity*>(POwner->PMaster);
+    if (PMaster == nullptr || target == nullptr)
+    {
+        return false;
+    }
+
+    bool ready = false;
+    // clang-format off
+    PMaster->ForPartyWithTrusts([&](CBattleEntity* PMember)
+    {
+        if (ready || PMember == nullptr || PMember == POwner || !PMember->isAlive() || PMember->loc.zone != POwner->loc.zone ||
+            PMember->health.tp < 1000 || distance(PMember->loc.p, target->loc.p) > 20.0f)
+        {
+            return;
+        }
+
+        if (PMember->objtype == TYPE_TRUST)
+        {
+            const auto* PController = dynamic_cast<CTrustController*>(PMember->PAI->GetController());
+            if (PController == nullptr || PController->m_GambitsContainer == nullptr)
+            {
+                return;
+            }
+
+            const auto& other = *PController->m_GambitsContainer;
+            if (other.tp_skills.empty() || other.tp_trigger == G_TP_TRIGGER::OPENER || other.tp_trigger == G_TP_TRIGGER::OPEN_AT_TP)
+            {
+                return;
+            }
+
+            if ((other.tp_trigger == G_TP_TRIGGER::AT_TP || other.tp_trigger == G_TP_TRIGGER::RANDOM) && PMember->health.tp < other.tp_value)
+            {
+                return;
+            }
+        }
+
+        ready = true;
+    });
+    // clang-format on
+
+    return ready;
+}
+
+// XI: Forever Offline (Gambits weapon skill settings): OPEN_AT_TP, CLOSE_ONLY, OPEN_CLOSE_AT_TP and AT_TP.
+// "Window" = the engine's closing window (a skillchain effect older than 3 s, tier 0), the same test as CLOSER.
+// Selection is the engine's HIGHEST: the closer that forms the best skillchain when the target has a skillchain effect,
+// otherwise the last weapon skill of the list (the opening pick). tp_skills is already only the chosen weapon skill when
+// the player chose one that the mate can use (squad.cpp limitWeaponSkills).
+auto CGambitsContainer::TrySettingsTrustSkill(CBattleEntity* target) -> bool
+{
+    if (tp_skills.empty())
+    {
+        return false;
+    }
+
+    const auto  tp        = POwner->health.tp;
+    const bool  forced    = tp >= 3000; // the engine's release: never hold TP at 3000
+    const auto  threshold = std::clamp<uint16>(tp_value, 1000, 3000);
+    auto*       PSCEffect = target->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain);
+    const bool  window    = PSCEffect != nullptr && PSCEffect->GetStartTime() + 3s < timer::now() && PSCEffect->GetTier() == 0;
+    const auto  canOpen   = [&]()
+    {
+        return PSCEffect == nullptr && tp >= threshold && PotentialCloserReady(target);
+    };
+
+    bool fire          = false;
+    bool allowFallback = false; // may use the opening pick when nothing closes
+    switch (tp_trigger)
+    {
+        case G_TP_TRIGGER::OPEN_AT_TP:
+            fire          = forced || canOpen();
+            allowFallback = true;
+            break;
+        case G_TP_TRIGGER::CLOSE_ONLY:
+            fire          = forced || window;
+            allowFallback = forced;
+            break;
+        case G_TP_TRIGGER::OPEN_CLOSE_AT_TP:
+            if (window)
+            {
+                fire          = true;
+                allowFallback = forced;
+            }
+            else
+            {
+                fire          = forced || canOpen();
+                allowFallback = true;
+            }
+            break;
+        case G_TP_TRIGGER::AT_TP:
+            fire          = forced || tp >= threshold;
+            allowFallback = true;
+            break;
+        default:
+            break;
+    }
+
+    if (!fire)
+    {
+        return false;
+    }
+
+    Maybe<TrustSkill_t> chosen_skill;
+    if (PSCEffect != nullptr)
+    {
+        std::list<xi::SkillchainType> resonanceProperties;
+        if (uint16 power = PSCEffect->GetPower())
+        {
+            resonanceProperties.emplace_back((xi::SkillchainType)(power & 0xF));
+            resonanceProperties.emplace_back((xi::SkillchainType)(power >> 4 & 0xF));
+            resonanceProperties.emplace_back((xi::SkillchainType)(power >> 8));
+        }
+
+        xi::SkillchainType chosen_skillchain = xi::SkillchainType::None;
+        for (const auto& skill : tp_skills)
+        {
+            std::list<xi::SkillchainType> skillProperties;
+            skillProperties.emplace_back((xi::SkillchainType)skill.primary);
+            skillProperties.emplace_back((xi::SkillchainType)skill.secondary);
+            skillProperties.emplace_back((xi::SkillchainType)skill.tertiary);
+            if (xi::SkillchainType possible_skillchain = battleutils::FormSkillchain(resonanceProperties, skillProperties);
+                possible_skillchain != xi::SkillchainType::None && possible_skillchain >= chosen_skillchain)
+            {
+                chosen_skill      = skill;
+                chosen_skillchain = possible_skillchain;
+            }
+        }
+    }
+
+    if (!chosen_skill && allowFallback)
+    {
+        chosen_skill = tp_skills.back();
+    }
+
+    if (!chosen_skill || chosen_skill->skill_type != G_REACTION::WS)
+    {
+        return false;
+    }
+
+    CWeaponSkill* PWeaponSkill = battleutils::GetWeaponSkill(chosen_skill->skill_id);
+    if (PWeaponSkill == nullptr)
+    {
+        return false;
+    }
+
+    auto* wsTarget = (chosen_skill->valid_targets & TARGET_SELF) ? static_cast<CBattleEntity*>(POwner) : target;
+    if (wsTarget != POwner && !InWeaponSkillRange(PWeaponSkill, wsTarget))
+    {
+        return false; // too far: keep the TP and try again next tick (also at 3000 TP)
+    }
+
+    auto* controller = static_cast<CTrustController*>(POwner->PAI->GetController());
+    return controller->WeaponSkill(wsTarget->entityId(), PWeaponSkill->getID());
 }
 
 // currently only used for Uka Totlihn to determin what samba to use.

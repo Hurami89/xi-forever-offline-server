@@ -38,6 +38,20 @@
 --                                       Answers, tokens, retries and expiry are exactly those of w.
 --   del   <token> <num> <rev>        -> GSQ|token|ok|num|-|-  or  GSQ|token|err|code|text
 --   abort <token>                    -> GSQ|token|aborted
+-- (version 5, Gambits WAR/PLD/RDM/WS batch; squad_ws.lua) weapon skill settings per mate and main job:
+--   catm  <n> <slot> j               -> as above; the extra word "j" says the addon reads conditions with a job ability
+--                                       argument (JA_ON_COOLDOWN:j). Without it they are left out (older addons reject them).
+--   wsg   <n> <slot>                 -> GSQ|n|ws|slot|JOB|src|ctl|mode|tp|ws|ltp|lws|out|usable|applied|eng, GSQ|n|end|1
+--                                       src c = Custom, d = Squad default (chosen in Gambits), l = no Gambits setting
+--                                       (the !squad ws values ltp/lws apply); ctl/mode/tp/ws = the stored setting (kept
+--                                       while Squad default is chosen); out 0/1; usable 1/0 = the chosen weapon skill is in
+--                                       the called mate's list now, - = not known or Best; applied 1/0 = the called mate
+--                                       runs the stored setting, - = not called; eng 1/0 = this map server has the triggers
+--   wsl   <n> <slot>                 -> GSQ|n|wsl|id:Name,id:Name,... (as many lines as needed), GSQ|n|end|<lines>|<count>:
+--                                       every weapon skill the called mate can use now (err notout when it is not called)
+--   wss   <n> <slot> <ctl> <mode> <tp> <ws>  stores the setting for the mate's main job -> the wsg answer
+--                                       (ctl 0 = Squad default, 1 = Custom; mode 1-4; tp 1000/1500/2000/3000; ws 0 = Best)
+--   wsa   <n> <slot>                 -> puts the stored setting on the called mate now (no new call) -> the wsg answer
 -- Errors of a request: GSQ|<id>|err|code|text.
 -- Save data: part 1 starts with "num,rev,JOB,rules,name;" (num 0 = a new set, rev - for a new set), then rules
 -- separated by ';', each "on,TARGET,COND,ARG,COND2,ARG2,kind,NAME,RETRY[,LEVEL[,ID]]" (on 1/0; kind f = best of a spell
@@ -49,7 +63,8 @@
 -- within 120 s is dropped; nothing is written before that.
 -- This file only registers the command; it defines no globals.
 -----------------------------------
-local VERSION      = 4     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm
+local VERSION      = 5     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
+                           -- 5: weapon skill settings (wsg, wsl, wss, wsa), catm "j", PARTY_LOWEST_HPP, HAS_MP*
 local MAX_LINE     = 120
 local MAX_PARTS    = 16    -- w: parts that end on a rule boundary
 local MAX_CHUNKS   = 64    -- x: 32 rules of the most complex valid form (~140 bytes each) need about 49 chunks of 93 bytes
@@ -63,8 +78,9 @@ local ACTIONS      = { f = 'family', j = 'ja', s = 'spell', r = 'ranged', n = 'n
 local ACTION_CODE  = { family = 'f', ja = 'j', spell = 's', ranged = 'r', nuke = 'n', burst = 'b' }
 local NAMED        = { family = true, ja = true, spell = true }  -- the kinds with a NAME (squad_rulesets.lua ACTION_KINDS)
 -- the targets the editor offers (ai.t names; the engine's job groups: TANK = PLD/RUN, CASTER = WHM BLM RDM BRD SMN BLU
--- SCH GEO RUN, MELEE = the melee jobs, RANGED = RNG/COR; PARTY takes the first member in party order that matches)
-local TARGETS      = { 'SELF', 'PARTY', 'TANK', 'CASTER', 'MELEE', 'RANGED', 'TOP_ENMITY', 'TARGET', 'MASTER' }
+-- SCH GEO RUN, MELEE = the melee jobs, RANGED = RNG/COR; PARTY takes the first member in party order that matches;
+-- PARTY_LOWEST_HPP the member with the lowest HP% that matches - only with the batch's map server)
+local TARGETS      = { 'SELF', 'PARTY', 'PARTY_LOWEST_HPP', 'TANK', 'CASTER', 'MELEE', 'RANGED', 'TOP_ENMITY', 'TARGET', 'MASTER' }
 local FAMILIES     = { 'CURE', 'CURAGA', 'CURA', 'REGEN', 'PROTECT', 'SHELL', 'PROTECTRA', 'SHELLRA', 'HASTE', 'BLINK',
                        'STONESKIN', 'AQUAVEIL', 'REFRESH', 'RAISE', 'RERAISE', 'POISONA', 'PARALYNA', 'BLINDNA', 'SILENA',
                        'STONA', 'VIRUNA', 'CURSNA', 'ERASE', 'ESUNA', 'SACRIFICE', 'AUSPICE', 'DIA', 'BANISH',
@@ -669,21 +685,34 @@ requests.get = function(player, w)
     G.reply(player, w[2], 'end', count)
 end
 
--- the targets, conditions and families of a catalog (cat and catm alike)
-local function baseLists(R)
+-- the targets, conditions and families of a catalog (cat and catm alike). withJa: the addon reads job ability arguments
+-- (catm "j", version 5). Names that need the batch's map server (R.ENGINE_NAMES) only when it is there.
+local function baseLists(R, withJa)
+    local engineOk = R.engineReady == nil or R.engineReady()
+    local function offered(name)
+        return engineOk or not (R.ENGINE_NAMES and R.ENGINE_NAMES[name])
+    end
+
     local lists = {}
     lists.t = {}
     for _, t in ipairs(TARGETS) do
-        if ai == nil or ai.t == nil or ai.t[t] ~= nil then
+        if (ai == nil or ai.t == nil or ai.t[t] ~= nil) and offered(t) then
             lists.t[#lists.t + 1] = t
         end
     end
 
-    -- every condition a Rule Set may hold: no argument (n), a whole number range (r:low:high) or a status effect (e);
-    -- the addon offers the agreed subset for new rules and shows the others in existing rules
+    -- every condition a Rule Set may hold: no argument (n), a whole number range (r:low:high), a status effect (e) or
+    -- (version 5, withJa) a job ability (j); the addon offers the agreed subset for new rules and shows the others in
+    -- existing rules
     lists.c = {}
     for name, spec in pairs(R.CONDITIONS) do
-        if spec == 'none' then
+        if not offered(name) or (ai ~= nil and ai.c ~= nil and ai.c[name] == nil) then
+            -- (not on this server)
+        elseif spec == 'ja' then
+            if withJa then
+                lists.c[#lists.c + 1] = name .. ':j'
+            end
+        elseif spec == 'none' then
             lists.c[#lists.c + 1] = name .. ':n'
         elseif spec == 'effect' then
             lists.c[#lists.c + 1] = name .. ':e'
@@ -942,7 +971,7 @@ requests.catm = function(player, w)
         return
     end
 
-    local lists = baseLists(R)
+    local lists = baseLists(R, w[4] == 'j')
     lists.j = G.mateAbilities(player, mate.mjob, main, sub, subLevel)
     lists.s, lists.u = G.mateSpells(player, mate.mjob, main, sub, subLevel)
     replyCatalog(player, w[2], lists, CATM_KINDS)
@@ -990,6 +1019,165 @@ requests.chk = function(player, w)
 
     -- (version 4) the levels it was checked at: the summoned mate's current ones, Level Sync included
     G.reply(player, w[2], 'end', #dropped, m.level, m.subJob ~= 0 and jobName(m.subJob) or '-', m.subLevel)
+end
+
+-- ---------------------------------------------------------------- (version 5) weapon skill settings (squad_ws.lua)
+local function wsSettings()
+    local ok, W = pcall(require, 'modules/custom/lua/squad_ws')
+    return ok and type(W) == 'table' and W or nil
+end
+
+local function mateInSlot(player, slotText)
+    local slot = tonumber(slotText or '')
+    for _, m in ipairs(squadOf(player)) do
+        if slot ~= nil and m.slot == slot then
+            return m
+        end
+    end
+
+    return nil
+end
+
+-- the wsg answer for one mate: GSQ|n|ws|slot|JOB|src|ctl|mode|tp|ws|ltp|lws|out|usable|applied|eng, GSQ|n|end|1
+local function replyWs(player, id, W, mate)
+    local trust = mateOut(player, mate.id)
+    local job = trust and trust:getMainJob() or mate.mjob
+    local s = W.resolve(player, mate.id, job)
+    local wsId = W.effectiveWs(s)
+    local usable = '-'
+    if trust and wsId > 0 then
+        local u = W.isUsable(trust, wsId)
+        usable = u == true and 1 or (u == false and 0 or '-')
+    end
+
+    local applied = W.applied(player, mate, trust)
+    G.reply(player, id, 'ws', mate.slot, jobName(job), ({ custom = 'c', default = 'd', legacy = 'l' })[s.source],
+        s.noEngine and 1 or s.control, s.mode, s.tp, s.ws, s.legacyTp, s.legacyWs, trust and 1 or 0, usable,
+        applied == nil and '-' or (applied and 1 or 0), W.engineReady() and 1 or 0)
+    G.reply(player, id, 'end', 1)
+end
+
+requests.wsg = function(player, w)
+    local W, mate = wsSettings(), mateInSlot(player, w[3])
+    if W == nil then
+        G.reply(player, w[2], 'err', 'server', 'the weapon skill settings file is missing on the server')
+    elseif mate == nil then
+        G.reply(player, w[2], 'err', 'missing', 'no squad mate in that slot')
+    else
+        replyWs(player, w[2], W, mate)
+    end
+end
+
+-- the weapon skill names a reply carries: letters, digits and _ only ("Tachi: Enpi" -> Tachi_Enpi)
+function G.wsWireName(name)
+    return (string.gsub(string.gsub(tostring(name or ''), ' ', '_'), '[^%w_]', ''))
+end
+
+requests.wsl = function(player, w)
+    local W, mate = wsSettings(), mateInSlot(player, w[3])
+    if W == nil or mate == nil then
+        G.reply(player, w[2], 'err', W == nil and 'server' or 'missing', W == nil and 'the weapon skill settings file is missing on the server'
+            or 'no squad mate in that slot')
+        return
+    end
+
+    local trust = mateOut(player, mate.id)
+    local list = trust and W.usableIds(trust)
+    if trust == nil then
+        G.reply(player, w[2], 'err', 'notout', 'call the squad mate first; its weapon skills depend on what it holds now')
+        return
+    elseif list == nil then
+        G.reply(player, w[2], 'err', 'server', 'this map server cannot list a mate\'s weapon skills')
+        return
+    end
+
+    local lines, line, size = 0, {}, 0
+    local budget = REPLY_MAX - #string.format('GSQ|%s|wsl|', w[2])
+    local function flush()
+        if #line > 0 then
+            G.reply(player, w[2], 'wsl', table.concat(line, ','))
+            lines, line, size = lines + 1, {}, 0
+        end
+    end
+
+    for _, e in ipairs(list) do
+        local entry = string.format('%d:%s', tonumber(e.id) or 0, G.wsWireName(e.name))
+        local add = #entry + (#line > 0 and 1 or 0)
+        if #line > 0 and size + add > budget then
+            flush()
+            add = #entry
+        end
+
+        line[#line + 1] = entry
+        size = size + add
+    end
+
+    flush()
+    G.reply(player, w[2], 'end', lines, #list)
+end
+
+requests.wss = function(player, w)
+    local W, mate = wsSettings(), mateInSlot(player, w[3])
+    if W == nil or mate == nil then
+        G.reply(player, w[2], 'err', W == nil and 'server' or 'missing', W == nil and 'the weapon skill settings file is missing on the server'
+            or 'no squad mate in that slot')
+        return
+    end
+
+    local s = { control = tonumber(w[4] or ''), mode = tonumber(w[5] or ''), tp = tonumber(w[6] or ''), ws = tonumber(w[7] or '') }
+    local value, why = W.encode(s)
+    if value == nil then
+        G.reply(player, w[2], 'err', 'badreq', why)
+        return
+    end
+
+    if s.control == 1 and not W.engineReady() then
+        G.reply(player, w[2], 'err', 'engine', 'Custom weapon skills need the updated map server (xi_map)')
+        return
+    end
+
+    if s.ws > 0 then
+        local known = xi and rawget(xi, 'weaponskill')
+        local found = type(known) ~= 'table'
+        for _, v in pairs(type(known) == 'table' and known or {}) do
+            found = found or v == s.ws
+        end
+
+        if not found then
+            G.reply(player, w[2], 'err', 'badreq', 'unknown weapon skill ' .. s.ws)
+            return
+        end
+
+        -- a called mate: the new choice must be one it can use now (a saved choice that stops being usable is kept)
+        local trust = mateOut(player, mate.id)
+        local current = W.resolve(player, mate.id, trust and trust:getMainJob() or mate.mjob)
+        if trust and s.ws ~= current.ws and W.isUsable(trust, s.ws) == false then
+            G.reply(player, w[2], 'err', 'notusable', mate.name .. ' cannot use that weapon skill now')
+            return
+        end
+    end
+
+    local trust = mateOut(player, mate.id)
+    player:setCharVar(W.varName(mate.id, trust and trust:getMainJob() or mate.mjob), value)
+    replyWs(player, w[2], W, mate)
+end
+
+requests.wsa = function(player, w)
+    local W, mate = wsSettings(), mateInSlot(player, w[3])
+    if W == nil or mate == nil then
+        G.reply(player, w[2], 'err', W == nil and 'server' or 'missing', W == nil and 'the weapon skill settings file is missing on the server'
+            or 'no squad mate in that slot')
+        return
+    end
+
+    local trust = mateOut(player, mate.id)
+    if trust == nil then
+        G.reply(player, w[2], 'err', 'notout', 'not called: the saved setting applies when the mate is called')
+        return
+    end
+
+    W.liveApply(player, mate, trust)
+    replyWs(player, w[2], W, mate)
 end
 
 requests.w = function(player, w, rest)

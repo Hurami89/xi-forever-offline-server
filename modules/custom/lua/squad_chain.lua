@@ -41,10 +41,15 @@ local function chainTick(mob, boss, fighting, now)
 
     local ready, closers = 0, 0
     for _, m in pairs(boss:getPartyWithTrusts() or {}) do
-        if m:getID() ~= mob:getID() and m:getObjType() == xi.objType.TRUST and m:isAlive() and m:getLocalVar('SQUAD_SC_ROLE') == 2 then
-            closers = closers + 1
-            if m:getTP() >= 1000 then
-                ready = ready + 1
+        if m:getID() ~= mob:getID() and m:getObjType() == xi.objType.TRUST and m:isAlive() then
+            -- a closer: the automatic role 2, or (Gambits weapon skill settings, squad_ws.lua) a Custom mate that closes,
+            -- ready from SQUAD_WSC_CLOSE_TP (1000 for Close and Open + Close, its own threshold for Independent)
+            local closeTp = m:getLocalVar('SQUAD_SC_ROLE') == 2 and 1000 or m:getLocalVar('SQUAD_WSC_CLOSE_TP')
+            if closeTp > 0 then
+                closers = closers + 1
+                if m:getTP() >= closeTp then
+                    ready = ready + 1
+                end
             end
         end
     end

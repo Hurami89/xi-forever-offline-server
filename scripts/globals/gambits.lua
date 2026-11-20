@@ -21,6 +21,7 @@ ai.target =
     PARTY_MULTI                = 11,
     TRIGGER_SELF_ACTION_TARGET = 12, -- Triggers get checked on the trust but the action target is the battleTarget
     TRIGGER_TARGET_ACTION_SELF = 13, -- Triggers get checked on the battleTarget but the action target is the trust
+    PARTY_LOWEST_HPP           = 14, -- (XI: Forever Offline) like PARTY, tried from the lowest HP% up
 }
 ai.t = ai.target
 
@@ -97,6 +98,9 @@ ai.condition =
     JA_ON_COOLDOWN     = 37,
     VAL_URIEL_CHECK    = 38,
     TIMER              = 39, -- argument in seconds
+    HAS_MP             = 40, -- (XI: Forever Offline) the target has an MP pool
+    HAS_MP_MPP_LT      = 41, -- (XI: Forever Offline) like MPP_LT, false without an MP pool
+    HAS_MP_MPP_GTE     = 42, -- (XI: Forever Offline) like MPP_GTE, false without an MP pool
 }
 ai.c = ai.condition
 
@@ -147,4 +151,9 @@ ai.tp =
     OPENER          = 2,
     CLOSER          = 3,    -- Will Hold TP Indefinitely to close a SC
     CLOSER_UNTIL_TP = 4,    -- Will Hold TP to close a SC until a certain threshold
+    -- (XI: Forever Offline, Gambits weapon skill settings; value = the TP threshold; all release at 3000 TP)
+    OPEN_AT_TP       = 5,   -- Opens at the threshold when another party member has 1000 TP to close; never closes
+    CLOSE_ONLY       = 6,   -- Closes an open skillchain from 1000 TP; otherwise waits
+    OPEN_CLOSE_AT_TP = 7,   -- Closes from 1000 TP; otherwise opens like OPEN_AT_TP
+    AT_TP            = 8,   -- Uses its weapon skill at the threshold, closing if it can
 }

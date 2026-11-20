@@ -37,6 +37,8 @@
 #include <set>
 #include <utility>
 
+class CWeaponSkill;
+
 namespace gambits
 {
 
@@ -56,6 +58,7 @@ enum class G_TARGET : uint16
     PARTY_MULTI                = 11,
     TRIGGER_SELF_ACTION_TARGET = 12,
     TRIGGER_TARGET_ACTION_SELF = 13,
+    PARTY_LOWEST_HPP           = 14, // XI: Forever Offline: the living party member in range with the lowest HP% that matches
 };
 
 enum class G_LOGIC : uint16
@@ -106,6 +109,10 @@ enum class G_CONDITION : uint16
     JA_ON_COOLDOWN     = 37,
     VAL_URIEL_CHECK    = 38,
     TIMER              = 39, // condition_arg in seconds
+    // XI: Forever Offline: MP conditions that are false for a target without an MP pool (max MP 0)
+    HAS_MP             = 40,
+    HAS_MP_MPP_LT      = 41,
+    HAS_MP_MPP_GTE     = 42,
 };
 
 enum class G_REACTION : uint16
@@ -150,6 +157,12 @@ enum class G_TP_TRIGGER : uint16
     OPENER          = 2,
     CLOSER          = 3, // Will Hold TP Indefinitely to close a SC
     CLOSER_UNTIL_TP = 4, // Will Hold TP to close a SC until a certain threshold
+    // XI: Forever Offline (Gambits weapon skill settings). tp_value = the threshold (1000-3000). At 3000 TP each of these
+    // always uses a weapon skill (the engine's forced release), falling back to the opening pick when nothing closes.
+    OPEN_AT_TP       = 5, // Opens only: own TP >= value, no skillchain effect on the target, another party member ready to close
+    CLOSE_ONLY       = 6, // Closes only: an open skillchain window, from 1000 TP (value not used); otherwise waits
+    OPEN_CLOSE_AT_TP = 7, // Closes a window from 1000 TP; otherwise opens like OPEN_AT_TP
+    AT_TP            = 8, // Own TP >= value, whatever the others do: closes a window if it can, otherwise still uses its skill
 };
 
 struct Predicate_t
@@ -314,6 +327,9 @@ public:
 private:
     auto CheckTrigger(const CBattleEntity* triggerTarget, const Gambit_t& gambit, size_t predicateGroupIndex, PredicateGroup_t& predicateGroup) -> bool;
     auto TryTrustSkill() -> bool;
+    auto TrySettingsTrustSkill(CBattleEntity* target) -> bool; // the OPEN_AT_TP .. AT_TP triggers
+    auto PotentialCloserReady(const CBattleEntity* target) const -> bool;
+    auto InWeaponSkillRange(const CWeaponSkill* PWeaponSkill, const CBattleEntity* target) const -> bool;
     auto PartyHasHealer() -> bool;
     auto PartyHasTank() -> bool;
 

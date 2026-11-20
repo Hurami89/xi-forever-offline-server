@@ -57,7 +57,11 @@ local ACTION_KINDS = { spell = true, family = true, ja = true, ranged = false, n
 --   'effect'               a status effect name (xi.effect)           STATUS / NOT_STATUS
 --   'flag'                 { flag = NAME } (xi.effectFlag)            STATUS_FLAG
 --   'ecosystem'            { ecosystem = NAME } (xi.ecosystem)        IS_ECOSYSTEM
+--   'ja'                   a job ability name (xi.ja)                 JA_ON_COOLDOWN (the mate's own recast of it is running)
 -- A condition not listed here is not offered for Rule Sets (yet), so it fails clearly instead of being guessed at.
+-- (2026-11-20, Gambits WAR/PLD/RDM batch) HAS_MP, HAS_MP_MPP_LT/GTE (false for a target without MP), JA_ON_COOLDOWN (fixed
+-- in gambits_container.cpp) and the target PARTY_LOWEST_HPP need the map server built with that batch: R.ENGINE_NAMES are
+-- refused on an older xi_map (R.engineReady()), where JA_ON_COOLDOWN would test the wrong thing or crash.
 R.CONDITIONS =
 {
     ALWAYS = 'none',
@@ -76,12 +80,21 @@ R.CONDITIONS =
     CASTING_MA = 'none', CASTING_DEBUFF = 'none', CASTING_ELEMENT_MA = 'none', CAST_ELE_MA_SELF = 'none',
     CASTING_ELE_MA_AOE = 'none', NEED_ELE_BAREFFECT = 'none',
     NO_SAMBA = 'none', NO_STORM = 'none', NO_MAX_RUNE = 'none', HAS_RUNES = 'none',
+    HAS_MP = 'none', HAS_MP_MPP_LT = { 0, 100 }, HAS_MP_MPP_GTE = { 0, 100 },               -- false without an MP pool
+    JA_ON_COOLDOWN = 'ja',
 }
+
+-- The names that need the map server of the Gambits WAR/PLD/RDM batch (see above)
+R.ENGINE_NAMES = { HAS_MP = true, HAS_MP_MPP_LT = true, HAS_MP_MPP_GTE = true, JA_ON_COOLDOWN = true, PARTY_LOWEST_HPP = true }
+
+-- true when xi_map has that batch: its squad.cpp registers SquadApplyWeaponSkills (built from the same source)
+function R.engineReady()
+    return type(rawget(_G, 'SquadApplyWeaponSkills')) == 'function'
+end
 
 -- Conditions the engine has but that a Rule Set must not use, and why (gambits_container.cpp CheckTrigger)
 R.REFUSED_CONDITIONS =
 {
-    JA_ON_COOLDOWN  = 'the engine tests the ability\'s fixed recast time, not whether it is on cooldown, and an unknown ability id would crash the server',
     SUB_ANIMATION   = 'it compares an internal animation number, which has no meaning in a rule',
     VAL_URIEL_CHECK = 'it is a special check for one trust and assumes its master is in battle',
 }
@@ -121,6 +134,10 @@ local function conditionProblem(cond)
     local name, arg = cond[1], cond[2]
     if R.REFUSED_CONDITIONS[name] then
         return name .. ' cannot be used in a Rule Set: ' .. R.REFUSED_CONDITIONS[name]
+    end
+
+    if R.ENGINE_NAMES[name] and not R.engineReady() then
+        return name .. ' needs the updated map server (xi_map)'
     end
 
     if ai ~= nil and ai.c ~= nil and ai.c[name] == nil then
@@ -172,6 +189,14 @@ local function conditionProblem(cond)
 
         if known('ecosystem', arg.ecosystem) == false then
             return 'unknown ecosystem ' .. arg.ecosystem
+        end
+    elseif spec == 'ja' then
+        if not isName(arg) then
+            return name .. ' needs a job ability name like PROVOKE'
+        end
+
+        if known('ja', arg) == false then
+            return 'unknown job ability ' .. arg
         end
     end
 
@@ -251,6 +276,8 @@ function R.ruleProblems(rule)
         out[#out + 1] = 'target must be a name like PARTY'
     elseif ai ~= nil and ai.t ~= nil and ai.t[rule.target] == nil then
         out[#out + 1] = 'unknown target ' .. rule.target
+    elseif R.ENGINE_NAMES[rule.target] and not R.engineReady() then
+        out[#out + 1] = 'the target ' .. rule.target .. ' needs the updated map server (xi_map)'
     end
 
     local problem = conditionProblem(rule.cond)

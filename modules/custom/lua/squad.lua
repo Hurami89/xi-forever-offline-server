@@ -1041,9 +1041,16 @@ end
 -- else can), the rest close
 local function skillchainRoles(player)
     local melee = {}
+    local customClosers = 0
     for _, trust in ipairs(squadTrusts(player)) do
         local ownTp = trust:getLocalVar('SQUAD_WSTP') -- set with !squad ws <slot> <tp>: this mate keeps its own timing
-        if trust:isAlive() and ownTp > 0 then
+        if trust:isAlive() and trust:getLocalVar('SQUAD_WSC') > 0 then
+            -- (Gambits weapon skill settings, squad_ws.lua) a Custom mate keeps its own setting; one that closes still lets a
+            -- lone melee mate open for it
+            if trust:getLocalVar('SQUAD_WSC_CLOSE_TP') > 0 then
+                customClosers = customClosers + 1
+            end
+        elseif trust:isAlive() and ownTp > 0 then
             local role = 100 + math.floor(ownTp / 100)
             if trust:getLocalVar('SQUAD_SC_ROLE') ~= role then
                 trust:setLocalVar('SQUAD_SC_ROLE', role)
@@ -1070,7 +1077,7 @@ local function skillchainRoles(player)
     end)
 
     for i, trust in ipairs(melee) do
-        local role = (#melee == 1 and SC_ROLE.alone) or (i == 1 and SC_ROLE.opener) or SC_ROLE.closer
+        local role = (#melee == 1 and customClosers == 0 and SC_ROLE.alone) or (i == 1 and SC_ROLE.opener) or SC_ROLE.closer
         if trust:getLocalVar('SQUAD_SC_ROLE') ~= role then
             trust:setLocalVar('SQUAD_SC_ROLE', role)
             pcall(function()
@@ -2248,6 +2255,9 @@ local function callMate(player, mate)
         end
     end
 
+    -- (Gambits weapon skill settings) per mate and main job; without a Gambits setting the !squad ws vars, as before
+    local okWs, wsSettings = pcall(require, 'modules/custom/lua/squad_ws')
+    wsSettings = okWs and type(wsSettings) == 'table' and wsSettings or nil
     local trust = SpawnSquadMate(player,
     {
         id       = mate.id,
@@ -2259,7 +2269,8 @@ local function callMate(player, mate)
         race     = mate.race > 0 and mate.race or 1,
         face     = mate.face,
         size     = player:getCharVar('SQUAD_SIZE_' .. mate.id), -- 0 = not chosen, 1-3 = small / medium / large
-        ws       = player:getCharVar('SQUAD_WS_' .. mate.id),   -- 0 = every weapon skill it can use, else only this one
+        ws       = wsSettings and wsSettings.spawnWs(player, mate)  -- 0 = every weapon skill it can use, else only this one
+                   or player:getCharVar('SQUAD_WS_' .. mate.id),
         scrolls  = squadScrollsOn(),                              -- spells 18+ only when the squad learned them
         blueSet    = squadBlueSetGet(player, mate.id),            -- (a Blue Mage) your chosen set; empty = automatic
         bluePrefer = squadBluePrefer(),
@@ -2275,6 +2286,13 @@ local function callMate(player, mate)
     trust:renameEntity(mate.name, true)
     trust:setLocalVar('SQUAD_ID', mate.id) -- make sure the tag is there after spawning
     trust:setLocalVar('SQUAD_WSTP', player:getCharVar('SQUAD_WSTP_' .. mate.id)) -- its own weapon skill timing (!squad ws)
+    if wsSettings then
+        -- Gambits weapon skill settings for this job (Custom / Squad default), else the !squad ws timing just set
+        local okApply, applyErr = pcall(wsSettings.onSpawn, player, trust, mate)
+        if not okApply then
+            print('[squad] weapon skill settings: ' .. tostring(applyErr))
+        end
+    end
     -- The party list was sent while the mate still had its template's name (the last one called kept showing "Shantotto"):
     -- send the party list again now, and once more a moment later, so it shows the new name.
     player:reloadParty()
@@ -4234,6 +4252,15 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         say(player, string.format('%s will use %s %s. Dismiss and call them again to apply it.', mate.name,
             wsId > 0 and wsName(wsId) or 'its best weapon skill',
             tp > 0 and ('at ' .. tp .. ' TP' .. (tp < 1500 and ' (as soon as it has 1000)' or '')) or 'to skillchain with the party'))
+        -- (Gambits weapon skill settings) a Gambits setting for the mate's current job comes first: say so
+        local okWs, wsSettings = pcall(require, 'modules/custom/lua/squad_ws')
+        if okWs and type(wsSettings) == 'table' then
+            local okNote, noteText = pcall(wsSettings.legacyNote, player,
+                { id = mate.id, mjob = mate.mjob, name = mate.name, jobName = jobNames[mate.mjob] })
+            if okNote and noteText then
+                say(player, noteText)
+            end
+        end
         return
     elseif action == 'size' then
         -- Body size, like a player's at character creation. Picked once (part of the look); a GM may still change it.
@@ -5175,6 +5202,18 @@ local function ruleCondition(spec, isSub)
         return nil
     end
 
+    -- (Gambits WAR/PLD/RDM batch) JA_ON_COOLDOWN names a job ability: the engine wants its id (cond would read a name as
+    -- a status effect)
+    if spec[1] == 'JA_ON_COOLDOWN' then
+        local jaId = type(spec[2]) == 'string' and xi.ja[spec[2]] or nil
+        if jaId == nil then
+            print(string.format('[squad] unknown job ability %s for JA_ON_COOLDOWN - rule skipped', tostring(spec[2])))
+            return nil
+        end
+
+        return { id, jaId }
+    end
+
     return cond(id, ruleArg(spec[2], isSub))
 end
 
@@ -5854,6 +5893,7 @@ if rawget(_G, '__SQUAD_TEST') ~= nil then
         ROLES = ROLES, MODES = MODES, SWITCHES = SWITCHES, SW_BIT = SW_BIT, SW_ALL = SW_ALL,
         switchesOf = switchesOf, withBit = withBit, switchSummary = switchSummary, switchForAction = switchForAction,
         chatFight = chatFight, chatWorld = chatWorld, chatHookPlayer = chatHookPlayer,
+        skillchainRoles = skillchainRoles, ruleCondition = ruleCondition, -- (Gambits WAR/PLD/RDM/WS batch tests)
     }
 end
 

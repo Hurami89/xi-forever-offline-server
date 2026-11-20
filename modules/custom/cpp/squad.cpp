@@ -34,6 +34,8 @@
 //   - SquadNewSpells(job, oldLevel, newLevel) -> names of spells that job learns between those levels
 //   - UnlockSquadItem(charId, itemId)             -> adds an item to the shared squad collection
 //   - GetSquadUnlocks(charId)                     -> table with [itemId] = true for each unlocked item
+//   - GetSquadWeaponSkillIds(mate)                -> { { id, name } ... } every weapon skill a called mate can use now
+//   - SquadApplyWeaponSkills(mate, wsId) -> bool  rebuilds a called mate's weapon skills now, narrowed to wsId (0 = all)
 //
 
 #include "common/database.h"
@@ -587,6 +589,62 @@ auto getSquadWeaponSkills(CLuaBaseEntity* mate) -> sol::table
     }
 
     return out;
+}
+
+// (Gambits weapon skill settings) GetSquadWeaponSkillIds(mate) -> { { id = n, name = "Raging_Axe" }, ... }: the complete list
+// this called mate can use now, the same list as GetSquadWeaponSkills (taken before a chosen weapon skill narrows the skills
+// it uses), with the ids the settings store. Empty for anything that is not a called squad mate.
+auto getSquadWeaponSkillIds(CLuaBaseEntity* mate) -> sol::table
+{
+    auto out = ::lua.create_table();
+    if (mate == nullptr || mate->GetBaseEntity() == nullptr)
+    {
+        return out;
+    }
+
+    const auto found = squadWeaponSkills.find(mate->GetBaseEntity()->id);
+    if (found == squadWeaponSkills.end())
+    {
+        return out;
+    }
+
+    int index = 1;
+    for (const auto id : found->second)
+    {
+        if (auto* ws = battleutils::GetWeaponSkill(id))
+        {
+            std::string name = ws->getName();
+            std::replace(name.begin(), name.end(), ' ', '_');
+            auto entry    = ::lua.create_table();
+            entry["id"]   = id;
+            entry["name"] = name;
+            out[index++]  = entry;
+        }
+    }
+
+    return out;
+}
+
+// (Gambits weapon skill settings, live apply) SquadApplyWeaponSkills(mate, wsId) -> usable
+// Builds the called squad mate's weapon skills again for the weapon it holds now (as a call does) and narrows them to
+// wsId (0 = all it can use). Returns true when wsId is 0 or usable; false when the chosen one is not usable now (then the
+// mate keeps all its weapon skills, exactly as at a call) or when this is not a called squad mate (nothing changed).
+auto squadApplyWeaponSkills(CLuaBaseEntity* mate, const uint16 wsId) -> bool
+{
+    auto* PTrust = mate != nullptr ? dynamic_cast<CTrustEntity*>(mate->GetBaseEntity()) : nullptr;
+    if (PTrust == nullptr || PTrust->GetLocalVar("SQUAD_ID") == 0 || PTrust->PAI == nullptr)
+    {
+        return false;
+    }
+
+    limitWeaponSkills(PTrust, wsId);
+    if (wsId == 0)
+    {
+        return true;
+    }
+
+    const auto& usable = squadWeaponSkills[PTrust->id];
+    return std::find(usable.begin(), usable.end(), wsId) != usable.end();
 }
 
 auto getSquad(const uint32 charId) -> sol::table
@@ -1964,6 +2022,8 @@ class SquadModule : public CPPModule
         ::lua.set_function("AddSquadExp", addSquadExp);
         ::lua.set_function("GetSquadExpNeeded", getSquadExpNeeded);
         ::lua.set_function("GetSquadWeaponSkills", getSquadWeaponSkills);
+    ::lua.set_function("GetSquadWeaponSkillIds", getSquadWeaponSkillIds);     // Gambits weapon skill settings
+    ::lua.set_function("SquadApplyWeaponSkills", squadApplyWeaponSkills);     // Gambits weapon skill settings (live apply)
         ::lua.set_function("DeleteSquadMate", deleteSquadMate);
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);
