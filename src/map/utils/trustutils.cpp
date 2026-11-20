@@ -1095,7 +1095,20 @@ void LoadTrustStatsAndSkills(CTrustEntity* PTrust)
 
     for (int i = static_cast<int>(xi::SkillType::HandToHand); i <= static_cast<int>(xi::SkillType::Staff); i++)
     {
+        // (core trusts) the skill type number is used as the rank here, so every trust's combat skills depend on the
+        // weapon type: great katana = rank E. A squad mate's skills are a player's instead: the best of its main job's
+        // rank at its main level and its sub job's rank at its sub level (2026-11-19, sparkiie: a level 68 SAM never
+        // reached Tachi: Yukikaze / Gekko). A weapon neither job has a rank for keeps the old value.
         uint16 maxSkill = battleutils::GetMaxSkill(static_cast<uint8>(i), std::min<uint8>(mLvl, 99));
+        if (useRaceTables)
+        {
+            const uint16 mainCap = battleutils::GetMaxSkill(static_cast<xi::SkillType>(i), mJob, std::min<uint8>(mLvl, 99));
+            const uint16 subCap  = sLvl > 0 ? battleutils::GetMaxSkill(static_cast<xi::SkillType>(i), sJob, std::min<uint8>(sLvl, 99)) : 0;
+            if (std::max(mainCap, subCap) != 0)
+            {
+                maxSkill = std::max(mainCap, subCap);
+            }
+        }
         if (maxSkill != 0)
         {
             PTrust->WorkingSkills.skill[i] = static_cast<uint16>(maxSkill * settings::get<float>("map.ALTER_EGO_SKILL_MULTIPLIER"));
