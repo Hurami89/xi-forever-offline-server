@@ -281,11 +281,20 @@ local function buy(player, who, entry)
     end
 end
 
-shopPage = function(player, who, page)
-    local perPage = 5
-    local first   = (page - 1) * perPage + 1
+-- (2026-11-19, Bob Roberts) A menu travels in one chat packet: past about 150 characters the last choices are cut
+-- off, and "(owned)" on a few lines was enough to lose "More...", so the later pages could not be reached. Pages are
+-- now filled by length (MENU_ROOM characters for the title and every choice in quotes), not by a fixed count.
+local MENU_ROOM = 125
+
+shopPage = function(player, who, first)
+    first = first or 1
+
+    local title   = string.format('Slime coins: %d', coins(player))
+    local used    = #title + 2
+    local nav     = #'Back to the start' + 2
     local options = {}
-    for i = first, math.min(#SHOP, first + perPage - 1) do
+    local last    = first - 1
+    for i = first, #SHOP do
         local entry = SHOP[i]
         local tag   = ''
         if entry.needs == 'she' and player:getCharVar('Horro_She') == 0 then
@@ -296,22 +305,29 @@ shopPage = function(player, who, page)
             tag = ' (owned)'
         end
 
-        table.insert(options, { string.format('%s: %d%s', entry.name, entry.cost, tag), function(p)
+        local label = string.format('%s: %d%s', entry.name, entry.cost, tag)
+        if #options > 0 and used + #label + 2 + nav > MENU_ROOM then
+            break
+        end
+
+        used = used + #label + 2
+        last = i
+        table.insert(options, { label, function(p)
             buy(p, who, entry)
         end })
     end
 
-    if first + perPage <= #SHOP then
+    if last < #SHOP then
         table.insert(options, { 'More...', function(p)
-            shopPage(p, who, page + 1)
+            shopPage(p, who, last + 1)
         end })
-    elseif page > 1 then
+    elseif first > 1 then
         table.insert(options, { 'Back to the start', function(p)
             shopPage(p, who, 1)
         end })
     end
 
-    sendMenu(player, { title = string.format('Slime coins: %d', coins(player)), options = options })
+    sendMenu(player, { title = title, options = options })
 end
 
 local function explain(player, who)
@@ -487,18 +503,29 @@ local function gone(rec)
     return true
 end
 
+-- (2026-11-19, Bob Roberts: "a slime can run away even if I defeat it") a slime that decided to run was marked as gone
+-- at once and left 0.2 s later; a hit that defeated it in between (the same attack round, a squad mate) then counted
+-- for nothing. Now it only counts as run away when it is still alive at that moment; defeated first = caught.
 local function flee(mob, rec, text)
-    if not gone(rec) then
+    if rec.gone or rec.fleeing then
         return
     end
 
-    nearbyPlayers(mob, function(p)
-        sys(p, text or ('The ' .. KIND[rec.kind].label .. ' ran away!'))
-    end)
+    rec.fleeing = true
     mob:timer(200, function(mb)
-        if mb:isAlive() then
-            DespawnMob(mb:getID())
+        rec.fleeing = nil
+        if rec.gone or not mb:isAlive() then
+            return
         end
+
+        if not gone(rec) then
+            return
+        end
+
+        nearbyPlayers(mb, function(p)
+            sys(p, text or ('The ' .. KIND[rec.kind].label .. ' ran away!'))
+        end)
+        DespawnMob(mb:getID())
     end)
 end
 

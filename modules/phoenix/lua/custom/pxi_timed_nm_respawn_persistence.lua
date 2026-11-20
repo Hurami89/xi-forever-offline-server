@@ -145,6 +145,16 @@ for _, entry in ipairs(timedNMs) do
             if deadline > 0 then
                 mob:setRespawnTime(math.max(deadline - GetSystemTime(), 60))
             end
+
+            -- (XI: Forever Offline, 2026-11-19, Miniberg) Nothing saved yet = this NM has never been defeated on this
+            -- world. Its first window was rolled again at every start, and an offline server only runs while you play,
+            -- so an 18 to 30 hour window never ended. Keep the first roll as well.
+            if deadline == 0 then
+                local remaining = mob:getRespawnTime()
+                if remaining > 0 then
+                    SetServerVariable(varName, GetSystemTime() + remaining)
+                end
+            end
         end)
     end
 end
@@ -174,6 +184,14 @@ for _, entry in ipairs(zoneRescheduledNMs) do
         local deadline = GetServerVariable(varPrefix .. mobName)
         if deadline > 0 then
             GetMobByID(zones[zoneId].mob[idKey]):setRespawnTime(math.max(deadline - GetSystemTime(), 60))
+        end
+
+        -- (XI: Forever Offline) keep the first roll too, see the single NMs above
+        if deadline == 0 then
+            local remaining = GetMobByID(zones[zoneId].mob[idKey]):getRespawnTime()
+            if remaining > 0 then
+                SetServerVariable(varPrefix .. mobName, GetSystemTime() + remaining)
+            end
         end
     end)
 end
@@ -237,6 +255,15 @@ for _, pair in ipairs(sharedPairs) do
         -- Keep the zone's roll when nothing was saved.
         local deadline = GetServerVariable(pairVar)
         if deadline == 0 then
+            -- (XI: Forever Offline) keep the first roll too, see the single NMs above
+            for _, id in ipairs({ idA, idB }) do
+                local remaining = GetMobByID(id):getRespawnTime()
+                if remaining > 0 then
+                    SetServerVariable(pairVar, GetSystemTime() + remaining)
+                    SetServerVariable(pickVar, id)
+                end
+            end
+
             return
         end
 

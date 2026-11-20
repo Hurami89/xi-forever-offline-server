@@ -217,6 +217,10 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
                 // the most hits it can make (Mercurial Kris & co.): from the item data. getHitCount() is one random roll
                 // of it, so copying that usually made every multi-hit weapon a single-hit one (sparkiie, 2026-11-18)
                 mainWeapon->setMaxHit(weaponMaxHit(itemId));
+                // (2026-11-19, sparkiie: Kraken Club and Mercurial Kris still single-hit) the attack round only uses a
+                // weapon's hit count when the weapon's required level is not above the wielder's, and the trust's stand-in
+                // weapon keeps the item default of 255, so the count set above was never read
+                mainWeapon->setReqLvl(0);
                 mainWeapon->setDmgType(const_cast<CItemWeapon*>(weapon)->getDmgType()); // (getDmgType isn't const)
 
                 if (mainWeapon->getDelay() > 0)
@@ -275,6 +279,7 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
         subWeapon->setDelay(subItem->getBaseDelay());
         subWeapon->setBaseDelay(subItem->getBaseDelay());
         subWeapon->setMaxHit(weaponMaxHit(subId));
+        subWeapon->setReqLvl(0); // (as for the main hand: else its hit count is ignored)
         subWeapon->setDmgType(const_cast<CItemWeapon*>(subItem)->getDmgType());
         PTrust->m_dualWield = true;
     }
