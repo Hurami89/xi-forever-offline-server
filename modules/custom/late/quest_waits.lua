@@ -4,6 +4,7 @@
 -- A launcher switch (CONFIG > Rates, "Short quest waits", on by default) shortens waits that only make sense on a
 -- busy retail server. Off = the era waits again. The launcher writes modules/custom/lua/quest_waits_config.lua.
 --   * Chocobo's Wounds: era = one Vana'diel day between feedings (about 58 minutes, six times); short = 1 minute.
+--   * The Fanged One (RNG): era = the old tiger wanders for about 3.5 minutes before it dies; short = about 1 minute.
 --   * Forge Your Destiny (SAM, Mumeito): era = three Vana'diel days at the forge (about 2.9 hours); short = 1 hour.
 -- Both store the wait as a real time (seconds), so switching mid-quest never leaves anyone stuck.
 -----------------------------------
@@ -71,6 +72,37 @@ m:addOverride('xi.server.onServerStart', function()
     end
 
     print(string.format('[quest_waits] %s waits (Chocobo\'s Wounds, Forge Your Destiny)', short and 'short' or 'era'))
+end)
+
+-- The Fanged One (2026-11-19, Yache: "it takes minutes, players may think the quest is stuck"): the old tiger walks the
+-- same path with short stops and its poison finishes it in about a minute instead of 3.5. Still: don't attack it.
+local FANGED_PATH =
+{
+    { x = 653.744, y =  -9.640, z = -328.601, rotation = 146, wait =  6000 },
+    { x = 659.830, y = -10.235, z = -331.406, rotation = 017, wait =  2000 },
+    { x = 666.793, y = -10.053, z = -338.386, rotation = 032, wait =  3000 },
+    { x = 671.675, y =  -9.494, z = -346.934, rotation = 042, wait =  3000 },
+    { x = 675.301, y = -10.208, z = -356.221, rotation = 063               },
+    { x = 677.547, y = -10.064, z = -361.535, rotation = 075               },
+    { x = 667.100, y =  -9.474, z = -378.066, rotation = 086, wait = 100000 }, -- resting place
+}
+
+m:addOverride('xi.zones.Sauromugue_Champaign.mobs.Old_Sabertooth.onMobSpawn', function(mob)
+    super(mob)
+
+    if not shortWaits() then
+        return
+    end
+
+    local ok, problem = pcall(function()
+        mob:delStatusEffectSilent(xi.effect.POISON)
+        -- poison ticks every 3 seconds: a twentieth of its HP each tick = about 60 seconds
+        mob:addStatusEffect(xi.effect.POISON, { power = math.max(1, math.ceil(mob:getHP() / 20)), duration = 1800, origin = mob })
+        mob:pathThrough(FANGED_PATH, xi.path.flag.COORDS)
+    end)
+    if not ok then
+        print('[quest_waits] The Fanged One not shortened: ' .. tostring(problem))
+    end
 end)
 
 return m
