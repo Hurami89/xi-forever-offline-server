@@ -231,7 +231,11 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
         {
             const auto* weapon = dynamic_cast<const CItemWeapon*>(item);
             auto*       target = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[slot == 2 ? SLOT_RANGED : SLOT_AMMO]);
-            if (weapon != nullptr && target != nullptr && weapon->getSkillType() != xi::SkillType::None)
+            // (2026-11-19, Yache) only real shooting or throwing weapons: a bard's instrument sits in the ranged slot
+            // too, and with its skill copied here the bard "shot" with it (see squad.lua, the BRD profile)
+            const auto  skillType = weapon != nullptr ? weapon->getSkillType() : xi::SkillType::None;
+            const bool  shoots    = skillType == xi::SkillType::Archery || skillType == xi::SkillType::Marksmanship || skillType == xi::SkillType::Throwing;
+            if (weapon != nullptr && target != nullptr && shoots)
             {
                 target->setSkillType(weapon->getSkillType());
                 if (weapon->getDamage() > 0)

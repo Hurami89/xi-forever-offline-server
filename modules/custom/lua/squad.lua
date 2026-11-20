@@ -4949,7 +4949,9 @@ jobs[jobIds.BRD] =
         if profileLevel >= 7 then
             addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'REQUIEM'), family('FOE_REQUIEM'), 30)
         end
-        addGambit(mob, ai.t.TARGET, cond(ai.c.ALWAYS, 0), { ai.r.RATTACK, 0, 0 }, 60)
+        -- (2026-11-19, Yache, ticket kupo-4: with a bard out, monsters went unclaimed and stood still) the bard's
+        -- "ranged attack every minute" is gone: its ranged slot holds an instrument, not a weapon. It was harmless
+        -- until 0.1.46 made squad mates' ranged weapons real; from then on the bard really fired its flute.
     end,
     stance = function(mob)
         mob:setAutoAttackEnabled(false)
