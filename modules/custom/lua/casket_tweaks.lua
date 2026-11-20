@@ -121,7 +121,7 @@ local function tweakNewCaskets(player, zone, since)
                 npc:setLocalVar('[caskets]LOCKED', 0)
                 npc:setLocalVar('[caskets]SUPER', 1)
                 fillChest(npc, { utils.randomEntry(loot.cosmetics), 0, 0, 0 }, rollGil(level, SUPER_GIL))
-                say(player, 'The monster was concealing a golden super casket!')
+                say(player, '...and it is a golden super casket!')
             elseif locked then
                 fillChest(npc, rollItems(poolFor(loot.brown, level), BROWN_COUNTS), rollGil(level, BROWN_GIL))
             else
