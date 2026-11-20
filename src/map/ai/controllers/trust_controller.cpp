@@ -786,13 +786,33 @@ auto CTrustController::DoCampPullTick(timer::time_point tick, const position_t& 
                 co_return;
             }
 
-            if (hasRangedWeapon(PTrust))
+            // (2026-11-20, Altair: a THF puller with a bow ran in and shot from melee range) a squad mate is a mob to
+            // the engine, and a mob's ranged attacks reach 14 yalms (GetRangedAttackRange), not a player's 25. The
+            // shot from 20 was refused as too far, and by the next try 4 seconds later she had walked up to it.
+            // At most three tries at one monster (no line of sight, no ammunition...): after that it walks in as before.
+            if (PTrust->GetLocalVar("SQUAD_PULL_SHOT_AT") != PMob->targid)
+            {
+                PTrust->SetLocalVar("SQUAD_PULL_SHOT_AT", PMob->targid);
+                PTrust->SetLocalVar("SQUAD_PULL_SHOTS", 0);
+            }
+
+            if (hasRangedWeapon(PTrust) && PTrust->GetLocalVar("SQUAD_PULL_SHOTS") < 3 &&
+                away <= std::min(CampPullShootRange, PTrust->GetRangedAttackRange() - 1.0f))
             {
                 PTrust->PAI->PathFind->Clear();
                 m_CampPullTry = tick;
+                PTrust->SetLocalVar("SQUAD_PULL_SHOTS", PTrust->GetLocalVar("SQUAD_PULL_SHOTS") + 1);
                 RangedAttack(EntityId(PMob));
                 co_return;
             }
+        }
+
+        // a shooter already in range waits for its next try where it stands instead of walking up to the monster
+        if (hasRangedWeapon(PTrust) && PTrust->GetLocalVar("SQUAD_PULL_SHOT_AT") == PMob->targid && PTrust->GetLocalVar("SQUAD_PULL_SHOTS") < 3 &&
+            away <= std::min(CampPullShootRange, PTrust->GetRangedAttackRange() - 1.0f) && tick - m_CampPullTry <= 4s)
+        {
+            PTrust->PAI->PathFind->Clear();
+            co_return;
         }
 
         if (away > 2.5f)
