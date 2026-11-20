@@ -289,6 +289,18 @@ end
 local SCROLL_LEVEL = 18
 local SCROLL_ITEM  = 4608   -- scroll item id = 4608 + spell id
 local BLU          = 16
+-- is there a scroll for this spell? (2026-11-19, Paturu: a level 9 white mage bot never cast Protectra) this used to ask
+-- GetItemByID, which does not work from Lua on this server, so since 0.1.45 a bot learned no white/black magic, songs
+-- or ninjutsu at all beyond what it already knew. SquadScrollSpell (squad.cpp) answers from the item table.
+local function hasScroll(id)
+    if SquadScrollSpell == nil then
+        return true
+    end
+
+    local ok, found = pcall(SquadScrollSpell, SCROLL_ITEM + id)
+    return ok and found ~= nil
+end
+
 local scrollsCache, scrollsAt = false, 0
 function P.scrollsOn()
     if os.time() >= scrollsAt then
@@ -349,7 +361,7 @@ function P.learn(bot)
             -- a spell players learn comes on a scroll (item 4608 + id): one without is a monster's (Diaga II).
             -- Summons (288-310) and blue magic (512+) don't come on scrolls.
             if id < 288 or (id > 310 and id < 512) then
-                if not GetItemByID(SCROLL_ITEM + id) then
+                if not hasScroll(id) then
                     return false
                 end
             end
@@ -381,7 +393,7 @@ function P.buyScrolls(bot)
             if sp and not bot:hasSpell(id) then
                 local a, b = learnLevel(sp, main), learnLevel(sp, sub)
                 local lvl = (a and a >= SCROLL_LEVEL and a <= mlvl and a) or (b and b >= SCROLL_LEVEL and b <= slvl and b) or nil
-                if lvl and GetItemByID(SCROLL_ITEM + id) then
+                if lvl and hasScroll(id) then
                     want[#want + 1] = { id = id, lvl = lvl }
                 end
             end

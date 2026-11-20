@@ -16,6 +16,8 @@
 
 #include "spawn_slot.h"
 
+#include "common/settings.h"
+
 #include "ai/ai_container.h"
 #include "entities/mob_entity.h"
 #include "lua/luautils.h"
@@ -24,8 +26,23 @@
 
 #include <algorithm>
 
-void SpawnSlot::AddMob(CMobEntity* mob, const uint8 spawnChance, const timer::duration cooldown)
+void SpawnSlot::AddMob(CMobEntity* mob, uint8 spawnChance, timer::duration cooldown)
 {
+    // (XI: Forever Offline, 2026-11-19, Frost and Bob Roberts) main.NM_LOTTERY_CHANCE and NM_LOTTERY_COOLDOWN were only
+    // read by the old Lua lottery (xi.mob.phOnDespawn); the lottery NMs now live in these spawn slots, so the two
+    // settings did nothing. Same meaning as there: chance >= 0 multiplies the chance (at least 1%), negative = always;
+    // cooldown >= 0 multiplies the wait after the NM dies (0 = none), negative = unchanged.
+    if (spawnChance > 0)
+    {
+        const auto chanceRate   = settings::get<float>("main.NM_LOTTERY_CHANCE");
+        const auto cooldownRate = settings::get<float>("main.NM_LOTTERY_COOLDOWN");
+        spawnChance             = chanceRate < 0.0f ? 100 : static_cast<uint8>(std::clamp(spawnChance * chanceRate, 1.0f, 100.0f)); // (never 0: a 0 here means "not a lottery mob")
+        if (cooldownRate >= 0.0f)
+        {
+            cooldown = std::chrono::duration_cast<timer::duration>(cooldown * static_cast<double>(cooldownRate));
+        }
+    }
+
     entries.push_back({ .mob = mob, .spawnChance = spawnChance, .cooldown = cooldown });
     mob->SetSpawnSlot(this);
 }
