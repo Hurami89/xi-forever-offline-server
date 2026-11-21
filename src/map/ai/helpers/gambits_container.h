@@ -332,6 +332,8 @@ private:
     auto InWeaponSkillRange(const CWeaponSkill* PWeaponSkill, const CBattleEntity* target) const -> bool;
     auto PartyHasHealer() -> bool;
     auto PartyHasTank() -> bool;
+    auto BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>; // XI: Forever Offline (job expansion): MB_ELEMENT
+    auto EstimatedCastTime(CSpell* PSpell) const -> timer::duration;
 
     CTrustEntity*         POwner;
     timer::time_point     m_lastAction;
