@@ -454,6 +454,9 @@ do
                     pet:addHP(math.floor(pet:getMaxHP() * 0.3))
                 end
             end
+
+            -- (job expansion) the pet follows its master's target; a dragoon's Spirit Link (squad_jobs.lua)
+            require('modules/custom/lua/squad_jobs').petCare(mob, pet, target, now)
         end)
     end
 end
@@ -2840,6 +2843,19 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         return
     end
 
+    -- (job expansion) !squad partyrole [slot|me] [tank|melee|mage|ranged|auto]: who the Rule Sets' Tank/Melee/Mage/Ranged
+    -- targets (and a squad Bard's role songs) mean
+    if action == 'partyrole' then
+        local okJ, J = pcall(require, 'modules/custom/lua/squad_jobs')
+        if okJ and type(J) == 'table' then
+            J.partyRoleCommand(player, squad, arg1, arg2, { say = say, findMate = findMate })
+        else
+            say(player, 'Party roles are not available: ' .. tostring(J))
+        end
+
+        return
+    end
+
     -- what each mate out with you has eaten, and how long it lasts
     if action == 'food' then
         if not food.enabled then
@@ -4908,6 +4924,19 @@ function squadThiefTick(mob)
 
     local flank  = 0
     local target = mob:isEngaged() and mob:getTarget() or nil
+    -- (job expansion) the mate's Rule Set uses Sneak/Trick Attack: it decides when; here only the position is kept
+    if mob:getLocalVar('SQUAD_SATA_MANAGED') ~= 0 then
+        local okJ, J = pcall(require, 'modules/custom/lua/squad_jobs')
+        if okJ and type(J) == 'table' then
+            flank = J.thiefManaged(mob, lvl, target, os.time())
+            if mob:getLocalVar('SQUAD_FLANK') ~= flank then
+                mob:setLocalVar('SQUAD_FLANK', flank)
+            end
+
+            return
+        end
+    end
+
     if lvl >= 15 and target ~= nil and target:isAlive() then
         local tank     = target:getTarget()
         local tanking  = tank ~= nil and tank:getID() == mob:getID() -- (the target faces us: no getting behind it)
@@ -4919,13 +4948,13 @@ function squadThiefTick(mob)
             flank = tanking and 0 or 1
         elseif mob:hasStatusEffect(xi.effect.TRICK_ATTACK) then
             flank = (otherTank and mob:checkDistance(target) <= 4) and 2 or 0 -- (too far to swing from there: go in)
-        elseif not tanking and not mob:hasRecast(xi.recast.ABILITY, 64) then -- Sneak Attack ready
+        elseif not tanking and not mob:hasRecast(xi.recast.ABILITY, xi.jobAbility.SNEAK_ATTACK) then -- Sneak Attack ready (trust recasts are kept by ability id)
             flank = 1
             if tryJA and mob:isBehind(target) and mob:checkDistance(target) < 4 then
                 mob:setLocalVar('SQUAD_THF_T', now)
                 SquadUseAbility(mob:getMaster(), mob, xi.jobAbility.SNEAK_ATTACK)
             end
-        elseif lvl >= 30 and otherTank and not mob:hasRecast(xi.recast.ABILITY, 66) then -- Trick Attack ready
+        elseif lvl >= 30 and otherTank and not mob:hasRecast(xi.recast.ABILITY, xi.jobAbility.TRICK_ATTACK) then -- Trick Attack ready (trust recasts are kept by ability id)
             flank = 2
             if tryJA and mob:checkDistance(tank) < 2 and mob:checkDistance(target) <= 4 and target:checkDistance(tank) < target:checkDistance(mob) then
                 mob:setLocalVar('SQUAD_THF_T', now)
@@ -5251,6 +5280,18 @@ local function ruleCondition(spec, isSub)
         return { id, jaId }
     end
 
+    -- (job expansion) MOD_LT: { mod = 'UTSUSEMI', below = 2 } -> the engine's packed argument (squad_rulesets.lua R.modArg)
+    if spec[1] == 'MOD_LT' then
+        local okR, R = pcall(require, 'modules/custom/lua/squad_rulesets')
+        local packed = okR and type(R) == 'table' and R.modArg and R.modArg(spec[2]) or nil
+        if packed == nil then
+            print(string.format('[squad] MOD_LT needs { mod = UTSUSEMI|BLINK, below = n } - rule skipped'))
+            return nil
+        end
+
+        return { id, packed }
+    end
+
     return cond(id, ruleArg(spec[2], isSub))
 end
 
@@ -5375,7 +5416,10 @@ local function squadSpawn(mob)
         if main.stance then
             main.stance(mob)
         end
+        -- (job expansion) what the set asks of the squad: managed Sneak/Trick Attack, songs for party roles (squad_jobs.lua)
+        pcall(function() require('modules/custom/lua/squad_jobs').analyse(mob, customSet.rules) end)
     else
+        pcall(function() require('modules/custom/lua/squad_jobs').analyse(mob, nil) end)
         profileLevel = mob:getMainLvl()
         runPart(mob, mob:getMainJob(), 'ja', false)
         runPart(mob, mob:getMainJob(), 'magic', false)
@@ -5400,6 +5444,9 @@ local function squadSpawn(mob)
             mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MID_RANGE)
         end
     end
+
+    -- (job expansion) the party roles chosen with !squad partyrole, for the engine's Tank/Melee/Mage/Ranged targets
+    pcall(function() require('modules/custom/lua/squad_jobs').applyRoles(mob) end)
 
     -- Engage delay the player chose for this mate (!squad delay), in ms for trust_controller.cpp
     local delayMaster = mob:getMaster()

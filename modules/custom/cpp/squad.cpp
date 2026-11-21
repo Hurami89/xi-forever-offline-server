@@ -2024,6 +2024,9 @@ class SquadModule : public CPPModule
         ::lua.set_function("GetSquadWeaponSkills", getSquadWeaponSkills);
     ::lua.set_function("GetSquadWeaponSkillIds", getSquadWeaponSkillIds);     // Gambits weapon skill settings
     ::lua.set_function("SquadApplyWeaponSkills", squadApplyWeaponSkills);     // Gambits weapon skill settings (live apply)
+    // (Gambits job expansion) this xi_map has MOD_LT, the magic burst timing, managed Sneak/Trick Attack, the weapon skill
+    // hold and squad song recipients: the Lua side offers those only when this answers
+    ::lua.set_function("SquadJobExpansionEngine", []() -> int32 { return 1; });
         ::lua.set_function("DeleteSquadMate", deleteSquadMate);
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);

@@ -43,12 +43,56 @@
 #include "zone.h"
 
 #include <algorithm>
+#include <ctime>
 
 namespace gambits
 {
 
 namespace
 {
+// XI: Forever Offline (job expansion): a skillchain effect's resonance. Before a skillchain forms (tier 0, an opening)
+// the power packs the opening weapon skill's three properties, 4 bits each; once a skillchain has formed (tier > 0) the
+// power is that skillchain's type (battleutils::GetSkillChainEffect). Reading a formed chain as three nibbles split
+// Darkness II (16) into None + Transfixion (a light burst / a wrong closer).
+auto resonanceOf(CStatusEffect* PSCEffect) -> std::list<xi::SkillchainType>
+{
+    std::list<xi::SkillchainType> out;
+    if (PSCEffect == nullptr || PSCEffect->GetPower() == 0)
+    {
+        return out;
+    }
+
+    const uint16 power = PSCEffect->GetPower();
+    if (PSCEffect->GetTier() > 0)
+    {
+        out.emplace_back(static_cast<xi::SkillchainType>(power));
+        return out;
+    }
+
+    out.emplace_back(static_cast<xi::SkillchainType>(power & 0xF));
+    out.emplace_back(static_cast<xi::SkillchainType>((power >> 4) & 0xF));
+    out.emplace_back(static_cast<xi::SkillchainType>((power >> 8) & 0xF));
+    return out;
+}
+
+// XI: Forever Offline (job expansion): how long after a skillchain forms a mate reacts to it with a magic burst. A burst
+// lands whenever the effect is still on the target (xi.combat.magicBurst.getMagicBurstTier); the old 3 s came from the
+// weapon skill chaining rule (GetSkillChainEffect), which stays 3 s for SC_AVAILABLE and the weapon skill triggers. With the
+// 2-3 s evaluation cadence this gives a human-like 1-4 s before the cast starts.
+constexpr auto MagicBurstReaction = std::chrono::seconds(1);
+constexpr auto MagicBurstMargin   = std::chrono::milliseconds(500); // the spell must land this long before the window closes
+
+// XI: Forever Offline (job expansion): a party role set for one character by the squad (local var SQUAD_ROLE: 1 tank,
+// 2 melee, 3 caster, 4 ranged; 0 = by main job, as before). Only the squad sets it (!squad partyrole).
+auto squadRole(CBattleEntity* PMember) -> uint32
+{
+    return PMember != nullptr ? PMember->GetLocalVar("SQUAD_ROLE") : 0;
+}
+
+auto nowSeconds() -> uint32
+{
+    return static_cast<uint32>(std::time(nullptr)); // (the epoch Lua's os.time() uses: squad.lua reads and writes these)
+}
 
 // XI: Forever Offline (Squad healer range, see gambits_reach.h): the spell a rule made only of spells will cast, when it
 // is known before a target is chosen (a specific spell, or the best of a family), as the reach it gives the rule.
@@ -287,8 +331,11 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             // clang-format off
                 static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
                 {
+                    // XI: Forever Offline (job expansion): a role the squad set for a member (!squad partyrole) decides; without
+                    // one, the main job (as before)
+                    const auto role = squadRole(PMember);
                     if (isValidMember(target, PMember) &&
-                        (PMember->GetMJob() == xi::Job::PLD || PMember->GetMJob() == xi::Job::RUN))
+                        (role == 1 || (role == 0 && (PMember->GetMJob() == xi::Job::PLD || PMember->GetMJob() == xi::Job::RUN))))
                     {
                         potentialTargets.push_back(PMember);
                     }
@@ -300,8 +347,9 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             // clang-format off
                 static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
                 {
+                    const auto role = squadRole(PMember);
                     if (isValidMember(target, PMember) &&
-                        melee_jobs.contains(PMember->GetMJob()))
+                        (role == 2 || (role == 0 && melee_jobs.contains(PMember->GetMJob()))))
                     {
                         potentialTargets.push_back(PMember);
                     }
@@ -313,8 +361,9 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             // clang-format off
                 static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
                 {
+                    const auto role = squadRole(PMember);
                     if (isValidMember(target, PMember) &&
-                        (PMember->GetMJob() == xi::Job::RNG || PMember->GetMJob() == xi::Job::COR))
+                        (role == 4 || (role == 0 && (PMember->GetMJob() == xi::Job::RNG || PMember->GetMJob() == xi::Job::COR))))
                     {
                         potentialTargets.push_back(PMember);
                     }
@@ -326,8 +375,9 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             // clang-format off
                 static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
                 {
+                    const auto role = squadRole(PMember);
                     if (isValidMember(target, PMember) &&
-                        caster_jobs.contains(PMember->GetMJob()))
+                        (role == 3 || (role == 0 && caster_jobs.contains(PMember->GetMJob()))))
                     {
                         potentialTargets.push_back(PMember);
                     }
@@ -502,86 +552,9 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             }
             else if (action.select == G_SELECT::MB_ELEMENT)
             {
-                CStatusEffect* PSCEffect = resolvedTarget->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain, 0);
-                if (PSCEffect == nullptr)
-                {
-                    return std::nullopt;
-                }
-
-                std::list<xi::SkillchainType> resonanceProperties;
-                if (uint16 power = PSCEffect->GetPower())
-                {
-                    resonanceProperties.emplace_back((xi::SkillchainType)(power & 0xF));
-                    resonanceProperties.emplace_back((xi::SkillchainType)(power >> 4 & 0xF));
-                    resonanceProperties.emplace_back((xi::SkillchainType)(power >> 8));
-                }
-
-                // XI: Forever Offline (2026-11-19): burst with the element's nuke family (Fire, Blizzard, Aero,
-                // Stone, Thunder, Water, Banish, Drain) at the best tier with MP and no recast. The old pick took
-                // the last damage spell of the element, which is the elemental DoT (Rasp, Drown, Shock, ...) once
-                // a mage knows it (Bob Roberts: a BLM bursting with Rasp in Qufim).
-                auto nukeFamily = [](uint8 element) -> SPELLFAMILY
-                {
-                    switch (element)
-                    {
-                        case ELEMENT_FIRE:
-                            return SPELLFAMILY_FIRE;
-                        case ELEMENT_ICE:
-                            return SPELLFAMILY_BLIZZARD;
-                        case ELEMENT_WIND:
-                            return SPELLFAMILY_AERO;
-                        case ELEMENT_EARTH:
-                            return SPELLFAMILY_STONE;
-                        case ELEMENT_THUNDER:
-                            return SPELLFAMILY_THUNDER;
-                        case ELEMENT_WATER:
-                            return SPELLFAMILY_WATER;
-                        case ELEMENT_LIGHT:
-                            return SPELLFAMILY_BANISH;
-                        case ELEMENT_DARK:
-                            return SPELLFAMILY_DRAIN;
-                        default:
-                            return SPELLFAMILY_NONE;
-                    }
-                };
-
-                for (auto& resonance_element : resonanceProperties)
-                {
-                    for (auto& chain_element : battleutils::GetSkillchainMagicElement(resonance_element))
-                    {
-                        auto family = nukeFamily(static_cast<uint8>(chain_element));
-                        if (family == SPELLFAMILY_NONE)
-                        {
-                            continue;
-                        }
-
-                        if (auto nuke = POwner->SpellContainer->GetBestAvailable(family))
-                        {
-                            return nuke;
-                        }
-                    }
-                }
-
-                // No nuke of a burst element ready: the old pick, minus the elemental DoTs (Burn ... Drown)
-                Maybe<SpellID> spell_id;
-                for (auto& resonance_element : resonanceProperties)
-                {
-                    for (auto& chain_element : battleutils::GetSkillchainMagicElement(resonance_element))
-                    {
-                        for (size_t ii = POwner->SpellContainer->m_damageList.size(); ii > 0; --ii)
-                        {
-                            auto spell         = POwner->SpellContainer->m_damageList[ii - 1];
-                            auto id            = static_cast<uint16>(spell);
-                            auto spell_element = spell::GetSpell(spell)->getElement();
-                            if (spell_element == chain_element && (id < 235 || id > 240))
-                            {
-                                spell_id = spell;
-                                break;
-                            }
-                        }
-                    }
-                }
-                return spell_id;
+                // XI: Forever Offline (job expansion): the burst element, tier and timing are chosen from the real
+                // skillchain effect: see BestBurstSpell. Nothing is cast when no spell can land inside the window.
+                return BestBurstSpell(resolvedTarget);
             }
 
             return std::nullopt;
@@ -808,42 +781,8 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                     }
                     else if (action.select == G_SELECT::MB_ELEMENT)
                     {
-                        CStatusEffect* PSCEffect = target->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain, 0);
-
-                        if (PSCEffect == nullptr)
-                        {
-                            ShowError("G_SELECT::MB_ELEMENT: PSCEffect was null.");
-                            co_return;
-                        }
-
-                        std::list<xi::SkillchainType> resonanceProperties;
-                        if (uint16 power = PSCEffect->GetPower())
-                        {
-                            resonanceProperties.emplace_back((xi::SkillchainType)(power & 0xF));
-                            resonanceProperties.emplace_back((xi::SkillchainType)(power >> 4 & 0xF));
-                            resonanceProperties.emplace_back((xi::SkillchainType)(power >> 8));
-                        }
-
-                        Maybe<SpellID> spell_id;
-                        for (auto& resonance_element : resonanceProperties)
-                        {
-                            for (auto& chain_element : battleutils::GetSkillchainMagicElement(resonance_element))
-                            {
-                                // NOTE: Iterating this list in reverse guarantees finding the best match
-                                for (size_t ii = POwner->SpellContainer->m_damageList.size(); ii > 0; --ii)
-                                {
-                                    auto spell         = POwner->SpellContainer->m_damageList[ii - 1];
-                                    auto spell_element = spell::GetSpell(spell)->getElement();
-                                    if (spell_element == chain_element)
-                                    {
-                                        spell_id = spell;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        if (spell_id.has_value())
+                        // (not reached: ResolveMA already chose the burst; kept to the same choice for safety)
+                        if (auto spell_id = BestBurstSpell(target))
                         {
                             executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
@@ -940,6 +879,29 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
 
                 if (action.select == G_SELECT::SPECIFIC)
                 {
+                    // XI: Forever Offline (job expansion): a squad thief whose Rule Set uses Sneak Attack / Trick Attack
+                    // (squad.lua sets SQUAD_SATA_MANAGED). The rule decides WHEN; the squad moves the thief into place
+                    // (squadThiefTick -> SQUAD_FLANK) and says when the position is right (SQUAD_SATA_READY = the ability).
+                    // Until then the ability is only requested, not used (not executed: no retry timer).
+                    const auto abilityId = PAbility->getID();
+                    if ((abilityId == ABILITY_SNEAK_ATTACK || abilityId == ABILITY_TRICK_ATTACK) && POwner->GetLocalVar("SQUAD_SATA_MANAGED") != 0 &&
+                        POwner->GetLocalVar("SQUAD_SATA_READY") != abilityId)
+                    {
+                        // (on recast: nothing to prepare - no request, so the thief does not move for it. Trust recasts are
+                        //  kept by ability id, CBattleEntity::OnAbility.)
+                        if (POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(abilityId), 0s))
+                        {
+                            continue;
+                        }
+
+                        if (POwner->GetLocalVar("SQUAD_SATA_REQ") != abilityId)
+                        {
+                            POwner->SetLocalVar("SQUAD_SATA_REQ", abilityId);
+                            POwner->SetLocalVar("SQUAD_SATA_REQ_AT", nowSeconds());
+                        }
+                        continue;
+                    }
+
                     if (target != nullptr)
                     {
                         executedAnyAction = controller->Ability(target->entityId(), PAbility->getID()) || executedAnyAction;
@@ -1244,6 +1206,15 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
                 predicateResults.push_back(triggerTarget->GetMaxMP() > 0 && triggerTarget->GetMPP() >= predicate.condition_arg);
                 continue;
             }
+            case G_CONDITION::MOD_LT:
+            {
+                // XI: Forever Offline (job expansion): e.g. Utsusemi shadows left (Mod::UTSUSEMI counts them down as they
+                // absorb hits; the Copy Image effect's power does not change), Blink images (Mod::BLINK)
+                const auto mod   = static_cast<xi::Mod>(predicate.condition_arg & 0xFFFF);
+                const auto below = static_cast<int32>(predicate.condition_arg >> 16);
+                predicateResults.push_back(triggerTarget->getMod(mod) < below);
+                continue;
+            }
             case G_CONDITION::LVL_LT:
             {
                 predicateResults.push_back(triggerTarget->GetMLevel() < predicate.condition_arg);
@@ -1365,8 +1336,10 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
             }
             case G_CONDITION::MB_AVAILABLE:
             {
+                // XI: Forever Offline (job expansion): a formed skillchain, after a short reaction (was 3 s, the weapon
+                // skill chaining rule; a burst has no such wait)
                 auto* PSCEffect = triggerTarget->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain);
-                predicateResults.push_back(PSCEffect && PSCEffect->GetStartTime() + 3s < timer::now() && PSCEffect->GetTier() > 0);
+                predicateResults.push_back(PSCEffect && PSCEffect->GetStartTime() + MagicBurstReaction < timer::now() && PSCEffect->GetTier() > 0);
                 continue;
             }
             case G_CONDITION::LUNGE_MB_AVAILABLE:
@@ -1374,7 +1347,7 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
                 auto* PSCEffect     = triggerTarget->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain);
                 bool  maybeUseLunge = false;
 
-                if (PSCEffect && PSCEffect->GetStartTime() + 3s < timer::now() && PSCEffect->GetTier() > 0)
+                if (PSCEffect && PSCEffect->GetStartTime() + MagicBurstReaction < timer::now() && PSCEffect->GetTier() > 0)
                 {
                     xi::SkillchainType sc = static_cast<xi::SkillchainType>(PSCEffect->GetPower());
 
@@ -1660,6 +1633,12 @@ auto CGambitsContainer::TryTrustSkill() -> bool
         return false;
     }
 
+    // XI: Forever Offline (job expansion): a squad thief preparing Sneak Attack / Trick Attack keeps its TP for a moment
+    if (HoldWeaponSkill(target))
+    {
+        return false;
+    }
+
     // XI: Forever Offline: the Gambits weapon skill settings have their own path; the triggers above keep theirs unchanged
     if (tp_trigger >= G_TP_TRIGGER::OPEN_AT_TP && tp_trigger <= G_TP_TRIGGER::AT_TP)
     {
@@ -1762,13 +1741,8 @@ auto CGambitsContainer::TryTrustSkill() -> bool
                 // Closer, if a skillchain is available select a random ws that can close it, if multiple are available select the one that creates the best skillchain
                 for (auto& skill : tp_skills)
                 {
-                    std::list<xi::SkillchainType> resonanceProperties;
-                    if (uint16 power = PSCEffect->GetPower())
-                    {
-                        resonanceProperties.emplace_back((xi::SkillchainType)(power & 0xF));
-                        resonanceProperties.emplace_back((xi::SkillchainType)(power >> 4 & 0xF));
-                        resonanceProperties.emplace_back((xi::SkillchainType)(power >> 8));
-                    }
+                    // XI: Forever Offline (job expansion): one type once a chain formed (Darkness II = 16 no longer splits)
+                    std::list<xi::SkillchainType> resonanceProperties = resonanceOf(PSCEffect);
 
                     std::list<xi::SkillchainType> skillProperties;
                     skillProperties.emplace_back((xi::SkillchainType)skill.primary);
@@ -1801,13 +1775,8 @@ auto CGambitsContainer::TryTrustSkill() -> bool
                 // Closer
                 for (auto& skill : tp_skills)
                 {
-                    std::list<xi::SkillchainType> resonanceProperties;
-                    if (uint16 power = PSCEffect->GetPower())
-                    {
-                        resonanceProperties.emplace_back((xi::SkillchainType)(power & 0xF));
-                        resonanceProperties.emplace_back((xi::SkillchainType)(power >> 4 & 0xF));
-                        resonanceProperties.emplace_back((xi::SkillchainType)(power >> 8));
-                    }
+                    // XI: Forever Offline (job expansion): one type once a chain formed (Darkness II = 16 no longer splits)
+                    std::list<xi::SkillchainType> resonanceProperties = resonanceOf(PSCEffect);
 
                     std::list<xi::SkillchainType> skillProperties;
                     skillProperties.emplace_back((xi::SkillchainType)skill.primary);
@@ -2105,13 +2074,8 @@ auto CGambitsContainer::TrySettingsTrustSkill(CBattleEntity* target) -> bool
     Maybe<TrustSkill_t> chosen_skill;
     if (PSCEffect != nullptr)
     {
-        std::list<xi::SkillchainType> resonanceProperties;
-        if (uint16 power = PSCEffect->GetPower())
-        {
-            resonanceProperties.emplace_back((xi::SkillchainType)(power & 0xF));
-            resonanceProperties.emplace_back((xi::SkillchainType)(power >> 4 & 0xF));
-            resonanceProperties.emplace_back((xi::SkillchainType)(power >> 8));
-        }
+        // XI: Forever Offline (job expansion): one type once a chain formed (Darkness II = 16 no longer splits)
+        std::list<xi::SkillchainType> resonanceProperties = resonanceOf(PSCEffect);
 
         xi::SkillchainType chosen_skillchain = xi::SkillchainType::None;
         for (const auto& skill : tp_skills)
@@ -2180,15 +2144,206 @@ auto CGambitsContainer::PartyHasTank() -> bool
     // clang-format off
         static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
         {
-            auto jobType = PMember->GetMJob();
+            auto       jobType = PMember->GetMJob();
+            const auto role    = squadRole(PMember); // XI: Forever Offline (job expansion): an explicit squad party role decides
 
-            if (jobType == xi::Job::NIN || jobType == xi::Job::PLD || jobType == xi::Job::RUN)
+            if (role == 1 || (role == 0 && (jobType == xi::Job::NIN || jobType == xi::Job::PLD || jobType == xi::Job::RUN)))
             {
                 hasTank = true;
             }
         });
     // clang-format on
     return hasTank;
+}
+
+// XI: Forever Offline (job expansion): the cast time the mate would have for a spell, as battleutils::CalculateSpellCastTime
+// computes it for the common cases (Fast Cast, Hasso/Seigan, the elemental/black magic cast-time modifier). Quick Magic
+// and Arts are left out on purpose: the burst choice should rather leave a margin than count on a proc.
+auto CGambitsContainer::EstimatedCastTime(CSpell* PSpell) const -> timer::duration
+{
+    if (PSpell == nullptr)
+    {
+        return 0s;
+    }
+
+    auto cast = std::chrono::duration_cast<std::chrono::milliseconds>(PSpell->getCastTime());
+    if (POwner->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::Hasso, xi::StatusEffect::Seigan }))
+    {
+        cast = std::chrono::floor<std::chrono::milliseconds>(cast * 1.5);
+    }
+
+    if (PSpell->getSpellGroup() == SPELLGROUP_BLACK)
+    {
+        cast = std::chrono::floor<std::chrono::milliseconds>(cast * (1.0f + POwner->getMod(xi::Mod::BLACK_MAGIC_CAST) / 100.0f));
+    }
+
+    const auto fastCast = std::clamp<int16>(POwner->getMod(xi::Mod::FASTCAST), 0, 50);
+    cast                = std::chrono::floor<std::chrono::milliseconds>(cast * (1.0f - fastCast / 100.0f));
+    return std::max<timer::duration>(cast, 0s);
+}
+
+// XI: Forever Offline (job expansion): the magic burst for G_SELECT::MB_ELEMENT.
+//  - only a formed skillchain (tier > 0); its type is read whole (Darkness II), see resonanceOf;
+//  - the burst elements of that type, each with its single-target nuke family (Light: Banish, then Holy; Dark: Drain);
+//  - every spell of those families the mate has, with MP and no recast (GetAvailable);
+//  - only spells whose cast (EstimatedCastTime) ends MagicBurstMargin before the skillchain effect runs out;
+//  - of those: the element the target resists least (its *_RES_RANK), then the highest tier (the higher spell id),
+//    then the shorter cast. A weaker spell that lands inside the window beats a stronger one that would not.
+// Nothing (no cast) when no spell fits. Before, the best tier of the first burst element was cast whatever the window.
+auto CGambitsContainer::BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>
+{
+    if (target == nullptr || POwner->SpellContainer == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    CStatusEffect* PSCEffect = target->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain, 0);
+    if (PSCEffect == nullptr || PSCEffect->GetTier() == 0)
+    {
+        return std::nullopt;
+    }
+
+    const auto now = timer::now();
+    const auto end = PSCEffect->GetStartTime() + PSCEffect->GetDuration();
+    if (end <= now)
+    {
+        return std::nullopt;
+    }
+
+    const auto remaining = end - now;
+
+    // clang-format off
+    static const std::array<std::pair<ELEMENT, std::array<SPELLFAMILY, 2>>, 8> families = { {
+        { ELEMENT_FIRE,    { SPELLFAMILY_FIRE,     SPELLFAMILY_NONE } },
+        { ELEMENT_ICE,     { SPELLFAMILY_BLIZZARD, SPELLFAMILY_NONE } },
+        { ELEMENT_WIND,    { SPELLFAMILY_AERO,     SPELLFAMILY_NONE } },
+        { ELEMENT_EARTH,   { SPELLFAMILY_STONE,    SPELLFAMILY_NONE } },
+        { ELEMENT_THUNDER, { SPELLFAMILY_THUNDER,  SPELLFAMILY_NONE } },
+        { ELEMENT_WATER,   { SPELLFAMILY_WATER,    SPELLFAMILY_NONE } },
+        { ELEMENT_LIGHT,   { SPELLFAMILY_BANISH,   SPELLFAMILY_HOLY } },
+        { ELEMENT_DARK,    { SPELLFAMILY_DRAIN,    SPELLFAMILY_NONE } },
+    } };
+    static const std::array<xi::Mod, 8> resistRank = {
+        xi::Mod::FIRE_RES_RANK, xi::Mod::ICE_RES_RANK, xi::Mod::WIND_RES_RANK, xi::Mod::EARTH_RES_RANK,
+        xi::Mod::THUNDER_RES_RANK, xi::Mod::WATER_RES_RANK, xi::Mod::LIGHT_RES_RANK, xi::Mod::DARK_RES_RANK,
+    };
+    // clang-format on
+
+    std::vector<ELEMENT> elements;
+    for (const auto type : resonanceOf(PSCEffect))
+    {
+        if (type == xi::SkillchainType::None)
+        {
+            continue;
+        }
+
+        for (const auto element : battleutils::GetSkillchainMagicElement(type))
+        {
+            if (std::ranges::find(elements, element) == elements.end())
+            {
+                elements.emplace_back(element);
+            }
+        }
+    }
+
+    Maybe<SpellID>  best;
+    int32           bestResist = 0;
+    uint16          bestId     = 0;
+    timer::duration bestCast   = 0s;
+    for (const auto element : elements)
+    {
+        const auto entry = std::ranges::find_if(families, [&](const auto& e) { return e.first == element; });
+        if (entry == families.end() || element < ELEMENT_FIRE || element > ELEMENT_DARK)
+        {
+            continue;
+        }
+
+        const int32 resist = target->getMod(resistRank[static_cast<size_t>(element) - 1]);
+        for (const auto family : entry->second)
+        {
+            if (family == SPELLFAMILY_NONE)
+            {
+                continue;
+            }
+
+            for (const auto id : POwner->SpellContainer->m_damageList)
+            {
+                CSpell* PSpell = spell::GetSpell(id);
+                if (PSpell == nullptr || PSpell->getSpellFamily() != family || !POwner->SpellContainer->GetAvailable(id).has_value())
+                {
+                    continue;
+                }
+
+                const auto cast = EstimatedCastTime(PSpell);
+                if (cast + MagicBurstMargin > remaining)
+                {
+                    continue; // would land after the window
+                }
+
+                const auto spellId = static_cast<uint16>(id);
+                const bool better  = !best.has_value() || resist < bestResist ||
+                                    (resist == bestResist && (spellId > bestId || (spellId == bestId && cast < bestCast)));
+                if (better)
+                {
+                    best       = id;
+                    bestResist = resist;
+                    bestId     = spellId;
+                    bestCast   = cast;
+                }
+            }
+        }
+    }
+
+    return best;
+}
+
+// XI: Forever Offline (job expansion): a squad thief's Rule Set uses Sneak Attack / Trick Attack before its weapon skill
+// (squad.lua sets SQUAD_SATA_WSHOLD when such a rule needs TP). The weapon skill waits - TP is kept - while:
+//  - the hold window has not run out (SQUAD_WS_HOLD_UNTIL, at most 8 s from its start; squad.lua ends it early, e.g. when
+//    the thief takes the enemy's attention or the request is cancelled), and
+//  - neither effect is on yet (once it is, the weapon skill goes and consumes it), and
+//  - TP is below 3000 (the engine's release: TP is never held for ever), and
+//  - no skillchain can be closed now (a closing opportunity is never given up for the position).
+// The hold starts here, the moment the weapon skill would otherwise go, if Sneak Attack or Trick Attack is ready.
+auto CGambitsContainer::HoldWeaponSkill(CBattleEntity* target) -> bool
+{
+    if (POwner->GetLocalVar("SQUAD_SATA_WSHOLD") == 0 || POwner->health.tp >= 3000 || target == nullptr)
+    {
+        return false;
+    }
+
+    if (POwner->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::SneakAttack, xi::StatusEffect::TrickAttack }))
+    {
+        return false;
+    }
+
+    auto* PSCEffect = target->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain);
+    if (PSCEffect != nullptr && PSCEffect->GetTier() == 0 && PSCEffect->GetStartTime() + 3s < timer::now())
+    {
+        return false; // a window to close: the weapon skill (if it closes) is worth more than the position
+    }
+
+    const uint32 now   = nowSeconds();
+    const uint32 until = POwner->GetLocalVar("SQUAD_WS_HOLD_UNTIL");
+    if (until != 0)
+    {
+        return now < until;
+    }
+
+    auto ready = [&](ABILITY id)
+    {
+        const auto* PAbility = ability::GetAbility(id);
+        return PAbility != nullptr && ability::CanLearnAbility(POwner, id) &&
+               !POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(id), 0s);
+    };
+
+    if (ready(ABILITY_SNEAK_ATTACK) || ready(ABILITY_TRICK_ATTACK))
+    {
+        POwner->SetLocalVar("SQUAD_WS_HOLD_UNTIL", now + 8);
+        return true;
+    }
+
+    return false;
 }
 
 } // namespace gambits

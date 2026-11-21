@@ -63,8 +63,10 @@
 -- within 120 s is dropped; nothing is written before that.
 -- This file only registers the command; it defines no globals.
 -----------------------------------
-local VERSION      = 5     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
+local VERSION      = 6     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
                            -- 5: weapon skill settings (wsg, wsl, wss, wsa), catm "j", PARTY_LOWEST_HPP, HAS_MP*
+                           -- 6 (job expansion): MOD_LT ("m", argument MODIFIER.number), TRIGGER_SELF_ACTION_TARGET, more
+                           --   families, abilities and spells of content this server has not enabled are left out
 local MAX_LINE     = 120
 local MAX_PARTS    = 16    -- w: parts that end on a rule boundary
 local MAX_CHUNKS   = 64    -- x: 32 rules of the most complex valid form (~140 bytes each) need about 49 chunks of 93 bytes
@@ -80,13 +82,60 @@ local NAMED        = { family = true, ja = true, spell = true }  -- the kinds wi
 -- the targets the editor offers (ai.t names; the engine's job groups: TANK = PLD/RUN, CASTER = WHM BLM RDM BRD SMN BLU
 -- SCH GEO RUN, MELEE = the melee jobs, RANGED = RNG/COR; PARTY takes the first member in party order that matches;
 -- PARTY_LOWEST_HPP the member with the lowest HP% that matches - only with the batch's map server)
-local TARGETS      = { 'SELF', 'PARTY', 'PARTY_LOWEST_HPP', 'TANK', 'CASTER', 'MELEE', 'RANGED', 'TOP_ENMITY', 'TARGET', 'MASTER' }
+-- (version 6) TRIGGER_SELF_ACTION_TARGET: the conditions are checked on the mate itself, the action goes to the enemy
+-- ("my HP below 60% -> Drain"); the engine's own target, offered as "Self, act on enemy"
+local TARGETS      = { 'SELF', 'PARTY', 'PARTY_LOWEST_HPP', 'TANK', 'CASTER', 'MELEE', 'RANGED', 'TOP_ENMITY', 'TARGET', 'MASTER',
+                       'TRIGGER_SELF_ACTION_TARGET' }
+-- spell families offered for "Best of family" (only names xi.magic.spellFamily has are sent; the rest of this list stays for
+-- older servers' names). (version 6) nukes, dark magic, ninjutsu and songs for the job expansion's jobs.
 local FAMILIES     = { 'CURE', 'CURAGA', 'CURA', 'REGEN', 'PROTECT', 'SHELL', 'PROTECTRA', 'SHELLRA', 'HASTE', 'BLINK',
                        'STONESKIN', 'AQUAVEIL', 'REFRESH', 'RAISE', 'RERAISE', 'POISONA', 'PARALYNA', 'BLINDNA', 'SILENA',
                        'STONA', 'VIRUNA', 'CURSNA', 'ERASE', 'ESUNA', 'SACRIFICE', 'AUSPICE', 'DIA', 'BANISH',
-                       'BANISHGA', 'HOLY', 'FLASH', 'REPOSE', 'SLOW', 'PARALYZE', 'SILENCE' }
+                       'BANISHGA', 'HOLY', 'FLASH', 'REPOSE', 'SLOW', 'PARALYZE', 'SILENCE',
+                       'PHALANX', 'ENFIRE', 'ENBLIZZARD', 'ENAERO', 'ENSTONE', 'ENTHUNDER', 'ENWATER', 'DISTRACT', 'FRAZZLE',
+                       'FIRE', 'BLIZZARD', 'AERO', 'STONE', 'THUNDER', 'WATER', 'FIRAGA', 'BLIZZAGA', 'AEROGA', 'STONEGA',
+                       'THUNDAGA', 'WATERGA', 'POISON', 'POISONGA', 'BIO', 'DRAIN', 'ASPIR', 'ABSORB', 'SLEEP', 'SLEEPGA',
+                       'BLIND',
+                       'UTSUSEMI', 'KATON', 'HYOTON', 'HUTON', 'DOTON', 'RAITON', 'SUITON', 'JUBAKU', 'HOJO', 'KURAYAMI',
+                       'DOKUMORI', 'TONKO',
+                       'VALOR_MINUET', 'MARCH', 'KNIGHTS_MINNE', 'ARMYS_PAEON', 'MAGES_BALLAD', 'MADRIGAL', 'PRELUDE',
+                       'ELEGY', 'FOE_REQUIEM', 'FOE_LULLABY', 'HORDE_LULLABY' }
+-- (version 6) families whose every spell belongs to an expansion (sql/spell_list.sql content_tag): left out when that
+-- content is off (Cura, Sacrifice, Esuna, Auspice and Repose are Wings of the Goddess spells)
+local FAMILY_CONTENT = { CURA = 'WOTG', SACRIFICE = 'WOTG', ESUNA = 'WOTG', AUSPICE = 'WOTG', REPOSE = 'WOTG' }
+
+-- (version 6) luautils::IsContentEnabled in Lua: an empty tag is always on; otherwise ENABLE_<TAG>, unless the server
+-- does not restrict content at all
+local function contentEnabled(tag)
+    if tag == nil or tag == '' then
+        return true
+    end
+
+    local main = xi and xi.settings and xi.settings.main
+    if type(main) ~= 'table' then
+        return true -- (no settings to read: as before)
+    end
+
+    local function on(v)
+        return v == true or (type(v) == 'number' and v ~= 0)
+    end
+
+    return on(main['ENABLE_' .. tag]) or not on(main.RESTRICT_CONTENT)
+end
+
+-- (version 6) a job ability this server has loaded (abilities of disabled content are not loaded at all, ability.cpp)
+local function abilityLoaded(id)
+    local get = rawget(_G, 'GetAbility')
+    if type(get) ~= 'function' then
+        return true -- (no way to tell: as before)
+    end
+
+    local ok, a = pcall(get, id)
+    return ok and a ~= nil
+end
 
 local G = {}  -- exported for the tests only (returned below)
+G.contentEnabled, G.abilityLoaded = contentEnabled, abilityLoaded
 local unpackList = unpack or table.unpack -- (LuaJIT / Lua 5.4)
 
 local function rulesets()
@@ -277,6 +326,14 @@ function G.decodeRule(text, index)
         end
     end
 
+    -- (version 6, job expansion) MOD_LT carries "MODIFIER.number" ({ mod = 'UTSUSEMI', below = 2 })
+    for _, c in ipairs({ rule.cond, rule.cond2 }) do
+        if c and c[1] == 'MOD_LT' and type(c[2]) == 'string' then
+            local mod, below = string.match(c[2], '^([A-Z][A-Z0-9_]*)%.(%d+)$')
+            c[2] = mod and { mod = mod, below = tonumber(below) } or c[2]
+        end
+    end
+
     if f[9] ~= nil and f[9] ~= '' then
         rule.retry = tonumber(f[9])
         if rule.retry == nil then
@@ -322,6 +379,15 @@ function G.encodeRule(rule, index)
             return string.format('%d', v)
         elseif word(v) then
             return v
+        elseif type(v) == 'table' and word(v.mod) and whole(v.below) then
+            -- (version 6) { mod = 'UTSUSEMI', below = 2 } -> "UTSUSEMI.2" (MOD_LT); any other key: not carried
+            for key in pairs(v) do
+                if key ~= 'mod' and key ~= 'below' then
+                    return nil
+                end
+            end
+
+            return string.format('%s.%d', v.mod, v.below)
         end
 
         return nil
@@ -687,10 +753,14 @@ end
 
 -- the targets, conditions and families of a catalog (cat and catm alike). withJa: the addon reads job ability arguments
 -- (catm "j", version 5). Names that need the batch's map server (R.ENGINE_NAMES) only when it is there.
-local function baseLists(R, withJa)
+-- (version 6) withMod: the addon reads modifier arguments (catm "jm"); an older addon's check refuses a whole catalog
+-- with an entry kind it does not know, so MOD_LT is only sent when asked for
+local function baseLists(R, withJa, withMod)
     local engineOk = R.engineReady == nil or R.engineReady()
+    local engine2Ok = R.engine2Ready == nil or R.engine2Ready()
     local function offered(name)
-        return engineOk or not (R.ENGINE_NAMES and R.ENGINE_NAMES[name])
+        return (engineOk or not (R.ENGINE_NAMES and R.ENGINE_NAMES[name]))
+            and (engine2Ok or not (R.ENGINE2_NAMES and R.ENGINE2_NAMES[name]))
     end
 
     local lists = {}
@@ -716,6 +786,10 @@ local function baseLists(R, withJa)
             lists.c[#lists.c + 1] = name .. ':n'
         elseif spec == 'effect' then
             lists.c[#lists.c + 1] = name .. ':e'
+        elseif spec == 'mod' then
+            if withMod then
+                lists.c[#lists.c + 1] = name .. ':m' -- (version 6: the addon knows the modifiers and their ranges, R.MODS)
+            end
         elseif type(spec) == 'table' then
             lists.c[#lists.c + 1] = string.format('%s:r:%d:%d', name, spec[1], spec[2])
         end
@@ -725,7 +799,7 @@ local function baseLists(R, withJa)
     lists.f = {}
     local known = xi and xi.magic and xi.magic.spellFamily
     for _, name in ipairs(FAMILIES) do
-        if known == nil or known[name] ~= nil then
+        if (known == nil or known[name] ~= nil) and contentEnabled(FAMILY_CONTENT[name]) then
             lists.f[#lists.f + 1] = name
         end
     end
@@ -757,7 +831,7 @@ requests.cat = function(player, w)
         local rows = {}
         for id, row in pairs(data.abilities) do
             if type(row) == 'table' and (row[1] == job or (sub ~= nil and row[1] == sub)) and id < 512 and id ~= 55
-                and names[id] then
+                and names[id] and abilityLoaded(id) then
                 rows[#rows + 1] = { name = names[id], level = row[2] or 0, main = row[1] == job }
             end
         end
@@ -788,7 +862,8 @@ requests.cat = function(player, w)
         local rows = {}
         for _, row in pairs(spells.spells) do
             local name, levels = row[1], row[2]
-            if type(name) == 'string' and type(levels) == 'table' and (type(spellIds) ~= 'table' or spellIds[name] ~= nil) then
+            if type(name) == 'string' and type(levels) == 'table' and (type(spellIds) ~= 'table' or spellIds[name] ~= nil)
+                and contentEnabled(row.ct) then
                 local mainLv, subLv = levels[job], sub and levels[sub] or nil
                 if mainLv and mainLv <= SPELL_MAX_LV then
                     rows[#rows + 1] = { name = name, level = mainLv, main = true }
@@ -871,7 +946,8 @@ function G.mateSpells(player, mjob, main, sub, subLevel)
     local rows = {}
     for id, row in pairs(data.spells) do
         local name, levels, group = row[1], row[2], row.g
-        if type(name) == 'string' and type(levels) == 'table' and (type(spellIds) ~= 'table' or spellIds[name] ~= nil) then
+        if type(name) == 'string' and type(levels) == 'table' and (type(spellIds) ~= 'table' or spellIds[name] ~= nil)
+            and contentEnabled(row.ct) then
             local byMain = levels[mjob] ~= nil and levels[mjob] <= main
             local bySub = sub ~= 0 and levels[sub] ~= nil and levels[sub] <= subLevel
             if byMain or bySub then
@@ -929,7 +1005,8 @@ function G.mateAbilities(player, mjob, main, sub, subLevel)
     local m = { job = mjob, level = main, subJob = sub, subLevel = subLevel, owner = player }
     local rows = {}
     for id, row in pairs(data.abilities) do
-        if type(row) == 'table' and (row[1] == mjob or (sub ~= 0 and row[1] == sub)) and id < 512 and id ~= 55 and names[id] then
+        if type(row) == 'table' and (row[1] == mjob or (sub ~= 0 and row[1] == sub)) and id < 512 and id ~= 55 and names[id]
+            and abilityLoaded(id) then
             local okR, why = pcall(A.reason, m, id, names[id])
             if okR and why == nil then
                 rows[#rows + 1] = { name = names[id], level = row[2] or 0, main = row[1] == mjob }
@@ -971,7 +1048,9 @@ requests.catm = function(player, w)
         return
     end
 
-    local lists = baseLists(R, w[4] == 'j')
+    -- "j" (version 5) / "jm" (version 6): which argument kinds the addon reads
+    local flags = w[4] or ''
+    local lists = baseLists(R, flags == 'j' or flags == 'jm', flags == 'jm')
     lists.j = G.mateAbilities(player, mate.mjob, main, sub, subLevel)
     lists.s, lists.u = G.mateSpells(player, mate.mjob, main, sub, subLevel)
     replyCatalog(player, w[2], lists, CATM_KINDS)

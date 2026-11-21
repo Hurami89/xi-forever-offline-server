@@ -143,6 +143,16 @@ function A.reason(m, id, name)
         return name .. ' is a pet ability or the pet command menu'
     end
 
+    -- (job expansion) an ability of an expansion this server has switched off is not loaded at all (ability.cpp): e.g.
+    -- Yonin, Innin, Sekkanoki, Pianissimo, Footwork with Wings of the Goddess off
+    local getAbility = rawget(_G, 'GetAbility')
+    if type(getAbility) == 'function' then
+        local okA, loaded = pcall(getAbility, id)
+        if okA and loaded == nil then
+            return name .. ' is not on this server (its expansion is switched off)'
+        end
+    end
+
     local twoHour = info.sp or (SQUAD_TWO_HOURS ~= nil and SQUAD_TWO_HOURS[name]) or false
     local subJob, subLevel = m.subJob or 0, m.subLevel or 0
     local asMain = info.job == m.job and info.level <= (m.level or 0)

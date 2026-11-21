@@ -82,14 +82,46 @@ R.CONDITIONS =
     NO_SAMBA = 'none', NO_STORM = 'none', NO_MAX_RUNE = 'none', HAS_RUNES = 'none',
     HAS_MP = 'none', HAS_MP_MPP_LT = { 0, 100 }, HAS_MP_MPP_GTE = { 0, 100 },               -- false without an MP pool
     JA_ON_COOLDOWN = 'ja',
+    -- (job expansion) a modifier of the target below a number: { mod = NAME, below = n }, NAME one of R.MODS
+    MOD_LT = 'mod',
+}
+
+-- (job expansion) the modifiers MOD_LT may name, with the numbers that make sense for "below": Utsusemi shadows and
+-- Blink images (battleutils.cpp IsAbsorbByShadow counts them down in these mods; the Copy Image effect's power does not
+-- change). Stoneskin is not a mod: its HP left is the effect's power, so it is not offered.
+R.MODS = {
+    UTSUSEMI  = { 1, 7 },
+    BLINK     = { 1, 3 },
 }
 
 -- The names that need the map server of the Gambits WAR/PLD/RDM batch (see above)
 R.ENGINE_NAMES = { HAS_MP = true, HAS_MP_MPP_LT = true, HAS_MP_MPP_GTE = true, JA_ON_COOLDOWN = true, PARTY_LOWEST_HPP = true }
+-- ... and the ones that need the job expansion's map server
+R.ENGINE2_NAMES = { MOD_LT = true }
 
 -- true when xi_map has that batch: its squad.cpp registers SquadApplyWeaponSkills (built from the same source)
 function R.engineReady()
     return type(rawget(_G, 'SquadApplyWeaponSkills')) == 'function'
+end
+
+-- (job expansion) true when xi_map has the job expansion's engine (squad.cpp registers SquadJobExpansionEngine)
+function R.engine2Ready()
+    return type(rawget(_G, 'SquadJobExpansionEngine')) == 'function'
+end
+
+-- (job expansion) { mod = 'UTSUSEMI', below = 2 } -> the engine's argument (mod id + below * 65536), or nil
+function R.modArg(arg)
+    local mods = type(xi) == 'table' and rawget(xi, 'mod') or nil
+    if type(arg) ~= 'table' or type(mods) ~= 'table' or R.MODS[arg.mod or ''] == nil or type(arg.below) ~= 'number' then
+        return nil
+    end
+
+    local id = mods[arg.mod]
+    if type(id) ~= 'number' then
+        return nil
+    end
+
+    return id + math.floor(arg.below) * 65536
 end
 
 -- Conditions the engine has but that a Rule Set must not use, and why (gambits_container.cpp CheckTrigger)
@@ -138,6 +170,10 @@ local function conditionProblem(cond)
 
     if R.ENGINE_NAMES[name] and not R.engineReady() then
         return name .. ' needs the updated map server (xi_map)'
+    end
+
+    if R.ENGINE2_NAMES[name] and not R.engine2Ready() then
+        return name .. ' needs the updated map server (xi_map, job expansion)'
     end
 
     if ai ~= nil and ai.c ~= nil and ai.c[name] == nil then
@@ -198,6 +234,21 @@ local function conditionProblem(cond)
         if known('ja', arg) == false then
             return 'unknown job ability ' .. arg
         end
+    elseif spec == 'mod' then
+        local range = type(arg) == 'table' and R.MODS[arg.mod or ''] or nil
+        if type(arg) ~= 'table' or not isName(arg.mod) then
+            return name .. ' needs { mod = NAME, below = n }'
+        end
+
+        if range == nil then
+            return name .. ' cannot use the modifier ' .. arg.mod .. ' (only UTSUSEMI, BLINK)'
+        end
+
+        if known('mod', arg.mod) == false then
+            return 'unknown modifier ' .. arg.mod
+        end
+
+        return rangeProblem(name .. ' below', arg.below, range)
     end
 
     return nil

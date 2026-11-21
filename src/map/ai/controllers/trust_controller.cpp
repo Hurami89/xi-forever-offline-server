@@ -1049,7 +1049,13 @@ auto CTrustController::Cast(const EntityId target, SpellID spellid) -> bool
 
     auto* PSpell = spell::GetSpell(spellid);
 
-    const auto castTarget = PSpell->getValidTarget() == TARGET_SELF ? EntityId(POwner) : target;
+    // XI: Forever Offline (job expansion): a song is sung on the singer and reaches the party around it; a rule may name a
+    // party member as the one it is for (e.g. "a melee member lacks Minuet"). Without Pianissimo such a song can only be
+    // cast on oneself, so it is: before, it was aimed at that member and refused. Songs on enemies are unchanged.
+    const auto validTargets = PSpell->getValidTarget();
+    const bool songOnSelf   = PSpell->getSpellGroup() == SPELLGROUP_SONG && (validTargets & TARGET_SELF) != 0 &&
+                            (validTargets & TARGET_ENEMY) == 0 && !POwner->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Pianissimo);
+    const auto castTarget = (validTargets == TARGET_SELF || songOnSelf) ? EntityId(POwner) : target;
 
     const auto PTarget      = castTarget.resolve<CBattleEntity>();
     const auto PSpellFamily = PSpell->getSpellFamily();

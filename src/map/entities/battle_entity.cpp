@@ -2453,6 +2453,30 @@ void CBattleEntity::OnCastFinished(CMagicState& state, action_t& action)
         }
     }
 
+    // XI: Forever Offline (job expansion): a squad Bard whose Rule Set sings songs for party roles (squad.lua sets
+    // SQUAD_SONG_ROLES on it) gives each song only to the members of the roles its rules name for that song. The song is
+    // cast, costs and lasts as always; only who of the party around the Bard receives it changes. The Bard keeps a song
+    // that reaches nobody else (an empty song would be no action at all). Player Bards and other trusts never get here.
+    if (objtype == TYPE_TRUST && PSpell->getSpellGroup() == SPELLGROUP_SONG && aoeType == SPELLAOE_RADIAL && GetLocalVar("SQUAD_SONG_ROLES") != 0)
+    {
+        auto& songTargets = PAI->TargetFind->m_targets;
+        std::erase_if(songTargets, [&](CBattleEntity* PSongTarget)
+                      {
+                          return PSongTarget != this &&
+                                 !luautils::callGlobal<bool>("xi.squad.songRecipient", this, PSongTarget, static_cast<uint16>(PSpell->getID()));
+                      });
+
+        if (songTargets.empty())
+        {
+            songTargets.emplace_back(this);
+        }
+        else if (std::ranges::find(songTargets, this) != songTargets.end() &&
+                 !luautils::callGlobal<bool>("xi.squad.songRecipient", this, this, static_cast<uint16>(PSpell->getID())) && songTargets.size() > 1)
+        {
+            std::erase(songTargets, this); // (the Bard itself only when its role is named, or when nobody else gets the song)
+        }
+    }
+
     const auto totalTargets = static_cast<uint16>(PAI->TargetFind->m_targets.size());
 
     PSpell->setTotalTargets(totalTargets);

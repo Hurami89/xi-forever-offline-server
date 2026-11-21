@@ -113,6 +113,10 @@ enum class G_CONDITION : uint16
     HAS_MP             = 40,
     HAS_MP_MPP_LT      = 41,
     HAS_MP_MPP_GTE     = 42,
+    // XI: Forever Offline (job expansion): a modifier of the target below a number. condition_arg = modifier id
+    // (low 16 bits) | number << 16. E.g. Utsusemi shadows left (Mod::UTSUSEMI) below 2. Rule Sets may only name the
+    // modifiers squad_rulesets.lua R.MODS lists (UTSUSEMI, BLINK).
+    MOD_LT             = 43,
 };
 
 enum class G_REACTION : uint16
@@ -332,6 +336,9 @@ private:
     auto InWeaponSkillRange(const CWeaponSkill* PWeaponSkill, const CBattleEntity* target) const -> bool;
     auto PartyHasHealer() -> bool;
     auto PartyHasTank() -> bool;
+    auto BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>; // XI: Forever Offline (job expansion): MB_ELEMENT
+    auto EstimatedCastTime(CSpell* PSpell) const -> timer::duration;
+    auto HoldWeaponSkill(CBattleEntity* target) -> bool; // XI: Forever Offline (job expansion): squad SA/TA before a WS
 
     CTrustEntity*         POwner;
     timer::time_point     m_lastAction;
