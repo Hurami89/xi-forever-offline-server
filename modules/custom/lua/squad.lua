@@ -454,6 +454,9 @@ do
                     pet:addHP(math.floor(pet:getMaxHP() * 0.3))
                 end
             end
+
+            -- (job expansion) the pet follows its master's target; a dragoon's Spirit Link (squad_jobs.lua)
+            require('modules/custom/lua/squad_jobs').petCare(mob, pet, target, now)
         end)
     end
 end
