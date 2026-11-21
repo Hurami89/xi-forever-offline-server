@@ -1023,6 +1023,39 @@ auto getSquadItemInfo(const uint32 itemId) -> sol::table
     return info;
 }
 
+// (2026-11-21, Tasou/Yache: "Squad gets all gear" showed only the given gear in the gear picker) every piece of gear a
+// job can wear in one equipment slot up to a level, best first: { { id, level, name } ... } (at most `limit`)
+auto getSquadGearChoices(const uint32 equipSlot, const uint32 job, const uint32 level, const uint32 limit) -> sol::table
+{
+    auto list = ::lua.create_table();
+    if (equipSlot > 15 || job < 1 || job > 22)
+    {
+        return list;
+    }
+
+    const uint32 count = std::clamp<uint32>(limit, 1, 200);
+    const auto   rset  = db::preparedStmt("SELECT itemId, level, name FROM item_equipment "
+                                          "WHERE (slot & ?) <> 0 AND (jobs & ?) <> 0 AND level <= ? AND ilevel = 0 "
+                                          "ORDER BY level DESC, name ASC LIMIT 200",
+                                          1u << equipSlot, 1u << (job - 1), level);
+    int index = 1;
+    FOR_DB_MULTIPLE_RESULTS(rset)
+    {
+        if (index > static_cast<int>(count))
+        {
+            break;
+        }
+
+        auto e     = ::lua.create_table();
+        e["id"]    = rset->get<uint32>("itemId");
+        e["level"] = rset->get<uint8>("level");
+        e["name"]  = rset->get<std::string>("name");
+        list[index++] = e;
+    }
+
+    return list;
+}
+
 // Basic level 1 gear a job can wear: main hand, head, body, hands, legs and feet.
 // For each slot we take the lowest-numbered plain (no script, no item level) level 1 item that the job can equip.
 auto buildStarterGear(const uint32 job) -> sol::table
@@ -2031,6 +2064,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);
         ::lua.set_function("GetSquadItemInfo", getSquadItemInfo);
+        ::lua.set_function("GetSquadGearChoices", getSquadGearChoices); // "Squad gets all gear" in the gear picker
         ::lua.set_function("SquadScrollSpell", squadScrollSpell);
         ::lua.set_function("SquadBlueSpellsOf", squadBlueSpellsOf);
         ::lua.set_function("SquadKnownBlue", squadKnownBlue);

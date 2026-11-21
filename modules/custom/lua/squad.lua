@@ -3893,6 +3893,29 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             return x.level > y.level or (x.level == y.level and x.name < y.name)
         end)
 
+        -- (2026-11-21, Tasou/Yache) with "Squad gets all gear" on, the rest of the list is every piece this mate can
+        -- wear in the slot, best first, after the pieces you gave (needs the xi_map with GetSquadGearChoices)
+        if squadAllGear() and type(GetSquadGearChoices) == 'function' then
+            local listed = {}
+            for _, f in ipairs(found) do
+                listed[f.id] = true
+            end
+
+            local ok, choices = pcall(GetSquadGearChoices, eq, mate.mjob, mainLevel, 80)
+            if ok and type(choices) == 'table' then
+                for _, c in ipairs(choices) do
+                    if #found >= 40 then
+                        break
+                    end
+
+                    if not listed[c.id] then
+                        listed[c.id] = true
+                        found[#found + 1] = { id = c.id, level = c.level, name = c.name }
+                    end
+                end
+            end
+        end
+
         for k = 1, math.min(#found, 40) do
             say(player, string.format('squadpanel:gl|%d|%d|%d|%d|%s', mate.slot, eq, found[k].id, found[k].level, found[k].name))
         end
