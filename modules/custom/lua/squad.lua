@@ -4907,6 +4907,19 @@ function squadThiefTick(mob)
 
     local flank  = 0
     local target = mob:isEngaged() and mob:getTarget() or nil
+    -- (job expansion) the mate's Rule Set uses Sneak/Trick Attack: it decides when; here only the position is kept
+    if mob:getLocalVar('SQUAD_SATA_MANAGED') ~= 0 then
+        local okJ, J = pcall(require, 'modules/custom/lua/squad_jobs')
+        if okJ and type(J) == 'table' then
+            flank = J.thiefManaged(mob, lvl, target, os.time())
+            if mob:getLocalVar('SQUAD_FLANK') ~= flank then
+                mob:setLocalVar('SQUAD_FLANK', flank)
+            end
+
+            return
+        end
+    end
+
     if lvl >= 15 and target ~= nil and target:isAlive() then
         local tank     = target:getTarget()
         local tanking  = tank ~= nil and tank:getID() == mob:getID() -- (the target faces us: no getting behind it)

@@ -338,6 +338,7 @@ private:
     auto PartyHasTank() -> bool;
     auto BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>; // XI: Forever Offline (job expansion): MB_ELEMENT
     auto EstimatedCastTime(CSpell* PSpell) const -> timer::duration;
+    auto HoldWeaponSkill(CBattleEntity* target) -> bool; // XI: Forever Offline (job expansion): squad SA/TA before a WS
 
     CTrustEntity*         POwner;
     timer::time_point     m_lastAction;

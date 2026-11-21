@@ -43,6 +43,7 @@
 #include "zone.h"
 
 #include <algorithm>
+#include <ctime>
 
 namespace gambits
 {
@@ -86,6 +87,11 @@ constexpr auto MagicBurstMargin   = std::chrono::milliseconds(500); // the spell
 auto squadRole(CBattleEntity* PMember) -> uint32
 {
     return PMember != nullptr ? PMember->GetLocalVar("SQUAD_ROLE") : 0;
+}
+
+auto nowSeconds() -> uint32
+{
+    return static_cast<uint32>(std::time(nullptr)); // (the epoch Lua's os.time() uses: squad.lua reads and writes these)
 }
 
 // XI: Forever Offline (Squad healer range, see gambits_reach.h): the spell a rule made only of spells will cast, when it
@@ -873,6 +879,29 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
 
                 if (action.select == G_SELECT::SPECIFIC)
                 {
+                    // XI: Forever Offline (job expansion): a squad thief whose Rule Set uses Sneak Attack / Trick Attack
+                    // (squad.lua sets SQUAD_SATA_MANAGED). The rule decides WHEN; the squad moves the thief into place
+                    // (squadThiefTick -> SQUAD_FLANK) and says when the position is right (SQUAD_SATA_READY = the ability).
+                    // Until then the ability is only requested, not used (not executed: no retry timer).
+                    const auto abilityId = PAbility->getID();
+                    if ((abilityId == ABILITY_SNEAK_ATTACK || abilityId == ABILITY_TRICK_ATTACK) && POwner->GetLocalVar("SQUAD_SATA_MANAGED") != 0 &&
+                        POwner->GetLocalVar("SQUAD_SATA_READY") != abilityId)
+                    {
+                        // (on recast: nothing to prepare - no request, so the thief does not move for it. Trust recasts are
+                        //  kept by ability id, CBattleEntity::OnAbility.)
+                        if (POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(abilityId), 0s))
+                        {
+                            continue;
+                        }
+
+                        if (POwner->GetLocalVar("SQUAD_SATA_REQ") != abilityId)
+                        {
+                            POwner->SetLocalVar("SQUAD_SATA_REQ", abilityId);
+                            POwner->SetLocalVar("SQUAD_SATA_REQ_AT", nowSeconds());
+                        }
+                        continue;
+                    }
+
                     if (target != nullptr)
                     {
                         executedAnyAction = controller->Ability(target->entityId(), PAbility->getID()) || executedAnyAction;
@@ -1604,6 +1633,12 @@ auto CGambitsContainer::TryTrustSkill() -> bool
         return false;
     }
 
+    // XI: Forever Offline (job expansion): a squad thief preparing Sneak Attack / Trick Attack keeps its TP for a moment
+    if (HoldWeaponSkill(target))
+    {
+        return false;
+    }
+
     // XI: Forever Offline: the Gambits weapon skill settings have their own path; the triggers above keep theirs unchanged
     if (tp_trigger >= G_TP_TRIGGER::OPEN_AT_TP && tp_trigger <= G_TP_TRIGGER::AT_TP)
     {
@@ -2260,6 +2295,55 @@ auto CGambitsContainer::BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>
     }
 
     return best;
+}
+
+// XI: Forever Offline (job expansion): a squad thief's Rule Set uses Sneak Attack / Trick Attack before its weapon skill
+// (squad.lua sets SQUAD_SATA_WSHOLD when such a rule needs TP). The weapon skill waits - TP is kept - while:
+//  - the hold window has not run out (SQUAD_WS_HOLD_UNTIL, at most 8 s from its start; squad.lua ends it early, e.g. when
+//    the thief takes the enemy's attention or the request is cancelled), and
+//  - neither effect is on yet (once it is, the weapon skill goes and consumes it), and
+//  - TP is below 3000 (the engine's release: TP is never held for ever), and
+//  - no skillchain can be closed now (a closing opportunity is never given up for the position).
+// The hold starts here, the moment the weapon skill would otherwise go, if Sneak Attack or Trick Attack is ready.
+auto CGambitsContainer::HoldWeaponSkill(CBattleEntity* target) -> bool
+{
+    if (POwner->GetLocalVar("SQUAD_SATA_WSHOLD") == 0 || POwner->health.tp >= 3000 || target == nullptr)
+    {
+        return false;
+    }
+
+    if (POwner->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::SneakAttack, xi::StatusEffect::TrickAttack }))
+    {
+        return false;
+    }
+
+    auto* PSCEffect = target->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain);
+    if (PSCEffect != nullptr && PSCEffect->GetTier() == 0 && PSCEffect->GetStartTime() + 3s < timer::now())
+    {
+        return false; // a window to close: the weapon skill (if it closes) is worth more than the position
+    }
+
+    const uint32 now   = nowSeconds();
+    const uint32 until = POwner->GetLocalVar("SQUAD_WS_HOLD_UNTIL");
+    if (until != 0)
+    {
+        return now < until;
+    }
+
+    auto ready = [&](ABILITY id)
+    {
+        const auto* PAbility = ability::GetAbility(id);
+        return PAbility != nullptr && ability::CanLearnAbility(POwner, id) &&
+               !POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(id), 0s);
+    };
+
+    if (ready(ABILITY_SNEAK_ATTACK) || ready(ABILITY_TRICK_ATTACK))
+    {
+        POwner->SetLocalVar("SQUAD_WS_HOLD_UNTIL", now + 8);
+        return true;
+    }
+
+    return false;
 }
 
 } // namespace gambits
