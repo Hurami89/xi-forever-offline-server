@@ -2826,6 +2826,19 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         return
     end
 
+    -- (job expansion) !squad partyrole [slot|me] [tank|melee|mage|ranged|auto]: who the Rule Sets' Tank/Melee/Mage/Ranged
+    -- targets (and a squad Bard's role songs) mean
+    if action == 'partyrole' then
+        local okJ, J = pcall(require, 'modules/custom/lua/squad_jobs')
+        if okJ and type(J) == 'table' then
+            J.partyRoleCommand(player, squad, arg1, arg2, { say = say, findMate = findMate })
+        else
+            say(player, 'Party roles are not available: ' .. tostring(J))
+        end
+
+        return
+    end
+
     -- what each mate out with you has eaten, and how long it lasts
     if action == 'food' then
         if not food.enabled then
@@ -5398,6 +5411,9 @@ local function squadSpawn(mob)
             mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MID_RANGE)
         end
     end
+
+    -- (job expansion) the party roles chosen with !squad partyrole, for the engine's Tank/Melee/Mage/Ranged targets
+    pcall(function() require('modules/custom/lua/squad_jobs').applyRoles(mob) end)
 
     -- Engage delay the player chose for this mate (!squad delay), in ms for trust_controller.cpp
     local delayMaster = mob:getMaster()

@@ -81,6 +81,13 @@ auto resonanceOf(CStatusEffect* PSCEffect) -> std::list<xi::SkillchainType>
 constexpr auto MagicBurstReaction = std::chrono::seconds(1);
 constexpr auto MagicBurstMargin   = std::chrono::milliseconds(500); // the spell must land this long before the window closes
 
+// XI: Forever Offline (job expansion): a party role set for one character by the squad (local var SQUAD_ROLE: 1 tank,
+// 2 melee, 3 caster, 4 ranged; 0 = by main job, as before). Only the squad sets it (!squad partyrole).
+auto squadRole(CBattleEntity* PMember) -> uint32
+{
+    return PMember != nullptr ? PMember->GetLocalVar("SQUAD_ROLE") : 0;
+}
+
 // XI: Forever Offline (Squad healer range, see gambits_reach.h): the spell a rule made only of spells will cast, when it
 // is known before a target is chosen (a specific spell, or the best of a family), as the reach it gives the rule.
 // Anything else - a job ability, a ranged attack, a spell picked against the target - gives no reach (the inherited 15).
@@ -318,8 +325,11 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             // clang-format off
                 static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
                 {
+                    // XI: Forever Offline (job expansion): a role the squad set for a member (!squad partyrole) decides; without
+                    // one, the main job (as before)
+                    const auto role = squadRole(PMember);
                     if (isValidMember(target, PMember) &&
-                        (PMember->GetMJob() == xi::Job::PLD || PMember->GetMJob() == xi::Job::RUN))
+                        (role == 1 || (role == 0 && (PMember->GetMJob() == xi::Job::PLD || PMember->GetMJob() == xi::Job::RUN))))
                     {
                         potentialTargets.push_back(PMember);
                     }
@@ -331,8 +341,9 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             // clang-format off
                 static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
                 {
+                    const auto role = squadRole(PMember);
                     if (isValidMember(target, PMember) &&
-                        melee_jobs.contains(PMember->GetMJob()))
+                        (role == 2 || (role == 0 && melee_jobs.contains(PMember->GetMJob()))))
                     {
                         potentialTargets.push_back(PMember);
                     }
@@ -344,8 +355,9 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             // clang-format off
                 static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
                 {
+                    const auto role = squadRole(PMember);
                     if (isValidMember(target, PMember) &&
-                        (PMember->GetMJob() == xi::Job::RNG || PMember->GetMJob() == xi::Job::COR))
+                        (role == 4 || (role == 0 && (PMember->GetMJob() == xi::Job::RNG || PMember->GetMJob() == xi::Job::COR))))
                     {
                         potentialTargets.push_back(PMember);
                     }
@@ -357,8 +369,9 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             // clang-format off
                 static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
                 {
+                    const auto role = squadRole(PMember);
                     if (isValidMember(target, PMember) &&
-                        caster_jobs.contains(PMember->GetMJob()))
+                        (role == 3 || (role == 0 && caster_jobs.contains(PMember->GetMJob()))))
                     {
                         potentialTargets.push_back(PMember);
                     }
@@ -2096,9 +2109,10 @@ auto CGambitsContainer::PartyHasTank() -> bool
     // clang-format off
         static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
         {
-            auto jobType = PMember->GetMJob();
+            auto       jobType = PMember->GetMJob();
+            const auto role    = squadRole(PMember); // XI: Forever Offline (job expansion): an explicit squad party role decides
 
-            if (jobType == xi::Job::NIN || jobType == xi::Job::PLD || jobType == xi::Job::RUN)
+            if (role == 1 || (role == 0 && (jobType == xi::Job::NIN || jobType == xi::Job::PLD || jobType == xi::Job::RUN)))
             {
                 hasTank = true;
             }
