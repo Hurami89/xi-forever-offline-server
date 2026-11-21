@@ -1273,6 +1273,17 @@ auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellI
         {
             PTarget = PTrust->GetBattleTarget();
         }
+
+        // (2026-11-21, sparkiie: "/p sleepga ii" did nothing before a fight) nobody engaged yet: the monster you have
+        // targeted (the one the game's own <t> means), if it is a monster in this area
+        if (PTarget == nullptr && PChar->m_TargID != 0)
+        {
+            auto* PSeen = dynamic_cast<CBattleEntity*>(PChar->GetEntity(PChar->m_TargID, TYPE_MOB));
+            if (PSeen != nullptr && PSeen->objtype == TYPE_MOB && !PSeen->isDead())
+            {
+                PTarget = PSeen;
+            }
+        }
     }
     else if (PNamed != nullptr)
     {
