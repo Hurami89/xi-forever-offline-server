@@ -173,7 +173,7 @@ end
 
 local function isActive()
     local mode = eventsMode()
-    if mode == 'off' then
+    if mode == 'off' or (xi.eventsMode and xi.eventsMode.allowed and not xi.eventsMode.allowed('horro')) then
         return false
     elseif mode == 'on' then
         return true
