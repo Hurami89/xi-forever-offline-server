@@ -1668,6 +1668,13 @@ xi.bots.onMessage = function(bot, t)
 end
 
 -- your answer to a bot's friend request (accepted = true / false)
+-- (2026-11-21) a player gave the bot something by trade (bots.cpp)
+xi.bots.onGift = function(bot, t)
+    if friends and type(t) == 'table' and friends.onGift then
+        pcall(friends.onGift, bot, t.from)
+    end
+end
+
 xi.bots.onFriendReply = function(bot, t)
     if friends and type(t) == 'table' then
         pcall(friends.onReply, bot, t.from, t.accepted == true)

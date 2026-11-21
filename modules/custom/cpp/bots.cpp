@@ -45,7 +45,11 @@
 #include "map/packets/c2s/0x011_zone_transition.h"
 #include "map/packets/c2s/0x015_pos.h"
 #include "map/packets/c2s/0x01a_action.h"
+#include "map/packets/c2s/0x032_trade_req.h"
+#include "map/packets/c2s/0x033_trade_res.h"
 #include "map/packets/c2s/0x036_item_transfer.h"
+#include "map/packets/s2c/0x022_item_trade_res.h"
+#include "map/items/transactions/player_trade.h"
 #include "map/packets/c2s/0x04e_auc.h"
 #include "map/packets/c2s/0x05b_eventend.h"
 #include "map/packets/c2s/0x05d_motion.h"
@@ -151,6 +155,18 @@ timer::time_point g_lastLuaTick    = {};
 timer::time_point g_lastFriendSweep = {};
 // the fast position tick for bots that are walking (never cancelled: it lives as long as the map server)
 Scheduler::Token* g_moveTimer = nullptr;
+
+// (2026-11-21) gifts: a real player can trade items to a bot player. The bot has no game client to open the trade
+// window or press OK, so the module does both: it opens the trade a moment after the request, and accepts when the
+// player presses OK. A bot never puts anything in, so it only ever receives.
+struct GiftTrade
+{
+    uint32            bot;
+    uint32            player;
+    timer::time_point at;
+    bool              done; // false: open the window at `at`; true: the player pressed OK, thank them once it closed
+};
+auto& g_gifts = *new std::vector<GiftTrade>();
 
 auto botOf(uint32 charId) -> Bot*
 {
@@ -2417,6 +2433,33 @@ class BotsModule : public CPPModule
             return false;
         }
 
+        // (2026-11-21) a real player offers a bot a trade: the stock handler sends the request as usual and the bot
+        // "accepts" it shortly after (OnZoneTick); when the player presses OK, the bot presses OK too
+        if (packet.getType() == 0x032)
+        {
+            const auto* req = packet.as<GP_CLI_COMMAND_TRADE_REQ>();
+            if (Bot* b = botOf(req->UniqueNo); b && b->online && !b->zoning)
+            {
+                g_gifts.push_back({ req->UniqueNo, PChar->id, timer::now() + std::chrono::milliseconds(1500), false });
+            }
+        }
+        else if (packet.getType() == 0x033)
+        {
+            const auto* res = packet.as<GP_CLI_COMMAND_TRADE_RES>();
+            if (static_cast<GP_CLI_COMMAND_TRADE_RES_KIND>(res->Kind) == GP_CLI_COMMAND_TRADE_RES_KIND::Make)
+            {
+                CCharEntity* PBot = PChar->tradePartner();
+                if (PBot != nullptr && botOf(PBot->id) != nullptr)
+                {
+                    if (auto* transaction = PChar->activePlayerTradeTransaction())
+                    {
+                        transaction->accept(PBot); // (the stock handler then accepts for the player and completes it)
+                        g_gifts.push_back({ PBot->id, PChar->id, timer::now() + std::chrono::milliseconds(1000), true });
+                    }
+                }
+            }
+        }
+
         // a real player's party invite to a bot: write it in the log (to see why an invite did not arrive)
         // a real player's /tell to a bot: the bot hears it (xi.bots.onTell); the tell itself goes on as normal
         if (packet.getType() == 0x0B6)
@@ -2575,6 +2618,50 @@ class BotsModule : public CPPModule
     {
         // all bots, every 200 ms, after a zone has finished its own tick
         const auto now = timer::now();
+
+        // (2026-11-21) gift trades (see g_gifts)
+        for (auto it = g_gifts.begin(); it != g_gifts.end();)
+        {
+            if (now < it->at)
+            {
+                ++it;
+                continue;
+            }
+
+            CCharEntity* PBot  = charOf(botOf(it->bot));
+            CCharEntity* PChar = zoneutils::GetChar(it->player);
+            if (PBot != nullptr && PChar != nullptr)
+            {
+                if (!it->done)
+                {
+                    // still asked, nobody else's trade open: open the window on both sides, as the stock 0x033 Start does
+                    if (PBot->TradePending.entity.UniqueNo == PChar->id && !PBot->TradePending.initiator &&
+                        PBot->activePlayerTradeTransaction() == nullptr)
+                    {
+                        if (PlayerTradeTransaction::start(PBot, PChar) != nullptr)
+                        {
+                            PChar->pushPacket<GP_SERV_COMMAND_ITEM_TRADE_RES>(PBot, GP_ITEM_TRADE_RES_KIND::Start);
+                            PBot->pushPacket<GP_SERV_COMMAND_ITEM_TRADE_RES>(PChar, GP_ITEM_TRADE_RES_KIND::Start);
+                        }
+                        else
+                        {
+                            PBot->TradePending.clean();
+                            PChar->TradePending.clean();
+                            PChar->pushPacket<GP_SERV_COMMAND_ITEM_TRADE_RES>(PBot, GP_ITEM_TRADE_RES_KIND::ErrYouTrade);
+                        }
+                    }
+                }
+                else if (PBot->activePlayerTradeTransaction() == nullptr)
+                {
+                    auto info    = ::lua.create_table();
+                    info["from"] = std::string(PChar->getName());
+                    callLua("onGift", PBot, info);
+                }
+                // (still open: the player changed the items after OK; their next OK queues a new entry)
+            }
+
+            it = g_gifts.erase(it);
+        }
 
         // the bots' own position tick, started once there is a scheduler to hang it on
         if (g_moveTimer == nullptr)

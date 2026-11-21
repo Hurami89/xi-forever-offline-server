@@ -314,6 +314,11 @@ end
 
 -- force: the roster was turned down or off (then only your own party keeps a bot on)
 local function canLeave(id, force)
+    -- (2026-11-21) a bot on a real player's friend list stays online while bots are on (only "bots off" sends it home)
+    if cfg.enabled and L.keep and L.keep(id) then
+        return false
+    end
+
     local bot = GetPlayerByID(id)
     if not bot then
         return true
@@ -495,6 +500,16 @@ function L.tick()
             end
 
             sessions[id] = t + 10 * 60 -- busy with you: ask again later
+        end
+    end
+
+    -- 3b. (2026-11-21) your bot friends are always online: an offline friend logs in now (one per tick)
+    if cfg.enabled and L.keep then
+        for _, id in ipairs(offline) do
+            if lastList[id] and L.keep(id) then
+                logIn(id, lastList[id])
+                return
+            end
         end
     end
 

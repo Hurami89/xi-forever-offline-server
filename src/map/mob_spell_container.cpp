@@ -407,6 +407,29 @@ auto CMobSpellContainer::GetBestAgainstTargetWeakness(CBattleEntity* PTarget, Sp
             break;
         }
     }
+    // XI: Forever Offline (2026-11-21, Tasou: level 16 Black Mage mates only ever cast Shock, or Paralyze with a White
+    // Mage support job): the monster's weakest element may be one the caster has not learned yet (Thunder at 21, while
+    // Valkurm crabs are weak to it), and "the best spell of no family" then picked an enfeeble. Fall back to the strongest
+    // elemental nuke the caster does know (highest MP cost = highest tier) before anything else.
+    if (!choice)
+    {
+        uint16 bestCost = 0;
+        for (const auto family : { SPELLFAMILY_THUNDER, SPELLFAMILY_BLIZZARD, SPELLFAMILY_FIRE, SPELLFAMILY_AERO, SPELLFAMILY_WATER, SPELLFAMILY_STONE })
+        {
+            const auto nuke = GetBestAvailable(family);
+            if (!nuke)
+            {
+                continue;
+            }
+
+            if (const CSpell* PSpell = spell::GetSpell(*nuke); PSpell != nullptr && PSpell->getMPCost() > bestCost)
+            {
+                bestCost = PSpell->getMPCost();
+                choice   = nuke;
+            }
+        }
+    }
+
     // If all else fails, just cast the best you have!
     return !choice ? GetBestAvailable(SPELLFAMILY_NONE) : choice;
 }

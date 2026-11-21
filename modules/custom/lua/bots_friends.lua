@@ -135,6 +135,11 @@ local LINES = {
         { 'sure! sent you one :)', 'Of course. I have sent you a friend request.' },
         { 'yeah! just sent you a request', 'Gladly. Please check your friend requests.' },
     },
+    gift = {
+        { 'whoa thank you!! :D', 'Thank you very much, that is very kind of you.' },
+        { 'omg ty! you didnt have to', 'Thank you. I will put it to good use.' },
+        { 'aww thanks {name}, ill use it well', 'Thank you, {name}. I appreciate it.' },
+    },
     thanks = {
         { 'yay thanks for adding me :)', 'Thank you for accepting my request.' },
         { 'ty for accepting! :D', 'Thank you. I am glad to be on your list.' },
@@ -1049,5 +1054,15 @@ F._reset = function()
 end
 F._nature = nature
 F._need = need
+
+-- (2026-11-21) a player traded the bot something (bots.cpp gift trades): a thank-you tell and friendship points
+function F.onGift(bot, from)
+    if type(from) ~= 'string' or from == '' then
+        return
+    end
+
+    addPoints(bot, from, 2)
+    say(bot, from, 'gift', { name = from }, rnd(3, 8))
+end
 
 return F
