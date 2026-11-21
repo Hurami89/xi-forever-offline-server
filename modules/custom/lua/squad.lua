@@ -5386,7 +5386,10 @@ local function squadSpawn(mob)
         if main.stance then
             main.stance(mob)
         end
+        -- (job expansion) what the set asks of the squad: managed Sneak/Trick Attack, songs for party roles (squad_jobs.lua)
+        pcall(function() require('modules/custom/lua/squad_jobs').analyse(mob, customSet.rules) end)
     else
+        pcall(function() require('modules/custom/lua/squad_jobs').analyse(mob, nil) end)
         profileLevel = mob:getMainLvl()
         runPart(mob, mob:getMainJob(), 'ja', false)
         runPart(mob, mob:getMainJob(), 'magic', false)
