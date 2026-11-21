@@ -5777,6 +5777,37 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
 end)
 
 m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
+    -- (2026-11-21, delukard; Hurami: "the same as squad mates") below level 12 bot players in your party don't split
+    -- your exp either: the share is worked out as if only the real players were there (party size and highest level).
+    if member:getObjType() == xi.objType.PC and member:getMainLvl() < 12 and BotIsBot and not BotIsBot(member:getID()) then
+        local real, highest, hasBot = 0, member:getMainLvl(), false
+        for _, p in pairs(member:getParty()) do
+            if p:getObjType() == xi.objType.PC and p:getZoneID() == mob:getZoneID() then
+                if BotIsBot(p:getID()) then
+                    hasBot = true
+                else
+                    real = real + 1
+                    highest = math.max(highest, p:getMainLvl())
+                end
+            end
+        end
+
+        if hasBot then
+            local solo = {}
+            for key, value in pairs(data) do
+                solo[key] = value
+            end
+
+            solo.partySize = math.max(1, math.min(tonumber(data.partySize) or 1, real))
+            if highest < (tonumber(data.highestMemberLevel) or highest) then
+                solo.highestMemberLevel = highest
+                solo.highestMemberTNL   = GetSquadExpNeeded(highest)
+            end
+
+            data = solo
+        end
+    end
+
     -- the squad mates who share this kill: in your party, alive, in the zone and within 100 yalms of the monster
     local sharing = {}
     if member:getObjType() == xi.objType.PC then

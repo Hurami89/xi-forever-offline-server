@@ -2079,7 +2079,141 @@ end
 -----------------------------------
 -- party chat orders: "follow", "stay", "attack", "stop" (from a real player in the bot's party)
 -----------------------------------
+-- (2026-11-21, Sunie: "ask a bot to take an action") a bot player in your party casts a spell you ask for in party
+-- chat, the way squad mates do: "/p protect", "/p cure ii sunie", "/p haste me", "/p Belan protect". The bot has to
+-- know the spell, be able to use it on its current main or support job at its level, have the MP, and the spell must
+-- be off recast. Returns true when the line was a spell request (handled or answered).
+local REQUEST_FILLER = { please = true, pls = true, plz = true, can = true, could = true, you = true, someone = true,
+    cast = true, give = true, some = true, a = true, on = true, to = true, ['for'] = true }
+
+local function requestCanCast(bot, spellId)
+    if not bot:hasSpell(spellId) then
+        return false, 'unknown'
+    end
+
+    local okS, sp = pcall(GetSpell, spellId)
+    if not okS or sp == nil then
+        return false, 'unknown'
+    end
+
+    local okL, mainLvl = pcall(function() return sp:getLevel(bot:getMainJob()) end)
+    local okS2, subLvl = pcall(function() return sp:getLevel(bot:getSubJob()) end)
+    local usable = (okL and mainLvl and mainLvl > 0 and mainLvl <= bot:getMainLvl()) or
+                   (okS2 and subLvl and subLvl > 0 and subLvl <= bot:getSubLvl())
+    if not usable then
+        return false, 'job'
+    end
+
+    if bot:getMP() < (sp:getMPCost() or 0) then
+        return false, 'mp'
+    end
+
+    if bot:hasRecast(xi.recast.MAGIC, spellId) then
+        return false, 'recast'
+    end
+
+    return true
+end
+
+local function spellRequest(player, text)
+    local words = {}
+    for w in string.gmatch(string.lower(text or ''), "[%a']+") do
+        if not REQUEST_FILLER[w] then
+            words[#words + 1] = w
+        end
+    end
+
+    if #words == 0 or #words > 6 then
+        return false
+    end
+
+    local bots, people = {}, {}
+    for _, member in pairs(player:getPartyWithTrusts() or {}) do
+        if member:getZoneID() == player:getZoneID() then
+            people[string.lower(member:getName())] = member
+            if member:getObjType() == xi.objType.TRUST then
+                people[string.lower(member:getPacketName())] = member -- (a squad mate goes by its own name)
+            end
+            if member:getObjType() == xi.objType.PC and BotIsBot(member:getID()) and member:isAlive() then
+                bots[#bots + 1] = member
+            end
+        end
+    end
+
+    if #bots == 0 then
+        return false
+    end
+
+    -- an optional bot name first ("Belan protect")
+    local first, asked = 1, nil
+    local named = people[words[1]]
+    if named and named:getObjType() == xi.objType.PC and BotIsBot(named:getID()) then
+        asked, first = named, 2
+    end
+
+    -- the longest spell name from there (cure ii, protect, haste...)
+    local spellId, last = nil, nil
+    for n = math.min(3, #words - first + 1), 1, -1 do
+        local key = string.upper(table.concat(words, '_', first, first + n - 1))
+        if xi.magic.spell[key] then
+            spellId, last = xi.magic.spell[key], first + n - 1
+            break
+        end
+    end
+
+    if not spellId then
+        return false
+    end
+
+    -- who it is for: a party member's name after the spell, or you
+    local target = player
+    local rest = words[last + 1]
+    if rest and rest ~= 'me' and rest ~= 'myself' and people[rest] then
+        target = people[rest]
+    end
+
+    local spellName = table.concat(words, ' ', first, last)
+    local caster, why = nil, nil
+    for _, bot in ipairs(asked and { asked } or bots) do
+        local ok, reason = requestCanCast(bot, spellId)
+        if ok and bot:checkDistance(target) <= 20 then
+            caster = bot
+            break
+        end
+
+        why = why or reason
+    end
+
+    if not caster then
+        -- only a bot you named answers "can't"; a general request nobody can do stays quiet
+        if asked then
+            local line = ({ job = "can't cast " .. spellName .. ' on this job', mp = 'not enough mp for that',
+                            recast = 'not ready yet, gimme a sec', unknown = "don't have " .. spellName })[why or 'unknown']
+            asked:timer(math.random(800, 1600), function(b)
+                chat(b, 4, line)
+            end)
+        end
+
+        return true
+    end
+
+    local st = state[caster:getID()] or {}
+    state[caster:getID()] = st
+    st.partyWait = os.time() + 6 -- (its own party play waits for this cast)
+    local forYou = target:getID() == player:getID()
+    caster:timer(math.random(700, 1500), function(b)
+        chat(b, 4, forYou and ('sure, ' .. spellName .. ' coming') or (spellName .. ' on ' .. target:getName()))
+        BotCast(b:getID(), spellId, target)
+    end)
+
+    return true
+end
+
 xi.bots.partyOrder = function(player, text)
+    if spellRequest(player, text) then
+        return
+    end
+
     local word = string.lower((text or ''):match('^%s*(%a+)') or '')
     if word ~= 'follow' and word ~= 'stay' and word ~= 'attack' and word ~= 'stop' and word ~= 'release' then
         -- not an order: party talk (a bot may answer)
