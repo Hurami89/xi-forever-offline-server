@@ -5602,6 +5602,18 @@ for _, name in ipairs(templates) do
 end
 
 -- Template trust speeches (like Naji's battle cries) are skipped for squad mates, whatever their job
+-- (2026-11-21, sparkiie: a Ninja mate's Mijin Gakure did its damage but the mate lived) the ability ends with
+-- player:die(), which only works on a player character; for anyone else it only logged a warning. A squad mate (a trust)
+-- falls the way a player does: its HP goes to 0 after the blow.
+m:addOverride('xi.job_utils.ninja.useMijinGakure', function(player, target, ability, action)
+    local dmg = super(player, target, ability, action)
+    if player:getObjType() ~= xi.objType.PC and player:isAlive() then
+        player:setHP(0)
+    end
+
+    return dmg
+end)
+
 m:addOverride('xi.trust.message', function(mob, messageOffset)
     if mob:getLocalVar('SQUAD_ID') > 0 then
         return
