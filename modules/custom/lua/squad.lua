@@ -2345,6 +2345,7 @@ local function callMate(player, mate)
             seen[mobArg:getLocalVar('SQUAD_ID')] = os.time()
         end
 
+        pcall(squadCutsceneTick, mobArg, owner)
         campTick(mobArg)
         if restTick ~= nil then
             restTick(mobArg)
@@ -2376,6 +2377,32 @@ local function callMate(player, mate)
     end)
 
     return trust
+end
+
+-- (2026-11-21, lilibun: mates standing in the middle of cutscenes) while you are in a cutscene or talking to an NPC for
+-- more than a moment, your squad mates are hidden; they show again the moment it ends. (The short wait keeps them from
+-- blinking out for a one-line chat.) A global: squad.lua is near Lua's 200-local limit.
+SQUAD_CS_HIDE_AFTER = 2 -- seconds in an event before the mates are hidden
+function squadCutsceneTick(mob, owner)
+    local hidden = mob:getLocalVar('SQUAD_CS_HIDDEN') == 1
+    local inEvent = owner ~= nil and owner:isInEvent() and mob:isAlive()
+    if inEvent then
+        local since = mob:getLocalVar('SQUAD_CS_SINCE')
+        if since == 0 then
+            mob:setLocalVar('SQUAD_CS_SINCE', os.time())
+        elseif not hidden and os.time() - since >= SQUAD_CS_HIDE_AFTER and mob:getStatus() == xi.status.NORMAL then
+            mob:setLocalVar('SQUAD_CS_HIDDEN', 1)
+            mob:setStatus(xi.status.INVISIBLE)
+        end
+    else
+        mob:setLocalVar('SQUAD_CS_SINCE', 0)
+        if hidden then
+            mob:setLocalVar('SQUAD_CS_HIDDEN', 0)
+            if mob:getStatus() == xi.status.INVISIBLE then
+                mob:setStatus(xi.status.NORMAL)
+            end
+        end
+    end
 end
 
 -- Summon cooldown: after a squad mate is called with !squad call, that mate cannot be called again for
