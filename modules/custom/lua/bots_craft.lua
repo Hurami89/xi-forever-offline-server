@@ -273,9 +273,23 @@ local function equippedIds(bot)
     return out
 end
 
+-- (2026-11-21, Tasou) the launcher's "Auction house prices" rate (main.AH_PRICE_RATE): bots price and bid with it too
+local function priceRate()
+    local r = tonumber(xi.settings and xi.settings.main and xi.settings.main.AH_PRICE_RATE) or 1
+    return math.max(0.1, math.min(10, r))
+end
+
 local function priceOf(id)
     local it = craftData().items[id]
-    return it and it[1] or nil, it and it[2] or nil, it and it[3] or 1, it and it[4] == 1
+    local rate = priceRate()
+    local single = it and it[1] or nil
+    local stack = it and it[2] or nil
+    if rate ~= 1 then
+        single = single and math.max(1, math.floor(single * rate)) or nil
+        stack = stack and math.max(1, math.floor(stack * rate)) or nil
+    end
+
+    return single, stack, it and it[3] or 1, it and it[4] == 1
 end
 
 -- seals (traded to Shami for orbs, bots_bcnm.lua) and the orbs themselves are never put on the auction house

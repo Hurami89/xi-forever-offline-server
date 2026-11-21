@@ -198,7 +198,11 @@ function L.loadConfig()
         cfg.roster = math.max(0, math.min(MAX_ROSTER, tonumber(c.roster) or 100))
         cfg.online = math.max(0, math.min(MAX_ONLINE, tonumber(c.online) or 50))
         cfg.growth = (c.growth == 'off' or c.growth == 'fast') and c.growth or 'realistic'
+        cfg.passLoot = c.pass_loot ~= false
     end
+
+    -- (2026-11-21) read by bots.cpp: bot players in a party with you pass every drop right away
+    BOTS_PASS_LOOT = cfg.passLoot ~= false
 
     return cfg
 end

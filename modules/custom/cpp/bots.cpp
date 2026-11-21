@@ -50,6 +50,7 @@
 #include "map/packets/c2s/0x036_item_transfer.h"
 #include "map/packets/s2c/0x022_item_trade_res.h"
 #include "map/items/transactions/player_trade.h"
+#include "map/treasure_pool.h"
 #include "map/packets/c2s/0x04e_auc.h"
 #include "map/packets/c2s/0x05b_eventend.h"
 #include "map/packets/c2s/0x05d_motion.h"
@@ -2700,6 +2701,41 @@ class BotsModule : public CPPModule
             }
 
             tickBot(b.get());
+        }
+
+        // (2026-11-21, delukard) bot players in a party with a real player pass every drop at once, so your loot comes
+        // to you without waiting out the lot timer. The launcher's "Bots pass all loot" (bots_config.lua pass_loot, on by
+        // default; bots_life.lua sets BOTS_PASS_LOOT).
+        if (!nobody && ::lua["BOTS_PASS_LOOT"].get_or(true))
+        {
+            for (auto& [id, b] : g_bots)
+            {
+                CCharEntity* PBot = b->online && !b->zoning ? charOf(b.get()) : nullptr;
+                CTreasurePool* pool = PBot ? PBot->PTreasurePool : nullptr;
+                if (pool == nullptr || pool->itemCount() == 0)
+                {
+                    continue;
+                }
+
+                bool withPlayer = false;
+                for (CCharEntity* member : pool->getMembers())
+                {
+                    withPlayer = withPlayer || (member != nullptr && botOf(member->id) == nullptr);
+                }
+
+                if (!withPlayer)
+                {
+                    continue;
+                }
+
+                for (const auto& item : pool->getItems())
+                {
+                    if (item.ID != 0 && !pool->hasPassedItem(PBot, item.SlotID) && !pool->hasLottedItem(PBot, item.SlotID))
+                    {
+                        pool->passItem(PBot, item.SlotID);
+                    }
+                }
+            }
         }
 
         // once a second: the Lua side (roster, log in / log out schedule), only while a real player is on

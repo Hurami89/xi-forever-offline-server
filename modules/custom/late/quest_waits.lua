@@ -105,4 +105,49 @@ m:addOverride('xi.zones.Sauromugue_Champaign.mobs.Old_Sabertooth.onMobSpawn', fu
     end
 end)
 
+-- (2026-11-21, PTgamerguy) Aht Urhgan missions: with short waits, the waits between missions are about a minute too.
+-- Two kinds share the names Mission[4][<n>]Timer: the game's own "next Vana'diel day" (the value is the day to wait
+-- for) and the era module's "next Japanese midnight" (a 1 that expires then). A minute after a timer appears, a
+-- check that runs while you play clears it. You still have to zone once where the mission asks it.
+local TOAU_TIMER_CHECK_MS = 20000
+local TOAU_SHORT_WAIT_S   = 60
+
+local function toauWaits(player)
+    if player == nil or not shortWaits() then
+        return
+    end
+
+    local t = os.time()
+    player:setLocalVar('QW_TOAU_RUN', t)
+    for n = 1, 48 do
+        local name  = string.format('Mission[%d][%d]Timer', xi.mission.log_id.TOAU, n)
+        local value = player:getCharVar(name)
+        local seen  = 'QW_TOAU_' .. n
+        if value == 0 then
+            player:setLocalVar(seen, 0)
+        elseif player:getLocalVar(seen) == 0 then
+            player:setLocalVar(seen, t)
+        elseif t - player:getLocalVar(seen) >= TOAU_SHORT_WAIT_S then
+            if value == 1 then
+                player:setCharVar(name, 0)                    -- (era: the Japanese-midnight flag)
+            elseif value > VanadielUniqueDay() then
+                player:setCharVar(name, VanadielUniqueDay())  -- (game: the day it waits for is today)
+            end
+
+            player:setLocalVar(seen, 0)
+        end
+    end
+
+    player:timer(TOAU_TIMER_CHECK_MS, toauWaits)
+end
+
+m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
+    super(player, firstLogin, zoning)
+
+    -- one running check (started again after a zone change if that stopped it)
+    if os.time() - player:getLocalVar('QW_TOAU_RUN') > TOAU_TIMER_CHECK_MS / 1000 + 10 then
+        player:timer(TOAU_TIMER_CHECK_MS, toauWaits)
+    end
+end)
+
 return m
