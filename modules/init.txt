@@ -81,6 +81,11 @@ custom/lua/squad_space.lua
 custom/lua/squad_chain.lua
 # Gambits v2: the in-game Squad Rule Set editor's server side (!gsq, GambitsV2 addon); needs custom/lua/squad.lua above
 custom/lua/gambits_squad.lua
+# Jon Tanta (2026-11-21): training dummies (off unless switched on), !idle, Actions ON/OFF, Bard walking
+custom/lua/squad_sandbox.lua
+custom/lua/squad_idle.lua
+custom/lua/squad_actions.lua
+custom/lua/squad_bard_walk.lua
 custom/sql/squad.sql
 
 # Fast travel

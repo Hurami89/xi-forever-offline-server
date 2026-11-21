@@ -471,7 +471,7 @@ end
 
 -- Runs every combat tick: takes off worn-out food, and eats a fresh meal if the mate is not currently eating one
 local function eatIfNeeded(mob)
-    if not food.enabled then
+    if not food.enabled or mob:getLocalVar('SQUAD_IDLE') == 1 then -- (Jon Tanta, 2026-11-21) a stopped mate does not eat either
         return
     end
 
@@ -2345,7 +2345,8 @@ local function callMate(player, mate)
         if resyncSquad ~= nil then
             resyncSquad(mobArg)
         end
-        if squadThiefTick ~= nil and mobArg:isAlive() and mobArg:getMaster() ~= nil then
+        -- (Jon Tanta, 2026-11-21) SQUAD_IDLE (trust_controller.cpp): a mate the player has stopped gets no built-in Thief positioning
+        if squadThiefTick ~= nil and mobArg:getLocalVar('SQUAD_IDLE') == 0 and mobArg:isAlive() and mobArg:getMaster() ~= nil then
             pcall(squadThiefTick, mobArg)
         end
         squadTeamTick(mobArg) -- (spacing and the skillchain wait, once a second)

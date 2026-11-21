@@ -20,6 +20,7 @@
 */
 
 #include "gambits_container.h"
+#include "gambits_reach.h"
 
 #include "ability.h"
 #include "ai/states/ability_state.h"
@@ -45,6 +46,56 @@
 
 namespace gambits
 {
+
+namespace
+{
+
+// XI: Forever Offline (Squad healer range, see gambits_reach.h): the spell a rule made only of spells will cast, when it
+// is known before a target is chosen (a specific spell, or the best of a family), as the reach it gives the rule.
+// Anything else - a job ability, a ranged attack, a spell picked against the target - gives no reach (the inherited 15).
+auto RuleSpellReach(CTrustEntity* POwner, const Gambit_t& gambit) -> std::optional<reach::SpellReach>
+{
+    const Action_t* first = nullptr;
+    for (const auto& action : gambit.actions)
+    {
+        if (action.reaction != G_REACTION::MA)
+        {
+            return std::nullopt;
+        }
+
+        if (first == nullptr)
+        {
+            first = &action; // (only the first spell of a rule is cast)
+        }
+    }
+
+    if (first == nullptr || POwner->SpellContainer == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    Maybe<SpellID> spellId = std::nullopt;
+    if (first->select == G_SELECT::SPECIFIC)
+    {
+        spellId = POwner->SpellContainer->GetAvailable(static_cast<SpellID>(first->select_arg));
+    }
+    else if (first->select == G_SELECT::HIGHEST)
+    {
+        spellId = POwner->SpellContainer->GetBestAvailable(static_cast<SPELLFAMILY>(first->select_arg));
+    }
+
+    const CSpell* PSpell = spellId.has_value() ? spell::GetSpell(spellId.value()) : nullptr;
+    if (PSpell == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    return reach::FromSpellData(PSpell->getValidTarget(), PSpell->getRange(), PSpell->getRadius());
+}
+
+static_assert(reach::TargetSelf == TARGET_SELF && reach::TargetPlayerParty == TARGET_PLAYER_PARTY);
+
+} // namespace
 
 // Return a new unique identifier for a gambit
 auto CGambitsContainer::NewGambitIdentifier(const Gambit_t& gambit) const -> std::string
@@ -136,6 +187,9 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
         co_return;
     }
 
+    // XI: Forever Offline (Squad healer range): squad mates' spell rules reach party members as far as the spell does
+    const bool squadMate = POwner->GetLocalVar("SQUAD_ID") != 0;
+
     // Didn't WS/MS, go for other Gambits
     for (auto& gambit : gambits)
     {
@@ -144,10 +198,22 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             continue;
         }
 
-        auto isValidMember = [this](CBattleEntity* PSettableTarget, CBattleEntity* PPartyTarget)
+        const auto ruleSpell = squadMate ? RuleSpellReach(POwner, gambit) : std::nullopt;
+
+        auto isValidMember = [this, squadMate, &ruleSpell](CBattleEntity* PSettableTarget, CBattleEntity* PPartyTarget)
         {
-            return !PSettableTarget && PPartyTarget->isAlive() && POwner->loc.zone == PPartyTarget->loc.zone &&
-                   distance(POwner->loc.p, PPartyTarget->loc.p) <= 15.0f;
+            if (PSettableTarget || !PPartyTarget->isAlive() || POwner->loc.zone != PPartyTarget->loc.zone)
+            {
+                return false;
+            }
+
+            if (!squadMate)
+            {
+                return distance(POwner->loc.p, PPartyTarget->loc.p) <= 15.0f; // (other trusts: unchanged)
+            }
+
+            return reach::WithinReach(POwner->loc.p, PPartyTarget->loc.p,
+                                      reach::PartyReach(true, ruleSpell, POwner->modelHitboxSize, PPartyTarget->modelHitboxSize));
         };
 
         G_TARGET targetType = gambit.target_selector;

@@ -139,6 +139,19 @@ auto CTrustController::Tick(timer::time_point tick) -> Task<void>
         co_return;
     }
 
+    // FFXI Offline squad: local var SQUAD_IDLE (set by squad.lua / squad_moves.lua, "Forward to Gambits") = the stock trust AI does nothing for
+    // this squad mate: no engaging, no following, no range keeping. Its gambits and the Lua movement lines still act. A mate that is still
+    // engaged lets go once its master is not fighting.
+    if (PTrust->GetLocalVar("SQUAD_ID") != 0 && PTrust->GetLocalVar("SQUAD_IDLE") != 0)
+    {
+        if (POwner->PAI->IsEngaged() && !PTrust->PMaster->PAI->IsEngaged())
+        {
+            POwner->PAI->Internal_Disengage();
+        }
+
+        co_return;
+    }
+
     const bool nonCombatFollowTrust = PTrust->getMobMod(xi::MobMod::TrustDistance) == TRUST_MOVEMENT_TYPE::NON_COMBAT;
 
     position_t camp{};
@@ -524,15 +537,22 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
 
     constexpr uint16 modelID_Cornelia = 3119; // Cornielia does not have an Attack Schedule so do not engage.
 
-    if (PMaster->PAI->IsEngaged() && trustEngageCondition && POwner->GetModelId() != modelID_Cornelia)
+    // (2026-11-21, Jon Tanta: a mate with !squad delay 1-10 and the default engage type never engaged) the default rule only
+    // counts the master's melee swing for one second, and every time that window closed the wait started over. A wait
+    // already running for the master's current target now keeps going; it is only dropped when the master stops fighting
+    // or changes target.
+    const CBattleEntity* PMasterTarget   = PMaster->GetBattleTarget();
+    const bool           waitingOnTarget = m_EngageWaitTarget != 0 && PMasterTarget != nullptr && m_EngageWaitTarget == PMasterTarget->id;
+
+    if (PMaster->PAI->IsEngaged() && (trustEngageCondition || waitingOnTarget) && POwner->GetModelId() != modelID_Cornelia)
     {
         // FFXI Offline squad: a mate with an engage delay (!squad delay) waits that long after you engage, e.g. so the tank gets hate first
-        if (EngageDelayPassed(PMaster->GetBattleTarget()))
+        if (EngageDelayPassed(PMasterTarget))
         {
             POwner->PAI->Internal_Engage(PMaster->battleTarget());
         }
     }
-    else
+    else if (!PMaster->PAI->IsEngaged() || PMasterTarget == nullptr)
     {
         m_EngageWaitTarget = 0;
     }

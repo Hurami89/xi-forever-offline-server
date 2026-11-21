@@ -31,3 +31,4 @@ lua/bots_dialogue_state.txt.tmp
 lua/squad_pack_state.txt
 lua/squad_pack_state.txt.tmp
 lua/crowds_spots_user.lua
+lua/squad_sandbox_spots.lua
