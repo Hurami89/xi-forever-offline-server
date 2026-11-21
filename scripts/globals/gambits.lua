@@ -101,6 +101,7 @@ ai.condition =
     HAS_MP             = 40, -- (XI: Forever Offline) the target has an MP pool
     HAS_MP_MPP_LT      = 41, -- (XI: Forever Offline) like MPP_LT, false without an MP pool
     HAS_MP_MPP_GTE     = 42, -- (XI: Forever Offline) like MPP_GTE, false without an MP pool
+    MOD_LT             = 43, -- (XI: Forever Offline) a modifier below a number: argument = mod id + number * 65536 (e.g. Utsusemi shadows)
 }
 ai.c = ai.condition
 

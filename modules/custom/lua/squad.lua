@@ -5237,6 +5237,18 @@ local function ruleCondition(spec, isSub)
         return { id, jaId }
     end
 
+    -- (job expansion) MOD_LT: { mod = 'UTSUSEMI', below = 2 } -> the engine's packed argument (squad_rulesets.lua R.modArg)
+    if spec[1] == 'MOD_LT' then
+        local okR, R = pcall(require, 'modules/custom/lua/squad_rulesets')
+        local packed = okR and type(R) == 'table' and R.modArg and R.modArg(spec[2]) or nil
+        if packed == nil then
+            print(string.format('[squad] MOD_LT needs { mod = UTSUSEMI|BLINK, below = n } - rule skipped'))
+            return nil
+        end
+
+        return { id, packed }
+    end
+
     return cond(id, ruleArg(spec[2], isSub))
 end
 

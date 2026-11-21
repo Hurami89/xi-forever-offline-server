@@ -1164,6 +1164,15 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
                 predicateResults.push_back(triggerTarget->GetMaxMP() > 0 && triggerTarget->GetMPP() >= predicate.condition_arg);
                 continue;
             }
+            case G_CONDITION::MOD_LT:
+            {
+                // XI: Forever Offline (job expansion): e.g. Utsusemi shadows left (Mod::UTSUSEMI counts them down as they
+                // absorb hits; the Copy Image effect's power does not change), Blink images (Mod::BLINK)
+                const auto mod   = static_cast<xi::Mod>(predicate.condition_arg & 0xFFFF);
+                const auto below = static_cast<int32>(predicate.condition_arg >> 16);
+                predicateResults.push_back(triggerTarget->getMod(mod) < below);
+                continue;
+            }
             case G_CONDITION::LVL_LT:
             {
                 predicateResults.push_back(triggerTarget->GetMLevel() < predicate.condition_arg);
