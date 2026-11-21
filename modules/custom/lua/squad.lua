@@ -2724,6 +2724,16 @@ end
 
 -- (2026-11-20) the launcher's "Squad gear: you keep the item" switch (squad_config.lua keep_gear, off by default):
 -- giving gear to the squad unlocks it for every mate and you keep the piece, the way one-of-a-kind gear always works.
+-- (2026-11-21, Yache) the launcher's "Squad gets all gear" switch (squad_config.lua all_gear, off by default): every
+-- piece of gear counts as given to the squad, so mates can wear anything their job and level allow without a trade.
+function squadAllGear()
+    local ok, c = pcall(function()
+        package.loaded['modules/custom/lua/squad_config'] = nil
+        return require('modules/custom/lua/squad_config')
+    end)
+    return ok and type(c) == 'table' and c.all_gear == true
+end
+
 function squadKeepGear()
     local ok, c = pcall(function()
         package.loaded['modules/custom/lua/squad_config'] = nil
@@ -3886,7 +3896,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             return
         end
 
-        if REQUIRE_UNLOCK and not GetSquadUnlocks(charId)[itemId] then
+        if REQUIRE_UNLOCK and not squadAllGear() and not GetSquadUnlocks(charId)[itemId] then
             say(player, string.format('%s has not been given to your squad yet. Use !squad give %s first.', info.name, arg2))
             return
         end
@@ -3978,7 +3988,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             return
         end
 
-        if REQUIRE_UNLOCK and not GetSquadUnlocks(charId)[itemId] then
+        if REQUIRE_UNLOCK and not squadAllGear() and not GetSquadUnlocks(charId)[itemId] then
             say(player, string.format('%s has not been given to your squad yet. Use !squad give %s first.', info.name, arg2))
             return
         end
