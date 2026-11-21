@@ -596,9 +596,13 @@ local function levelsFor(mate, cap, player)
         unlocked = ok and has
     end
 
-    if mate.sjob ~= 0 and mate.sjob ~= mate.mjob and unlocked then
+    -- (2026-11-21, Bob Roberts) the support job follows the server's map.SUBJOB_RATIO like a player's: 0 none, 1 half
+    -- (75/37, the default), 2 two thirds (75/50), 3 equal (75/75). It was always half before.
+    local ratio = tonumber(xi.settings and xi.settings.map and xi.settings.map.SUBJOB_RATIO) or 1
+    local subCap = ratio == 3 and main or ratio == 2 and math.floor(main * 2 / 3) or ratio == 0 and 0 or math.floor(main / 2)
+    if mate.sjob ~= 0 and mate.sjob ~= mate.mjob and unlocked and subCap > 0 then
         sub = mate.sjob
-        subLevel = math.max(1, math.min(jobLevel(mate, sub), math.floor(main / 2)))
+        subLevel = math.max(1, math.min(jobLevel(mate, sub), subCap))
     end
 
     return main, sub, subLevel
