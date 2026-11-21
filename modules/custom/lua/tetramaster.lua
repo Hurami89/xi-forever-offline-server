@@ -18,7 +18,7 @@
 -- New players get a free starter deck from Luto Mewrilah (Upper Jeuno), once per character (TM_STARTER).
 -- Winning pays gil (no cards change hands for now). Cards are bought from the tavern card traders (40 starter cards,
 -- 30 in each shop), dropped by monsters of their family and notorious monsters, and found in treasure caskets.
--- Tiers, prices and drop chances: tetramaster_data.lua. Card traders: tetramaster_shops.lua (written by !tmshop).
+-- Tiers, prices and drop chances: tetramaster_data.lua; the launcher's multipliers on top (settings/main.lua TM_*). Card traders: tetramaster_shops.lua (written by !tmshop).
 --
 -- Replies to the addon are lines starting with "tetramaster:" (the addon hides them from the chat log).
 -- Cards are saved in character variables starting with TM_ (they travel with the character on a passport):
@@ -40,6 +40,19 @@ local CONFIG =
     gil      = { easy = 100, normal = 300, hard = 800 },    -- for a win against the computer
     perfectBonus = 2,                                       -- a perfect game pays this many times as much
 }
+
+-- The launcher's sliders (Rules > Tetra Master), written into settings/main.lua: multipliers, 1 = as tetramaster_data.lua
+local function rate(key)
+    local v = xi.settings and xi.settings.main and tonumber(xi.settings.main[key])
+    if v == nil or v < 0 then
+        return 1
+    end
+    return v
+end
+
+local function shopPrice(id)
+    return math.max(1, math.floor(D.price(id) * rate('TM_PRICE_RATE') + 0.5))
+end
 
 local TYPES     = { 'P', 'M', 'X', 'A' }
 local TYPE_CODE = { P = 0, M = 1, X = 2, A = 3 }
@@ -309,6 +322,7 @@ local function finish(player, g)
         if perfect then
             gil = gil * CONFIG.perfectBonus
         end
+        gil = math.floor(gil * rate('TM_GIL_RATE') + 0.5)
     end
 
     -- your cards that moved up a class in this match keep it
@@ -488,7 +502,7 @@ local function sendShop(player, n)
     send(player, 'sellprices|' .. table.concat(D.SELL, '|'))
     for i, id in ipairs(D.shopStock(n)) do
         local c = Cards.get(id)
-        send(player, string.format('stock|%d|%d|%s|%d|%d', i, id, c.code, D.price(id), D.tier(id)))
+        send(player, string.format('stock|%d|%d|%s|%d|%d', i, id, c.code, shopPrice(id), D.tier(id)))
     end
     send(player, 'stockend')
 end
@@ -588,7 +602,7 @@ local function buy(player, index)
         return
     end
 
-    local price = D.price(id)
+    local price = shopPrice(id)
     if player:getGil() < price then
         tell(player, string.format('Tetra Master: %s costs %d gil.', cardName(id), price))
         send(player, 'error|not enough gil')
@@ -727,9 +741,14 @@ end
 
 -- The card a kill gives, or nil
 local function rollMonsterCard(mob)
+    local mult = rate('TM_CARD_DROP_RATE')
+    if mult <= 0 then
+        return nil
+    end
+
     local named = D.NAMED[mob:getName()]
     if named then
-        if math.random() < named[2] then
+        if math.random() < named[2] * mult then
             local best = nil -- a name in the set twice (Garuda): the stronger card
             for _, id in ipairs(D.idsByName(named[1])) do
                 if best == nil or D.strength(id) > D.strength(best) then best = id end
@@ -746,7 +765,7 @@ local function rollMonsterCard(mob)
     end
 
     if mob:isNM() then
-        if math.random() >= D.NM_FAMILY_CHANCE then
+        if math.random() >= D.NM_FAMILY_CHANCE * mult then
             return nil
         end
         -- not Legendary: those only come from the named fights above
@@ -772,7 +791,7 @@ local function rollMonsterCard(mob)
     end
 
     for _, id in ipairs(order) do
-        if math.random() < D.FAMILY_CHANCE[D.tier(id)] then
+        if math.random() < D.FAMILY_CHANCE[D.tier(id)] * mult then
             return id
         end
     end
@@ -783,7 +802,7 @@ end
 -- A card from a casket, or nil
 local casketPool = nil
 local function rollCasketCard(level)
-    if math.random() >= D.CASKET_CHANCE then
+    if math.random() >= D.CASKET_CHANCE * rate('TM_CASKET_CARD_RATE') then
         return nil
     end
 
