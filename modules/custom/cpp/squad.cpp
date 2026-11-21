@@ -1277,7 +1277,7 @@ auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellI
     else if (PNamed != nullptr)
     {
         // someone else than the caster needs a spell that may go on party members (not a self-only spell like Utsusemi)
-        const bool partySpell = (PSpell->getValidTarget() & (TARGET_PLAYER_PARTY | TARGET_PLAYER_ALLIANCE)) != 0;
+        const bool partySpell = (PSpell->getValidTarget() & (TARGET_PLAYER_PARTY | TARGET_PLAYER_ALLIANCE | TARGET_PLAYER_DEAD)) != 0; // (Raise: dead only)
         if (PNamed != PTrust && !partySpell)
         {
             return SpellCastResult::NoTarget;
@@ -1290,7 +1290,10 @@ auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellI
         PTarget = PChar;
     }
 
-    if (PTarget == nullptr || PTarget->isDead() || PTarget->getZone() != PTrust->getZone())
+    // (2026-11-21, Tasou in co-op: "/p raise tasou" did nothing) a Raise goes on someone who is knocked out; every other
+    // spell needs a target that is still standing
+    const bool forTheDead = (PSpell->getValidTarget() & TARGET_PLAYER_DEAD) != 0;
+    if (PTarget == nullptr || PTarget->isDead() != forTheDead || PTarget->getZone() != PTrust->getZone())
     {
         return SpellCastResult::NoTarget;
     }
