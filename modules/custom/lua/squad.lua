@@ -4905,13 +4905,13 @@ function squadThiefTick(mob)
             flank = tanking and 0 or 1
         elseif mob:hasStatusEffect(xi.effect.TRICK_ATTACK) then
             flank = (otherTank and mob:checkDistance(target) <= 4) and 2 or 0 -- (too far to swing from there: go in)
-        elseif not tanking and not mob:hasRecast(xi.recast.ABILITY, 64) then -- Sneak Attack ready
+        elseif not tanking and not mob:hasRecast(xi.recast.ABILITY, xi.jobAbility.SNEAK_ATTACK) then -- Sneak Attack ready (trust recasts are kept by ability id)
             flank = 1
             if tryJA and mob:isBehind(target) and mob:checkDistance(target) < 4 then
                 mob:setLocalVar('SQUAD_THF_T', now)
                 SquadUseAbility(mob:getMaster(), mob, xi.jobAbility.SNEAK_ATTACK)
             end
-        elseif lvl >= 30 and otherTank and not mob:hasRecast(xi.recast.ABILITY, 66) then -- Trick Attack ready
+        elseif lvl >= 30 and otherTank and not mob:hasRecast(xi.recast.ABILITY, xi.jobAbility.TRICK_ATTACK) then -- Trick Attack ready (trust recasts are kept by ability id)
             flank = 2
             if tryJA and mob:checkDistance(tank) < 2 and mob:checkDistance(target) <= 4 and target:checkDistance(tank) < target:checkDistance(mob) then
                 mob:setLocalVar('SQUAD_THF_T', now)
