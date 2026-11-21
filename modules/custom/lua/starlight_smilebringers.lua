@@ -20,7 +20,7 @@
 --  * Decorations for Upper/Lower/Port Jeuno and Valkurm Dunes (starlight_data.lua), on top of the city ones.
 --
 -- Runs when the server's Starlight Celebration runs (December, Japan time), or as the launcher's Seasonal events
--- switch says (events_mode.lua: By date / Always on / Off).
+-- setting says (events_mode.lua: By date / Always on / Off), and never while its Starlight Celebration switch is off.
 --
 -- How it hooks in: the town NPCs keep their own scripts. While the event runs, a wrapper around the game's
 -- interaction entry points (InteractionGlobal.onTrigger / onTrade) answers the event NPCs first, by zone and
@@ -244,8 +244,8 @@ end
 
 local function isActive()
     local mode = eventsMode()
-    if mode == 'off' then
-        return false
+    if mode == 'off' or (xi.eventsMode and xi.eventsMode.allowed and not xi.eventsMode.allowed('starlight')) then
+        return false -- the launcher's Seasonal events setting, or its Starlight Celebration switch, is off
     elseif mode == 'on' then
         return true
     end
