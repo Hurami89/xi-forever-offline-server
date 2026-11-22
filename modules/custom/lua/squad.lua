@@ -3851,6 +3851,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
 
         player:setCharVar('SQUAD_AI_' .. mate.id, (roleIndex - 1) * 10 + (modeIndex - 1))
         say(player, string.format('%s: role %s, mode %s  (dismiss and call them again to apply)', mate.name, ROLES[roleIndex], MODES[modeIndex]))
+        if action == 'role' then
+            -- (party roles) this Role is not the Gambits party role: say so for "tank" (squad_jobs.lua J.squadRoleHint)
+            local okHint, hint = pcall(function()
+                return require('modules/custom/lua/squad_jobs').squadRoleHint(player, mate, ROLES[roleIndex], arg1)
+            end)
+
+            if okHint and hint then
+                say(player, hint)
+            end
+        end
+
         return
     end
 
