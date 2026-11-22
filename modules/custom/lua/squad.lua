@@ -604,6 +604,10 @@ local function levelsFor(mate, cap, player)
     -- (75/37, the default), 2 two thirds (75/50), 3 equal (75/75). It was always half before.
     local ratio = tonumber(xi.settings and xi.settings.map and xi.settings.map.SUBJOB_RATIO) or 1
     local subCap = ratio == 3 and main or ratio == 2 and math.floor(main * 2 / 3) or ratio == 0 and 0 or math.floor(main / 2)
+    if ratio ~= 0 and subCap < 1 then
+        subCap = 1 -- (as for players: a main level 1 character has a level 1 support job, battle_entity.cpp SetSLevel)
+    end
+
     if mate.sjob ~= 0 and mate.sjob ~= mate.mjob and unlocked and subCap > 0 then
         sub = mate.sjob
         subLevel = math.max(1, math.min(jobLevel(mate, sub), subCap))
