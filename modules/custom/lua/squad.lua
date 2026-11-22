@@ -5547,6 +5547,18 @@ local function ruleCondition(spec, isSub)
         return { id, packed }
     end
 
+    -- (Bard song tiers) STATUS / NOT_STATUS { effect = 'MARCH', tier = 2 } -> effect id + tier * 65536 (R.effectArg)
+    if (spec[1] == 'STATUS' or spec[1] == 'NOT_STATUS') and type(spec[2]) == 'table' then
+        local okR, R = pcall(require, 'modules/custom/lua/squad_rulesets')
+        local packed = okR and type(R) == 'table' and R.tierReady and R.tierReady() and R.effectArg and R.effectArg(spec[2]) or nil
+        if packed == nil then
+            print(string.format('[squad] %s with a song tier needs a song effect, tier 1-7 and the updated map server - rule skipped', spec[1]))
+            return nil
+        end
+
+        return { id, packed }
+    end
+
     return cond(id, ruleArg(spec[2], isSub))
 end
 
@@ -5604,7 +5616,22 @@ local function applyRules(mob, rules, isSub)
                     condition = both(condition, ruleCondition(rule.cond2, isSub))
                 end
 
-                addGambit(mob, target, condition, ruleAction(rule.action), rule.retry)
+                -- (Gambits 0.3.3, Bard role targeting) include / exclude roles ride in the target argument's high byte
+                if rule.include ~= nil or rule.exclude ~= nil then
+                    local okR, R = pcall(require, 'modules/custom/lua/squad_rulesets')
+                    local packed = okR and type(R) == 'table' and R.roleFilterReady and R.roleFilterReady() and R.roleFilterProblem
+                        and R.roleFilterProblem(rule) == nil and R.roleMasks(rule, target) or nil
+                    if packed == nil then
+                        print(string.format('[squad] the role filter of a %s rule needs valid roles and the updated map server - rule skipped',
+                            tostring(rule.target)))
+                    end
+
+                    target = packed
+                end
+
+                if target ~= nil then
+                    addGambit(mob, target, condition, ruleAction(rule.action), rule.retry)
+                end
             end
         end
     end

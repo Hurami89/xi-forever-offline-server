@@ -2074,6 +2074,12 @@ class SquadModule : public CPPModule
     // (Gambits job expansion) this xi_map has MOD_LT, the magic burst timing, managed Sneak/Trick Attack, the weapon skill
     // hold and squad song recipients: the Lua side offers those only when this answers
     ::lua.set_function("SquadJobExpansionEngine", []() -> int32 { return 1; });
+    // (Gambits Bard song tiers) this xi_map's STATUS / NOT_STATUS read a song tier in the argument's high 16 bits
+    // (gambits_container.cpp HasStatusEffectTier): squad_rulesets.lua accepts { effect = NAME, tier = n } only then
+    ::lua.set_function("SquadStatusTierEngine", []() -> int32 { return 1; });
+    // (Gambits 0.3.3, Bard role targeting) role targets read include / exclude role bits from the target argument's high
+    // byte (gambits_container.cpp AddGambit): squad_rulesets.lua accepts a rule's include / exclude only then
+    ::lua.set_function("SquadRoleFilterEngine", []() -> int32 { return 1; });
         ::lua.set_function("DeleteSquadMate", deleteSquadMate);
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);
