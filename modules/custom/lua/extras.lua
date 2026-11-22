@@ -9,9 +9,12 @@
 --   bot_story     bot players keep a life story across restarts (bots_story.lua)
 --   bot_gates     bot players leave town through its gates and come home through them (bots_gates.lua)
 --
--- Everything is ON unless switched off. In game: !extras   (the list)     !extras <name> on|off     !extras all on|off
--- A choice is kept in extras_config.lua (next to this file; made the first time something is switched, never
--- replaced by an update). Switched off, the game behaves exactly as it did before these additions.
+-- Everything is ON unless switched off.
+--   * The launcher: World page (Town crowds, Bot players), or the classic Rates list. It writes extras_config.lua
+--     (next to this file) on every launch, like the other *_config.lua files.
+--   * In game: !extras (the list), !extras <name> on|off, !extras all on|off. That holds until the next PLAY, when
+--     the launcher's setting decides again (with no launcher, e.g. a hand-started server, it is kept).
+-- Switched off, the game behaves exactly as it did before these additions.
 -----------------------------------
 local E = {}
 
@@ -56,7 +59,7 @@ local function save()
         return false
     end
 
-    f:write('-- Written by !extras (extras.lua). Delete this file to switch everything back on.\n')
+    f:write('-- Written by !extras (extras.lua). The launcher writes this file again on every launch.\n')
     f:write('return {\n')
     for _, key in ipairs(ORDER) do
         f:write(string.format('    %s = %s,\n', key, values[key] == false and 'false' or 'true'))
@@ -142,13 +145,12 @@ if xi then
             return
         end
 
-        local saved = true
         for _, key in ipairs(keys) do
-            saved = E.set(key, state == 'on') and saved
+            E.set(key, state == 'on')
         end
 
         say(string.format('%s: %s%s', name, state == 'on' and 'ON' or 'off',
-            saved and ' (kept for the next PLAY too)' or ' (until the next PLAY: the choice could not be saved)'))
+            ' (until the next PLAY: the launcher\'s World / Rates page decides then)'))
     end
 
     if xi.module and xi.module.registerCommand then
