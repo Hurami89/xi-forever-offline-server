@@ -1183,12 +1183,14 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
             }
             case G_CONDITION::JA_ON_COOLDOWN:
             {
-                // XI: Forever Offline: true while the mate's own recast of that ability is running. Before, this tested the
-                // ability's fixed recast time (always true for any ability with a recast) and crashed on an unknown id.
-                // Trust recasts are kept by ability id (CBattleEntity::OnAbility), the same key CTrustController::Ability checks.
+                // XI: Forever Offline: true while the mate cannot use that ability yet because of its recast. Before, this
+                // tested the ability's fixed recast time (always true for any ability with a recast) and crashed on an
+                // unknown id. (squad audit N5) It asks IsAbilityOnRecast, the check CTrustController::Ability uses: the
+                // ability's own recast for every trust and, for a squad mate, also a player's shared recast group and
+                // charges (one Phantom Roll puts every roll on cooldown; Quick Draw only with no charge left).
                 const auto* PAbility = predicate.condition_arg != 0 ? ability::GetAbility(static_cast<ABILITY>(predicate.condition_arg)) : nullptr;
                 predicateResults.push_back(PAbility != nullptr && POwner->PRecastContainer != nullptr &&
-                                           POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(PAbility->getID()), 0s));
+                                           POwner->IsAbilityOnRecast(const_cast<CAbility*>(PAbility)));
                 continue;
             }
             case G_CONDITION::HAS_MP:

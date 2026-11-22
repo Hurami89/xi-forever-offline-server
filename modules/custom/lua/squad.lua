@@ -3339,9 +3339,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 say(player, string.format('squadsheet:stat|%s|%d', entry[1], read('getStat', entry[2])))
             end
 
-            -- Accuracy, evasion and the ranged pair are the numbers the game works its hit rates out from;
-            -- attack and defense are only stored as modifiers.
-            local combat = { { 'Attack', 'getMod', xi.mod.ATT }, { 'Accuracy', 'getACC' }, { 'Defense', 'getMod', xi.mod.DEF },
+            -- The numbers the game works hit rates and damage out from. Attack and defense are the totals (getStat, the
+            -- same CBattleEntity::ATT/DEF combat uses): a squad mate has no trust base rating in its ATT/DEF modifiers.
+            local combat = { { 'Attack', 'getStat', xi.mod.ATT }, { 'Accuracy', 'getACC' }, { 'Defense', 'getStat', xi.mod.DEF },
                              { 'Evasion', 'getEVA' }, { 'Ranged attack', 'getRATT' }, { 'Ranged accuracy', 'getRACC' } }
             for _, entry in ipairs(combat) do
                 say(player, string.format('squadsheet:combat|%s|%d', entry[1], read(entry[2], entry[3])))
