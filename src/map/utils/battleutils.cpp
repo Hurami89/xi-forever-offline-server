@@ -2218,6 +2218,14 @@ auto TakePhysicalDamage(CBattleEntity* PAttacker, CBattleEntity* PDefender, PHYS
                     static_cast<CMobEntity*>(PAttacker)->PEnmityContainer->UpdateEnmityFromAttack(PDefender, damage);
                 }
                 break;
+            case TYPE_TRUST:
+                // XI: Forever Offline: a player's squad mate (local var SQUAD_ID) loses enmity when it is hit, exactly as a
+                // player does (the TYPE_PC branch below, Cover included). Ordinary trusts keep the stock behavior: no loss.
+                if (PDefender->GetLocalVar("SQUAD_ID") == 0)
+                {
+                    break;
+                }
+                [[fallthrough]];
             case TYPE_PC:
                 if (PAttacker->objtype == TYPE_MOB)
                 {
