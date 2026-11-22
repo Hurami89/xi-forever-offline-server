@@ -2465,9 +2465,46 @@ end
 -- more than a moment, your squad mates are hidden; they show again the moment it ends. (The short wait keeps them from
 -- blinking out for a one-line chat.) A global: squad.lua is near Lua's 200-local limit.
 SQUAD_CS_HIDE_AFTER = 2 -- seconds in an event before the mates are hidden
+-- (2026-11-22, Ricc, Altair, Yumainai, Dugahst, Meli: "opening a chest makes my party respawn") a menu is not a
+-- cutscene: at a home point, a survival guide, a treasure casket, chest or coffer, a Fields or Grounds book and a
+-- conquest guard (Signet) the mates stay where they are. Looked up once per event and kept on the player
+-- (SQUAD_CS_KIND: 0 = not looked at yet, 1 = cutscene or talk, 2 = menu), so every mate out gets the same answer.
+SQUAD_CS_MENU_NAMES = { 'HomePoint', 'Survival_Guide', 'Casket', '^Treasure_', '^Field_Manual', '^Grounds_Tome',
+    '_TK$', '_RK$', '_IM$', '_WW$' }
+function squadEventIsMenu(owner)
+    local kind = owner:getLocalVar('SQUAD_CS_KIND')
+    if kind == 0 then
+        kind = 1
+        local ok, name = pcall(function()
+            local npc = owner:getEventTarget()
+            return npc ~= nil and npc:getName() or ''
+        end)
+        if ok and type(name) == 'string' then
+            for _, pattern in ipairs(SQUAD_CS_MENU_NAMES) do
+                if string.find(name, pattern) then
+                    kind = 2
+                    break
+                end
+            end
+        end
+
+        owner:setLocalVar('SQUAD_CS_KIND', kind)
+    end
+
+    return kind == 2
+end
+
 function squadCutsceneTick(mob, owner)
     local hidden = mob:getLocalVar('SQUAD_CS_HIDDEN') == 1
     local inEvent = owner ~= nil and owner:isInEvent() and mob:isAlive()
+    if owner ~= nil and not owner:isInEvent() and owner:getLocalVar('SQUAD_CS_KIND') ~= 0 then
+        owner:setLocalVar('SQUAD_CS_KIND', 0) -- (the event is over: the next one is looked at again)
+    end
+
+    if inEvent and squadEventIsMenu(owner) then
+        inEvent = false
+    end
+
     if inEvent then
         local since = mob:getLocalVar('SQUAD_CS_SINCE')
         if since == 0 then

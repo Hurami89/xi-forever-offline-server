@@ -30,6 +30,7 @@ local m = Module:new('crowds')
 local DATA_PATH   = 'modules/custom/lua/crowds_data'
 local CONFIG_PATH = 'modules/custom/lua/crowds_config'
 local USER_SPOTS  = 'modules/custom/lua/crowds_spots_user.lua'
+local TEAM_SPOTS  = 'modules/custom/lua/crowds_spots_team.lua'   -- spots marked by the team, shipped with the game (bot fishing spots)
 
 local HARD_CAP       = 40       -- never more than this per area (dynamic entity ids are shared with squad mates, pets, caskets)
 local EMPTY_DESPAWN  = 5 * 60   -- seconds an area must be empty before its crowd is removed
@@ -89,6 +90,7 @@ end
 
 local cfg = {}
 local userSpots = {}               -- [zone id] = { { kind, x, y, z, rot }, ... }
+local teamSpots = {}               -- same shape, from crowds_spots_team.lua (read-only: !crowd mark never writes it)
 local crowds = {}                  -- [zone id] = { bots = { [npc id] = bot }, emptySince = os.time() or nil, usedNames = {} }
 local serial = 0                   -- makes internal names unique
 
@@ -130,6 +132,19 @@ local function loadUserSpots()
     end
 end
 
+-- (2026-11-22, Tasou) spots the team marked in game with !crowd mark and sent in: every player gets them, so bot
+-- players fish at the docks without anyone marking anything. A missing or broken file just means no team spots.
+local function loadTeamSpots()
+    teamSpots = {}
+    local chunk = loadfile(TEAM_SPOTS)
+    if chunk then
+        local okc, t = pcall(chunk)
+        if okc and type(t) == 'table' then
+            teamSpots = t
+        end
+    end
+end
+
 local function saveUserSpots()
     local f = io.open(USER_SPOTS, 'w')
     if not f then
@@ -152,6 +167,7 @@ end
 
 loadConfig()
 loadUserSpots()
+loadTeamSpots()
 
 -----------------------------------
 -- Helpers
@@ -285,6 +301,13 @@ local function zoneSpots(zoneId)
 
     for _, s in ipairs(#kept * 2 >= #raw and kept or raw) do
         list[#list + 1] = s
+    end
+
+    -- team spots were marked standing on the spot, like the player's own: used as they are
+    for _, s in ipairs(teamSpots[zoneId] or {}) do
+        if type(s) == 'table' and s.kind and s.x and s.y and s.z then
+            list[#list + 1] = { kind = s.kind, x = s.x, y = s.y, z = s.z, rot = s.rot or 0, team = true }
+        end
     end
 
     for _, s in ipairs(userSpots[zoneId] or {}) do
@@ -1133,6 +1156,7 @@ crowdCommand.onTrigger = function(player, action, arg1)
     elseif action == 'reload' then
         loadConfig()
         loadUserSpots()
+        loadTeamSpots()
         local removed = despawnAll(zoneId)
         local made = ensureCrowd(zone)
         tell(player, string.format('Settings re-read (%s, size %d). Removed %d, spawned %d.', cfg.enabled and 'ON' or 'OFF', cfg.perZone, removed, made))
