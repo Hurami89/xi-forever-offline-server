@@ -397,10 +397,10 @@ function H.start(bot, st, minutes)
 
         local okLeave, walking = pcall(extras.leave, bot, st, zoneId, go)
         if okLeave and walking == true then
-            return false -- (not zoning yet: bots.lua walks it to the gate, st.trip)
+            return false -- (not zoning yet: bots.lua walks it to the gate, st.trip; st.hunt marks it as busy)
         end
 
-        st.hunt = st.hunt or h -- (a failed call must not lose the hunt)
+        st.trip = nil -- (no gate walk: it leaves at once, as before)
     end
 
     bot:setPos(camp.x, camp.y, camp.z, 0, zoneId)

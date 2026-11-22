@@ -1071,6 +1071,10 @@ think = function(bot, token)
         end
 
         if not okTrip then
+            if st.trip and st.trip.hunt ~= nil and st.hunt == st.trip.hunt then
+                st.hunt = nil
+            end
+
             st.trip = nil
         elseif r == 'zoning' then
             return -- a new brain starts in the new area
@@ -1929,10 +1933,9 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
         end
 
         if hunt.start(bot, st) or st.hunt then
-            tell(player, string.format('%s (Lv%d) goes hunting in area %d.', bot:getName(), bot:getMainLvl(), st.hunt and st.hunt.zone or bot:getZoneID()))
-        elseif st.trip and st.trip.hunt then
-            -- (2026-11-21) it runs to the town gate first (bots_gates.lua)
-            tell(player, string.format('%s (Lv%d) is on its way to the gate, to go hunting in area %d.', bot:getName(), bot:getMainLvl(), st.trip.hunt.zone or 0))
+            -- (2026-11-21: st.trip = it runs to the town gate first, bots_gates.lua)
+            tell(player, string.format('%s (Lv%d) goes hunting in area %d%s.', bot:getName(), bot:getMainLvl(), st.hunt and st.hunt.zone or bot:getZoneID(),
+                st.trip and ' (it runs to the town gate first)' or ''))
         else
             tell(player, bot:getName() .. ' found no camp for its level right now (try again in a minute).')
         end
