@@ -156,6 +156,10 @@ xi.settings.map =
     -- [FFXI Offline] The daily fishing limits (200 catches and the fatigue meter). false = fish as much as you like.
     FISHING_DAILY_LIMITS = true,
 
+    -- [FFXI Offline] 1 = the fishing minigame (today's game). 0 = era fishing: no fight on screen, the catch (or a lost
+    -- catch, a broken line or rod, by your skill) is decided as soon as the fish bites.
+    FISHING_MINIGAME = 1,
+
     -- Sets the minimum level a character must be to fish.
     FISHING_MIN_LEVEL = 1,
 
