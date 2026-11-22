@@ -853,6 +853,29 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
     return PTrust;
 }
 
+// XI: Forever Offline: a squad Dragoon borrows the body of the Dragoon trust template (Shikaree Z), and with it her pool
+// modifier MPP +100 (mob_pool_mods). That is her own trait, not a Dragoon's, so a squad Dragoon (local var SQUAD_ID, main
+// job DRG) gives that MPP back right after mobutils::AddSqlModifiers added it. Nothing else changes: other pool modifiers,
+// other squad jobs, ordinary trusts (Shikaree Z herself), and MP from the job, sub job and gear.
+void RemoveTemplateMppFromSquadDragoon(CTrustEntity* PTrust)
+{
+    if (PTrust == nullptr || PTrust->GetLocalVar("SQUAD_ID") == 0 || PTrust->GetMJob() != xi::Job::DRG)
+    {
+        return;
+    }
+
+    if (const ModsList_t* PPoolMods = mobutils::GetMobPoolMods(PTrust->m_Pool))
+    {
+        for (const auto* mod : PPoolMods->mods)
+        {
+            if (mod->getModID() == xi::Mod::MPP)
+            {
+                PTrust->delModifier(xi::Mod::MPP, mod->getModAmount());
+            }
+        }
+    }
+}
+
 void LoadTrustStatsAndSkills(CTrustEntity* PTrust)
 {
     if (settings::get<uint8>("main.ENABLE_TRUST_ALTER_EGO_EXPO") > 0) // Alter Ego Expo HPP/MPP +50%, All Status Resistance +25%
@@ -864,6 +887,7 @@ void LoadTrustStatsAndSkills(CTrustEntity* PTrust)
 
     // add mob pool mods ahead of applying stats
     mobutils::AddSqlModifiers(PTrust);
+    RemoveTemplateMppFromSquadDragoon(PTrust);
 
     xi::Job mJob = PTrust->GetMJob();
     xi::Job sJob = PTrust->GetSJob();
