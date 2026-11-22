@@ -249,6 +249,9 @@ xi.settings.map =
     -- 30 abyssea
     MAX_MERIT_POINTS = 30,
 
+    -- (XI: Forever Offline, 2026-11-22) 1 = no per-group merit caps: every merit can go to its own maximum.
+    FULL_MERITS = 0, -- 1 = on, 0 = off (the era)
+
     -- Minimum time between uses of yell command (in seconds).
     YELL_COOLDOWN = 30,
 
