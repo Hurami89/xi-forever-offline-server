@@ -98,7 +98,8 @@ end
 local function onTrade(player, npc, trade)
     local bet = trade:getGil()
 
-    if bet > 0 and trade:getItemCount() == 0 then
+    -- gil in a trade takes one slot, so a gil-only trade has an item count of 1 (like other gil trades in the scripts)
+    if bet > 0 and trade:getItemCount() == 1 then
         -- nothing is taken yet: the trade is not confirmed, the gil stays with the player
         offerBet(player, npc, bet)
     else
