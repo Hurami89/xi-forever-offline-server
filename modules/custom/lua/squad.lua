@@ -123,7 +123,7 @@ local commandObj = {}
 commandObj.cmdprops =
 {
     permission = 0,
-    parameters = 'sssss',
+    parameters = 'ssssssssss', -- (2026-11-21) action + 9 words: item names of several words (Light Crossbow +1) plus an equip slot
 }
 
 local function say(player, msg)
@@ -262,6 +262,7 @@ local function usage(player)
     say(player, '!squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]   - when and which weapon skill a mate uses')
     say(player, '!squad range <slot> melee | mid | far | auto   - how far a mate stands from the monster')
     say(player, '!squad give <item name or id>   - give an item to your squad once; every mate can then wear it')
+    say(player, '   item names as the game shows them, any capitals, spaces or underscores: Light Crossbow +1, light_crossbow_+1, or the id 17228')
     say(player, '!squad unlocked   - show what your squad has been given')
     say(player, '!squad equip <slot> <item name or id> [equip slot]   |   !squad unequip <slot> <equip slot or all>')
     say(player, '!squad lockstyle <slot> <item> [equip slot] | set | off [equip slot]   - how a mate looks, whatever it wears')
@@ -2118,6 +2119,82 @@ end
 
 SQUAD_TWO_HANDED = { [4] = true, [6] = true, [7] = true, [8] = true, [10] = true, [12] = true }
 
+-- (2026-11-22, Ricc: the same Rare earring in both ears; Meli: a Great Katana with a shield; wildthing's investigation)
+-- gear chosen by hand was never checked against the rest of the outfit, and every slot's stats were added.
+-- squadGearIsRare(itemId): the game's Rare flag (false when it cannot be read)
+function squadGearIsRare(itemId)
+    local ok, flags = pcall(function() return GetItemFlagsByID(itemId) end)
+    local rare = xi.itemFlag and xi.itemFlag.RARE or 0x8000
+    return ok and type(flags) == 'number' and bit.band(flags, rare) ~= 0
+end
+
+-- what may go in Sub beside this Main: nil = fine, else the reason (main/sub item infos from GetSquadItemInfo)
+function squadSubConflict(mainInfo, subInfo)
+    if subInfo == nil or not subInfo.valid then
+        return nil
+    end
+
+    local mainSkill = mainInfo and mainInfo.valid and (mainInfo.skill or 0) or 0
+    local grip = (subInfo.shield or 0) == 0 and (subInfo.skill or 0) == 0
+    if SQUAD_TWO_HANDED[mainSkill] then
+        return not grip and 'a two-handed weapon takes both hands (only a grip goes in Sub)' or nil
+    elseif mainSkill == 1 then
+        return 'hand-to-hand weapons take both hands'
+    elseif grip then
+        return 'a grip needs a two-handed weapon in Main'
+    end
+
+    return nil
+end
+
+-- !squad equip check: worn = the mate's gear for the job {slot = itemId}. Returns nil (fine), or the reason it is refused
+function squadGearConflict(worn, slot, itemId, info)
+    worn = worn or {}
+    if squadGearIsRare(itemId) then
+        for s = 0, 15 do
+            if s ~= slot and worn[s] == itemId then
+                return string.format('%s is Rare: it is already worn in another slot', info.name or 'that item')
+            end
+        end
+    end
+
+    if slot == 1 then
+        local mainId = worn[0]
+        return squadSubConflict(mainId and GetSquadItemInfo(mainId) or nil, info)
+    end
+
+    return nil
+end
+
+-- callMate: leaves out pieces that cannot go together (saved before the check existed). Returns the outfit and a note.
+function squadOutfitFix(outfit)
+    local dropped = {}
+    local seen = {}
+    for s = 0, 15 do
+        local id = outfit[s]
+        if id ~= nil and id ~= 0 then
+            if seen[id] and squadGearIsRare(id) then
+                outfit[s] = nil
+                dropped[#dropped + 1] = s
+            end
+
+            seen[id] = true
+        end
+    end
+
+    if outfit[1] ~= nil and outfit[1] ~= 0 then
+        local ok, why = pcall(function()
+            return squadSubConflict(outfit[0] and GetSquadItemInfo(outfit[0]) or nil, GetSquadItemInfo(outfit[1]))
+        end)
+        if ok and why then
+            outfit[1] = nil
+            dropped[#dropped + 1] = 1
+        end
+    end
+
+    return outfit, #dropped > 0
+end
+
 function squadAutoEquip(player, mate)
     local job, lvl = mate.mjob, levelsFor(mate)
     local cand = {}
@@ -2260,6 +2337,11 @@ local function callMate(player, mate)
                 looks[slot] = itemId
             end
         end
+    end
+
+    local okFix, _, fixed = pcall(function() return squadOutfitFix(outfit) end)
+    if okFix and fixed then
+        say(player, string.format('%s: some saved gear cannot be worn together (a Rare item twice, or Sub not fitting Main) and was left off. Check !squad gear.', mate.name))
     end
 
     -- (Gambits weapon skill settings) per mate and main job; without a Gambits setting the !squad ws vars, as before
@@ -2828,12 +2910,69 @@ xi.squad.onTrade = function(player, trust, items)
     end
 end
 
+-- (2026-11-21) an item as players type it, for !squad give / equip / lockstyle (squad_item_names.lua): several words, any
+-- capitals, full in-game names, and a name several items share answered with "use the id" unless exactly one is yours.
+-- mode 'give': yours = what you carry; 'wear': what your squad was given, and what you carry. withSlot: the last word may
+-- be the equip slot; wearable: the "not found" line says "or not something you can wear" (lockstyle). Returns itemId
+-- (0 = none), why ('notfound', 'ambiguous', ...), the message to say when 0, the item text as typed, the equip slot word
+-- or nil. (global: squad.lua is at the local limit)
+function squadFindItem(player, typed, mode, withSlot, wearable)
+    local words = {}
+    for i = 1, 9 do
+        if typed[i] ~= nil and typed[i] ~= '' then
+            words[#words + 1] = typed[i]
+        end
+    end
+
+    local okN, names = pcall(require, 'modules/custom/lua/squad_item_names')
+    if not okN or type(names) ~= 'table' then
+        local id = FindSquadItem(words[1] or '') -- (the helper is missing: the old one-word lookup)
+        return id, id ~= 0 and 'name' or 'notfound', 'Item not found. Use the item name (like bronze_harness) or its id.', words[1] or '', words[2]
+    end
+
+    local env = { find = FindSquadItem, byName = rawget(_G, 'GetItemIDByName'), info = GetSquadItemInfo, item = rawget(_G, 'GetReadOnlyItem') }
+    local function owned()
+        local ids = {}
+        if mode == 'wear' then
+            for id in pairs(GetSquadUnlocks(player:getID()) or {}) do
+                if id < SQUAD_SPELL_KEY then
+                    ids[#ids + 1] = id
+                end
+            end
+        end
+
+        for container = 0, 16 do -- (inventory, Mog Safe, storage, satchel, sack, case, the wardrobes; getItems treats an unknown one as the inventory)
+            pcall(function()
+                for _, item in ipairs(player:getItems(container) or {}) do
+                    ids[#ids + 1] = item:getID()
+                end
+            end)
+        end
+
+        return ids
+    end
+
+    local id, why, extra, text, slotWord
+    if withSlot then
+        id, why, extra, text, slotWord = names.resolveWithSlot(words, function(w) return equipSlots[string.lower(w)] ~= nil end, env, owned)
+    else
+        text = table.concat(words, ' ')
+        id, why, extra = names.resolve(text, env, owned)
+    end
+
+    if id == nil then
+        return 0, why, why == 'ambiguous' and names.ambiguous(text, extra) or names.notFound(wearable), text, slotWord
+    end
+
+    return id, why, nil, text, slotWord
+end
+
 local function save(player, mate)
     SaveSquadMate(player:getID(), mate.slot, mate)
     say(player, 'Saved: ' .. describe(mate, player) .. '  (dismiss and call them again to apply)')
 end
 
-commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
+commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9)
     local charId = player:getID()
     if action ~= 'panel' and action ~= 'sheet' then
         print(string.format('[squad] %s: !squad %s %s %s', player:getName(), tostring(action or ''), tostring(arg1 or ''), tostring(arg2 or '')))
@@ -3553,9 +3692,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
     end
 
     if action == 'give' then
-        local itemId = FindSquadItem(arg1 or '')
+        local itemId, _, why = squadFindItem(player, { arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9 }, 'give', false)
         if itemId == 0 then
-            say(player, 'Item not found. Use the item name (like bronze_harness) or its id.')
+            say(player, why)
             return
         end
 
@@ -3961,9 +4100,10 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         say(player, string.format('squadpanel:gle|%d|%d|%d', mate.slot, eq, #found))
         return
     elseif action == 'equip' then
-        local itemId = FindSquadItem(arg2 or '')
+        -- !squad equip <slot> <item name or id, any number of words> [equip slot]
+        local itemId, _, why, itemText, slotWord = squadFindItem(player, { arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9 }, 'wear', true, false)
         if itemId == 0 then
-            say(player, 'Item not found. Use the item name (like bronze_harness) or its id.')
+            say(player, why)
             return
         end
 
@@ -3974,7 +4114,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         end
 
         if REQUIRE_UNLOCK and not squadAllGear() and not GetSquadUnlocks(charId)[itemId] then
-            say(player, string.format('%s has not been given to your squad yet. Use !squad give %s first.', info.name, arg2))
+            say(player, string.format('%s has not been given to your squad yet. Use !squad give %s first.', info.name, itemText))
             return
         end
 
@@ -3988,8 +4128,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         end
 
         local slotIndex = nil
-        if arg3 ~= nil then
-            slotIndex = equipSlots[string.lower(arg3)]
+        if slotWord ~= nil then
+            slotIndex = equipSlots[string.lower(slotWord)]
             if slotIndex == nil or not hasBit(info.slot, slotIndex) then
                 say(player, string.format('%s does not fit that slot.', info.name))
                 return
@@ -4015,8 +4155,24 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             return
         end
 
+        -- (2026-11-22) checked against the rest of the outfit: a Rare item once, Sub that fits Main
+        local wornNow = mate.equip[mate.mjob] or {}
+        local okC, clash = pcall(squadGearConflict, wornNow, slotIndex, itemId, info)
+        if okC and clash then
+            say(player, string.format('%s cannot wear that: %s.', mate.name, clash))
+            return
+        end
+
         SetSquadEquip(mate.id, mate.mjob, slotIndex, itemId)
         say(player, string.format('%s now wears %s (%s) as %s. Dismiss and call them again to apply.', mate.name, info.name, equipSlotNames[slotIndex], jobNames[mate.mjob]))
+        if slotIndex == 0 and wornNow[1] ~= nil and wornNow[1] ~= 0 then
+            -- a new Main takes off a Sub that no longer fits, like the game does for you
+            local okS, why = pcall(function() return squadSubConflict(info, GetSquadItemInfo(wornNow[1])) end)
+            if okS and why then
+                SetSquadEquip(mate.id, mate.mjob, 1, 0)
+                say(player, string.format('%s took off the Sub piece (%s).', mate.name, why))
+            end
+        end
         if player:getCharVar('SQUAD_AUTOEQUIP') == 1 then
             player:setCharVar('SQUAD_AUTOEQUIP', 0)
             say(player, 'Auto-equip is now off (you chose gear by hand).')
@@ -4058,19 +4214,20 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             return
         end
 
-        local itemId = FindSquadItem(arg2 or '')
+        -- !squad lockstyle <slot> <item name or id, any number of words> [equip slot]
+        local itemId, _, notFound, itemText, slotWord = squadFindItem(player, { arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9 }, 'wear', true, true)
         local info = itemId ~= 0 and GetSquadItemInfo(itemId) or { valid = false }
         if not info.valid then
-            say(player, 'Item not found, or not something you can wear. Use the item name (like leather_vest) or its id.')
+            say(player, notFound or 'Item not found, or not something you can wear. Use the item name (like leather_vest) or its id.')
             return
         end
 
         if REQUIRE_UNLOCK and not squadAllGear() and not GetSquadUnlocks(charId)[itemId] then
-            say(player, string.format('%s has not been given to your squad yet. Use !squad give %s first.', info.name, arg2))
+            say(player, string.format('%s has not been given to your squad yet. Use !squad give %s first.', info.name, itemText))
             return
         end
 
-        local slotIndex = arg3 and equipSlots[string.lower(arg3)] or nil
+        local slotIndex = slotWord and equipSlots[string.lower(slotWord)] or nil
         if slotIndex == nil then
             for s2 = 0, 8 do
                 if SQUAD_LS_SLOTS[s2] and hasBit(info.slot, s2) then
