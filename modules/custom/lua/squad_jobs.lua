@@ -521,6 +521,20 @@ function J.squadRoleHint(player, mate, roleWord, slot)
         tostring(slot or mate.slot or '<slot>'), mate.name)
 end
 
+-- (role clarity) the one line after !squad job <slot> <job> when the main job really changed and the mate keeps a
+-- Role chosen by hand (SQUAD_AI_<mate id> is per mate, not per job). Information only: the Role, the job rules and the
+-- AI are not touched. nil for Auto, an unchanged job or a missing mate. Only the job command calls this, so a call,
+-- a zone change or the menus never repeat it.
+function J.roleKeptHint(mate, roleWord, oldJob, newJob, jobName)
+    if mate == nil or type(roleWord) ~= 'string' or roleWord == 'auto' or oldJob == newJob then
+        return nil
+    end
+
+    -- (polish) short enough for one chat line: at most 82 bytes (a 15-letter name, "Support")
+    return string.format('Squad: %s changed to %s. Role %s retained (default rules only).',
+        tostring(mate.name), tostring(jobName), roleWord:sub(1, 1):upper() .. roleWord:sub(2))
+end
+
 -- ---------------------------------------------------------------- Sneak Attack / Trick Attack under the Rule Set
 -- squadThiefTick's branch for a thief whose Rule Set uses SA/TA. The engine asks (SQUAD_SATA_REQ = the ability) when a
 -- rule decides to use one; this moves the thief (SQUAD_FLANK, the trust controller), says when the position is right
