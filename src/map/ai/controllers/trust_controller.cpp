@@ -21,6 +21,7 @@
 
 #include "trust_controller.h"
 
+#include "ability.h"
 #include "ai/helpers/gambits_container.h"
 #include "ai/states/magic_state.h"
 #include "ai/states/range_state.h"
@@ -1001,7 +1002,9 @@ auto CTrustController::Ability(const EntityId target, uint16 abilityid) -> bool
 {
     TracyZoneScoped;
 
-    if (POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(abilityid), 0s))
+    // (XI: Forever Offline, squad audit N5) the ability-id recast, and for a squad mate a player's shared recast and charges
+    auto* PAbility = ability::GetAbility(abilityid);
+    if (PAbility != nullptr ? POwner->IsAbilityOnRecast(PAbility) : POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(abilityid), 0s))
     {
         return false;
     }
