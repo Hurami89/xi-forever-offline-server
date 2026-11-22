@@ -4378,11 +4378,20 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             return
         end
 
+        -- (role clarity) the Role is kept per mate across jobs: say so once, here, when the main job really changes
+        -- (squad_jobs.lua J.roleKeptHint; nothing is changed by it)
+        local okKept, kept = pcall(function()
+            return require('modules/custom/lua/squad_jobs').roleKeptHint(mate,
+                (decodeBehavior(player:getCharVar('SQUAD_AI_' .. mate.id))), mate.mjob, job, jobNames[job])
+        end)
         mate.mjob = job
         if mate.sjob == job then
             mate.sjob = 0
         end
         chatSend('UPDATE', mate.name, 'job', jobNames[job])
+        if okKept and kept then
+            say(player, kept)
+        end
     elseif action == 'sub' then
         if arg2 ~= nil and string.lower(arg2) == 'none' then
             mate.sjob = 0
