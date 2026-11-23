@@ -6,6 +6,8 @@
 --     daily amount every time you open the shop or buy, and items that were sold out at the start of the day are
 --     offered anyway. Prices are the game's own.
 --   map.FULL_MERITS (PTgamerguy, Ricc) is in the C++ (merit.cpp): no per-group merit caps.
+--   main.GUILD_SHOPS_ALWAYS_OPEN (Dugahst; the user: on by default): guild shops have no closing hours and no weekly
+--     holiday. Off = the era's hours (and the holiday, when main.GUILD_SHOP_HOLIDAYS is on).
 -----------------------------------
 require('modules/module_utils')
 require('scripts/globals/caskets')
@@ -77,6 +79,29 @@ end)
 m:addOverride('xi.guildShops.onPlayerBuy', function(player, npc, itemId, quantity)
     refill(npc)
     return super(player, npc, itemId, quantity)
+end)
+
+-- Always open: the hours and the holiday live in the shop data (scripts/data/guild_shops.lua), which every check in
+-- guild_shops.lua and the game's own "open" answer read. Open from 0 to 24 with no holiday is open all the time. The
+-- setting is read when the servers start, so the data is changed once, the first time a guild shop is used.
+local openedAllDay = false
+local function alwaysOpen()
+    if openedAllDay or not on('GUILD_SHOPS_ALWAYS_OPEN') or xi.data == nil or xi.data.guildShops == nil then
+        return
+    end
+
+    openedAllDay = true
+    for _, shop in pairs(xi.data.guildShops) do
+        if type(shop) == 'table' and type(shop.hours) == 'table' then
+            shop.hours   = { 0, 24 }
+            shop.holiday = nil
+        end
+    end
+end
+
+m:addOverride('xi.guildShops.onTrigger', function(player, npc)
+    alwaysOpen()
+    return super(player, npc)
 end)
 
 return m

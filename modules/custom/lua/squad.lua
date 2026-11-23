@@ -269,10 +269,12 @@ local function usage(player)
     say(player, '!squad gear <slot>   (gear is saved per job; equip slots: head body hands legs feet main sub range ammo neck waist ear1 ear2 ring1 ring2 back)')
     say(player, '!squad rename <slot> <name>   |   !squad delete <slot>')
     say(player, '!squad call [slot or all]   |   !squad dismiss [slot]   |   !squad food   (what they have eaten)')
+    say(player, '!squad food <slot>   - choose what that mate eats (a food is unlocked once, for its auction house price)   |   !squad food <slot> auto')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
     say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
     say(player, '!squad sync <name> | off   - Level Sync to a player, bot or squad mate in your party (party menu works too)')
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
+    say(player, '!squad autoequip now [slot]   - put the best given gear on once, right now, and keep choosing by hand')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
     say(player, '!squad blu <slot> [set | unset <spell>] | auto   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
@@ -302,6 +304,15 @@ if not foodLoaded or type(food) ~= 'table' then
     print('[squad] could not load squad_food.lua - squad mates will not eat')
     food = { enabled = false }
 end
+
+-- (2026-11-22, Altair) a mate can be told what to eat: !squad food <slot> (squad_meals.lua)
+local mealsLoaded, meals = pcall(require, 'modules/custom/lua/squad_meals')
+if not mealsLoaded or type(meals) ~= 'table' then
+    print('[squad] could not load squad_meals.lua - squad mates pick their own food')
+    meals = nil
+end
+
+food.meals = meals -- (the command function below is at LuaJIT's limit of 60 outside names: it reaches this one through food)
 
 local function chooseFood(job, level)
     local role = food.roleByJob and food.roleByJob[job]
@@ -509,7 +520,7 @@ local function eatIfNeeded(mob)
         return
     end
 
-    local meal = chooseFood(mob:getMainJob(), level)
+    local meal = (meals and meals.chosen(mob, food)) or chooseFood(mob:getMainJob(), level)
     if meal == nil then
         return
     end
@@ -2378,6 +2389,9 @@ local function callMate(player, mate)
 
     trust:renameEntity(mate.name, true)
     trust:setLocalVar('SQUAD_ID', mate.id) -- make sure the tag is there after spawning
+    if meals then
+        pcall(meals.onSpawn, player, trust, mate) -- the food it was told to eat (!squad food <slot>)
+    end
     trust:setLocalVar('SQUAD_WSTP', player:getCharVar('SQUAD_WSTP_' .. mate.id)) -- its own weapon skill timing (!squad ws)
     if wsSettings then
         -- Gambits weapon skill settings for this job (Custom / Squad default), else the !squad ws timing just set
@@ -3070,6 +3084,15 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             return
         end
 
+        -- !squad food <slot> [auto]: choose what that mate eats (squad_meals.lua)
+        if food.meals and arg1 ~= nil and arg1 ~= '' then
+            local handled = food.meals.command(player, GetSquad(player:getID()) or {}, arg1, arg2,
+                { food = food, say = say, trusts = squadTrusts(player) })
+            if handled then
+                return
+            end
+        end
+
         local any = false
         for _, trust in ipairs(squadTrusts(player)) do
             any = true
@@ -3086,13 +3109,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             elseif trust:getMainLvl() < (food.minLevel or 10) then
                 say(player, string.format('%s: no food yet (mates eat from level %d)', trust:getPacketName(), food.minLevel or 10))
             else
-                local meal = chooseFood(trust:getMainJob(), trust:getMainLvl())
+                local meal = (food.meals and food.meals.chosen(trust, food)) or chooseFood(trust:getMainJob(), trust:getMainLvl())
                 say(player, string.format('%s: nothing right now, eats %s when the next fight starts', trust:getPacketName(), meal and meal.name or '(no food for this job)'))
             end
         end
 
         if not any then
             say(player, 'None of your squad mates are out.')
+        end
+
+        if food.meals then
+            say(player, 'Choose a mate\'s food: !squad food <slot>')
         end
 
         return
@@ -3926,8 +3953,27 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         elseif wanted == 'off' or wanted == '0' then
             player:setCharVar('SQUAD_AUTOEQUIP', 0)
             say(player, 'Auto-equip is off: your squad keeps what it wears now, and you choose gear by hand.')
+        elseif wanted == 'now' or wanted == 'once' or wanted == 'best' then
+            -- (2026-11-22, FalconX51) one press: the best given gear right now, for every mate or one slot. Auto-equip
+            -- itself stays as it is, so with it off the pieces are yours to change by hand afterwards.
+            local only = tonumber(arg2)
+            local total, mates = 0, 0
+            for _, m in ipairs(GetSquad(player:getID()) or {}) do
+                if only == nil or m.slot == only then
+                    mates = mates + 1
+                    local ok, n = pcall(squadAutoEquip, player, m)
+                    total = total + ((ok and n) or 0)
+                end
+            end
+
+            if mates == 0 then
+                say(player, string.format('You have no squad mate in slot %s.', tostring(arg2)))
+            else
+                say(player, string.format('Best gear put on %s: %d piece(s) changed. Apply now (or dismiss and call) to see it. Auto-equip stays %s.',
+                    only and ('slot ' .. only) or 'every mate', total, player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off, so you can still change any piece by hand'))
+            end
         else
-            say(player, '!squad autoequip on | off   - mates wear the best given gear for their job and level. Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
+            say(player, '!squad autoequip on | off | now [slot]   - mates wear the best given gear for their job and level (now = once, right away). Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
         end
 
         return
