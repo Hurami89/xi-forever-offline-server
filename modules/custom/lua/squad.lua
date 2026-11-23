@@ -272,7 +272,7 @@ local function usage(player)
     say(player, '!squad ls   |   !squad ls <slot | all> on | off   - put squad mates on your linkshell: they talk there, out with you or not')
     say(player, '!squad food <slot>   - choose what that mate eats (a food is unlocked once, for its auction house price)   |   !squad food <slot> auto')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
-    say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
+    say(player, '!squad engage first | normal   - mates join as soon as you engage (the default), or after your first swing (retail)')
     say(player, '!squad sync <name> | off   - Level Sync to a player, bot or squad mate in your party (party menu works too)')
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
     say(player, '!squad autoequip now [slot]   - put the best given gear on once, right now, and keep choosing by hand')
@@ -282,6 +282,7 @@ local function usage(player)
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
     say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
     say(player, '!squad camp rest on | off   - mates sit and rest at camp while the pull is out')
+    say(player, '!squad camp wait on | off   - on: the puller waits while you rest or are low on MP (off, the default: it keeps pulling)')
     say(player, '!squad camp levels <low> <high> | reset   - monster levels the puller goes for, against yours (e.g. -10 0)')
     say(player, '!squad sw <slot> <melee|ranged|ja|magic|all> <on|off>   - stop one kind of action, e.g. stop a healer from meleeing')
     say(player, '!squad lore <slot>   - write (or rewrite) that mate\'s backstory')
@@ -826,6 +827,27 @@ local function percentOf(entity, now, max)
     end
 
     return math.floor(entity[now](entity) * 100 / top)
+end
+
+-- (2026-11-22, Hasuko; the user: "make the camp keep pulling while mage players rest (or any player)") Does this
+-- player-type party member hold the next pull? A player who rests holds nothing: sit down for MP and the squad
+-- carries on. A player on his feet holds it only while hurt (HP under CAMP_READY_HP); his MP no longer counts. A bot
+-- player is judged like a mate, by HP and MP, and one that sits only because you do is not waited for.
+-- !squad camp wait on brings the old rule back for the players: also wait while one rests or is low on MP.
+-- A global: this file is at Lua's limit for locals.
+function squadCampWaitsFor(player, member)
+    local hp = percentOf(member, 'getHP', 'getMaxHP')
+    local mp = member:getMaxMP() > 0 and percentOf(member, 'getMP', 'getMaxMP') or 100
+    local resting = member:getAnimation() == xi.animation.HEALING
+    if BotIsBot and BotIsBot(member:getID()) then
+        return hp < CAMP_READY_HP or mp < CAMP_READY_MP or (resting and (hp < 100 or mp < 100))
+    end
+
+    if player:getCharVar('SQUAD_CAMP_WAIT') == 1 then
+        return resting or hp < CAMP_READY_HP or mp < CAMP_READY_MP
+    end
+
+    return not resting and hp < CAMP_READY_HP
 end
 
 -- What the puller may go for: c.want holds one or more monster names, comma separated.
@@ -1415,7 +1437,8 @@ local function campTick(mob)
         return
     end
 
-    -- everyone ready? (not while anyone rests, nobody hurt, everyone with MP has some: you, a second character, the mates)
+    -- everyone ready? (nobody on his feet hurt, the mates and bot players with MP have some; a player who sits down to
+    -- rest is not waited for: squadCampWaitsFor)
     local everyone = {}
     for _, member in pairs(player:getPartyWithTrusts() or {}) do
         everyone[#everyone + 1] = member
@@ -1426,14 +1449,14 @@ local function campTick(mob)
     end
 
     for _, member in ipairs(everyone) do
-        if member:getObjType() == xi.objType.PC and (member:getAnimation() == xi.animation.HEALING or percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP or
-            (member:getMaxMP() > 0 and percentOf(member, 'getMP', 'getMaxMP') < CAMP_READY_MP)) then
+        if member:getObjType() == xi.objType.PC and squadCampWaitsFor(player, member) then
             if not c.waitSaid then
                 c.waitSaid = true
                 campSay(player, puller, 'waiting a bit, need hp/mp')
             end
 
-            squadCampWhy(c, string.format('waiting: %s (you or a character) needs HP/MP or is resting', member:getName()))
+            squadCampWhy(c, string.format('waiting: %s (you or a character) needs HP%s', member:getName(),
+                player:getCharVar('SQUAD_CAMP_WAIT') == 1 and '/MP or is resting' or ' (or, for a bot player, MP)'))
             c.nextPull = now + 5
             return
         end
@@ -2808,7 +2831,9 @@ restTick = function(mob)
     end
 
     local sitting = mob:getAnimation() == xi.animation.HEALING
-    local resting = master:getAnimation() == xi.animation.HEALING and not mob:isEngaged() and not master:isEngaged()
+    -- (2026-11-22: the camp pulls while you rest now, so the puller on its way out must not be sat down with you)
+    local resting = master:getAnimation() == xi.animation.HEALING and not mob:isEngaged() and not master:isEngaged() and
+        mob:getLocalVar('SQUAD_PULL_PHASE') == 0
 
     -- At camp (unless !squad camp rest off): rest between fights while the pull is out, until full again
     local c = camps[master:getID()]
@@ -3347,7 +3372,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         end
 
         -- (servermenu 1.10) engage timing, and per mate: opt|<slot>|<size 0-3>|<ws TP, 0 = chain>|<chosen WS or ->|<range 0-3>|<usable WS, comma list or ->
-        say(player, string.format('squadpanel:engage|%d', player:getCharVar('TrustEngageType') == 1 and 1 or 0))
+        say(player, string.format('squadpanel:engage|%d', player:getCharVar('TrustEngageType') ~= 2 and 1 or 0))
         say(player, string.format('squadpanel:auto|%d', player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 1 or 0))
         -- (servermenu 1.11) adv|<follow 0 normal, 1 close, 2 far>|<camp rest 1 on>|<call order, slots, or ->  and  delay|<slot>|<seconds>
         local orderCode = player:getCharVar('SQUAD_ORDER')
@@ -3673,6 +3698,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
             say(player, player:getCharVar('SQUAD_CAMP_NOREST') == 1 and 'At camp your mates stay standing between fights (!squad camp rest on to change).'
                 or 'At camp your mates sit and rest between fights while the pull is out (!squad camp rest off to change).')
+        elseif what == 'wait' then
+            -- (2026-11-22) the puller keeps pulling while you rest or are low on MP (char var SQUAD_CAMP_WAIT 0, the
+            -- default); on = the old rule: it waits for you
+            local on = string.lower(arg2 or '')
+            if on == 'on' or on == 'off' then
+                player:setCharVar('SQUAD_CAMP_WAIT', on == 'on' and 1 or 0)
+            end
+
+            say(player, player:getCharVar('SQUAD_CAMP_WAIT') == 1
+                and 'The puller waits while you rest or are low on HP or MP (!squad camp wait off to change).'
+                or 'The puller keeps pulling while you rest; it waits only while you are on your feet and hurt, or a mate needs HP or MP (!squad camp wait on to change).')
         elseif what == 'pause' or what == 'resume' or what == 'start' then
             local c = camps[charId]
             if c then
@@ -4119,17 +4155,18 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
     end
 
     if action == 'engage' then
-        -- When mates join a fight. The game reads the char var TrustEngageType (trust_controller.cpp): 0 = retail (you
-        -- engage AND swing), 1 = as soon as you engage. Set here directly; the core !trustengage command is GM-only.
+        -- When mates join a fight. The game reads the char var TrustEngageType (trust_controller.cpp). (2026-11-22, the
+        -- user: "when you press attack it will send your squad to attack even if you don't hit them, so mages can do
+        -- this apart") for squad mates 0 (nothing set) and 1 = as soon as you engage; 2 = retail: you engage AND swing.
         local wanted = string.lower(arg1 or '')
         if wanted == 'first' or wanted == 'on' or wanted == '1' then
             player:setCharVar('TrustEngageType', 1)
             say(player, 'Your squad now joins the fight as soon as you engage (draw your weapon), without waiting for your first swing.')
         elseif wanted == 'normal' or wanted == 'off' or wanted == '0' then
-            player:setCharVar('TrustEngageType', 0)
+            player:setCharVar('TrustEngageType', 2)
             say(player, 'Your squad now joins the fight after your first swing, like retail trusts.')
         else
-            local now = player:getCharVar('TrustEngageType') == 1 and 'first (as soon as you engage)' or 'normal (after your first swing)'
+            local now = player:getCharVar('TrustEngageType') ~= 2 and 'first (as soon as you engage)' or 'normal (after your first swing)'
             say(player, '!squad engage first | normal   - when your mates join a fight. Now: ' .. now)
         end
 

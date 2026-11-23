@@ -1381,7 +1381,13 @@ auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellI
         return SpellCastResult::Busy;
     }
 
-    return controller->Cast(PTarget->entityId(), spellId) ? SpellCastResult::Cast : SpellCastResult::Busy;
+    // (2026-11-22) an area spell that waits for its caster to step within reach of you is on its way: not "busy"
+    if (controller->Cast(PTarget->entityId(), spellId) || controller->IsSteppingIn())
+    {
+        return SpellCastResult::Cast;
+    }
+
+    return SpellCastResult::Busy;
 }
 
 void reportSpellResult(CCharEntity* PChar, CTrustEntity* PTrust, const std::string& spellName, const SpellCastResult result)
