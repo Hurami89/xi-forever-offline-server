@@ -1594,6 +1594,14 @@ xi.bots.lsChat = function(player, text)
         realPlayers[player:getID()] = true
         linkshells.onPlayerChat(player, text or '')
     end
+
+    -- (2026-11-22) your squad mates on the linkshell hear it too (squad_shell.lua)
+    if not BotIsBot(player:getID()) and type(xi.squad) == 'table' and type(xi.squad.shell) == 'table' then
+        local okShell, err = pcall(xi.squad.shell.onPlayerChat, player, text or '')
+        if not okShell then
+            print('[squad] linkshell chat: ' .. tostring(err))
+        end
+    end
 end
 
 -- you sent a bot a /tell (bots.cpp)

@@ -269,6 +269,7 @@ local function usage(player)
     say(player, '!squad gear <slot>   (gear is saved per job; equip slots: head body hands legs feet main sub range ammo neck waist ear1 ear2 ring1 ring2 back)')
     say(player, '!squad rename <slot> <name>   |   !squad delete <slot>')
     say(player, '!squad call [slot or all]   |   !squad dismiss [slot]   |   !squad food   (what they have eaten)')
+    say(player, '!squad ls   |   !squad ls <slot | all> on | off   - put squad mates on your linkshell: they talk there, out with you or not')
     say(player, '!squad food <slot>   - choose what that mate eats (a food is unlocked once, for its auction house price)   |   !squad food <slot> auto')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
     say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
@@ -776,6 +777,16 @@ local function squadTrusts(player)
         if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and xi.squad.mine(player, member) then
             out[#out + 1] = member
         end
+    end
+
+    return out
+end
+
+-- (2026-11-22, squad_shell.lua) { [mate id] = true } for the mates out with you now
+xi.squad.outIds = function(player)
+    local out = {}
+    for _, trust in ipairs(squadTrusts(player)) do
+        out[trust:getLocalVar('SQUAD_ID')] = true
     end
 
     return out
@@ -2027,7 +2038,9 @@ local function chatRead(player)
         end
         if kind == 'SAY' and mate ~= '' and text ~= '' then
             xi.squad.aiSaidAt = os.time() -- (the pack's fight and idle lines stay quiet while the AI talks)
-            player:printToPlayer(text, 4, mate)
+            -- (a member's answer to something you said on the linkshell goes there: squad_shell.lua; else party chat)
+            local channel = type(xi.squad.shell) == 'table' and xi.squad.shell.channelForReply(player, mate) or 4
+            player:printToPlayer(text, channel, mate)
             print(string.format('[squad] chat %s: %s', mate, text))
         elseif kind == 'NOTE' and text ~= '' then
             player:printToPlayer('[Squad] ' .. text)
@@ -2084,6 +2097,31 @@ xi.squad.onPartyChat = function(player, text)
     end
 
     chatSend('CHAT', player:getName(), text)
+end
+
+-- (2026-11-22; Truth, the user) squad mates on your linkshell: squad_shell.lua. A line you say on the linkshell goes to
+-- the chat helper like a party line when the AI can answer it (chat on, a mate out); true = it went.
+xi.squad.shellToAI = function(player, text)
+    if not CHAT_ACTIVE or xi.squad.visitor(player) or not chatEnabled(player) or not chatHasActive(player) then
+        return false
+    end
+
+    text = chatClean(text)
+    if text == '' or string.sub(text, 1, 1) == '!' then
+        return false
+    end
+
+    chatSend('CHAT', player:getName(), text)
+    return true
+end
+
+do
+    local okShell, shellMod = pcall(require, 'modules/custom/lua/squad_shell')
+    if okShell and type(shellMod) == 'table' then
+        xi.squad.shell = shellMod
+    else
+        print('[squad] could not load squad_shell.lua - no squad mates on the linkshell: ' .. tostring(shellMod))
+    end
 end
 
 local nationNames = { [0] = "San d'Oria", [1] = 'Bastok', [2] = 'Windurst' }
@@ -3072,6 +3110,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             J.partyRoleCommand(player, squad, arg1, arg2, { say = say, findMate = findMate })
         else
             say(player, 'Party roles are not available: ' .. tostring(J))
+        end
+
+        return
+    end
+
+    -- squad mates on your linkshell (squad_shell.lua)
+    if action == 'ls' or action == 'linkshell' or action == 'shell' then
+        if type(xi.squad.shell) == 'table' then
+            xi.squad.shell.command(player, say, arg1, arg2)
+        else
+            say(player, 'Squad mates on the linkshell are not available (squad_shell.lua did not load).')
         end
 
         return
@@ -6079,6 +6128,10 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
 
     -- (spells from scrolls) a squad Blue Mage out with you may learn blue magic from what the party defeats
     if not (BotIsBot and BotIsBot(player:getID())) then
+        if type(xi.squad.shell) == 'table' then
+            pcall(xi.squad.shell.onGameIn, player, zoning) -- (mates on your linkshell: squad_shell.lua)
+        end
+
         player:addListener('DEFEATED_MOB', 'SQUAD_BLU_LEARN', function(mob)
             if mob == nil or not squadScrollsOn() or not SquadBlueSpellsOf then
                 return
