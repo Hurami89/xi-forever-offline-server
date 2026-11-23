@@ -1417,6 +1417,22 @@ local function campTick(mob)
 
             c.drags = nil
             c.state, c.since = 'fighting', now -- back at camp with it (or it is gone)
+            -- (2026-11-23, Eureka629; the user's choice: the squad takes what the puller brings) the monster brought to camp is
+            -- the squad's fight even while you rest or keep your weapon away: everyone stands up and goes in, the tank
+            -- included (it provokes as soon as it is engaged), the same order !squad attack gives
+            pcall(function()
+                local foe = c.targetEnt
+                if foe ~= nil and foe:isAlive() and not player:isEngaged() and player:getLocalVar('SQUAD_ATTACK_TARGET') == 0 then
+                    player:setLocalVar('SQUAD_ATTACK_TARGET', foe:getTargID())
+                    player:setLocalVar('SQUAD_ATTACK_ZONE', player:getZoneID())
+                    player:setLocalVar('SQUAD_ATTACK_SEEN', os.time())
+                    for _, trust in ipairs(trusts) do
+                        if trust:isAlive() and trust:getAnimation() == xi.animation.HEALING then
+                            trust:setAnimation(xi.animation.NONE)
+                        end
+                    end
+                end
+            end)
             print(string.format('[squad] pull: %s is back (or the target is gone) after %ds', puller:getPacketName(), now - (c.pullStart or now)))
         elseif now - c.since > CAMP_PULL_TIMEOUT then
             campStop(puller)
@@ -2524,6 +2540,16 @@ function squadTeamTick(mob)
 end
 
 local function callMate(player, mate)
+    local present = summonedMate(player, mate.id)
+    if present ~= nil and not present:isAlive() then
+        -- (2026-11-23) its fallen body is still here, waiting for a Raise: take it away and call the mate fresh
+        pcall(SquadDismissMate, present)
+        player:timer(1500, function(entity)
+            callMate(entity, mate)
+        end)
+        return
+    end
+
     if isSummoned(player, mate.id) then
         say(player, string.format('%s is already with you.', mate.name))
         return
@@ -3208,6 +3234,69 @@ function squadKeepGear()
         return require('modules/custom/lua/squad_config')
     end)
     return ok and type(c) == 'table' and c.keep_gear == true
+end
+
+-- (2026-11-23, Meli; the user: "when squad mates die you should be able to raise them") a fallen mate stays where it fell,
+-- in your party (trust_entity.cpp Die, main.SQUAD_MATES_RAISABLE), until it is raised or RAISE_WAIT_SECONDS pass.
+-- Raise, Raise II, Raise III and Arise (scripts/actions/spells/white) call xi.squad.onRaised: the body leaves and the
+-- mate is called back at once (no call cooldown) with the HP that raise gives a player: 10 / 25 / 50 / 100%.
+xi.squad.RAISE_WAIT_SECONDS = 300
+xi.squad.RAISE_HP = { 0.10, 0.25, 0.50, 1.00 }
+
+xi.squad.onMateFell = function(mob)
+    local owner = mob:getMaster()
+    local mateId = mob:getLocalVar('SQUAD_ID')
+    if owner == nil or owner:getObjType() ~= xi.objType.PC or mateId == 0 then
+        return
+    end
+
+    local token = os.time()
+    mob:setLocalVar('SQUAD_FELL_AT', token)
+    owner:printToPlayer(string.format('%s has fallen. Raise them within %d minutes, or call them again.', mob:getPacketName(),
+        math.floor(xi.squad.RAISE_WAIT_SECONDS / 60)), xi.msg.channel.SYSTEM_3)
+    owner:timer(xi.squad.RAISE_WAIT_SECONDS * 1000, function(entity)
+        local body = summonedMate(entity, mateId)
+        if body ~= nil and not body:isAlive() and body:getLocalVar('SQUAD_FELL_AT') == token then
+            pcall(SquadDismissMate, body)
+        end
+    end)
+end
+
+xi.squad.onRaised = function(caster, target, level)
+    local owner = target:getMaster()
+    local mateId = target:getLocalVar('SQUAD_ID')
+    if owner == nil or owner:getObjType() ~= xi.objType.PC or mateId == 0 or target:isAlive() then
+        return false
+    end
+
+    local mate = nil
+    for _, m in ipairs(GetSquad(owner:getID()) or {}) do
+        if m.id == mateId then
+            mate = m
+        end
+    end
+
+    if mate == nil then
+        return false
+    end
+
+    local share = xi.squad.RAISE_HP[level] or xi.squad.RAISE_HP[1]
+    pcall(SquadDismissMate, target)
+    owner:timer(1500, function(entity)
+        if isSummoned(entity, mateId) then
+            return
+        end
+
+        callMate(entity, mate)
+        local back = summonedMate(entity, mateId)
+        if back ~= nil then
+            back:setHP(math.max(1, math.floor(back:getMaxHP() * share)))
+            back:setMP(0)
+            entity:printToPlayer(string.format('%s is back on their feet.', mate.name), xi.msg.channel.SYSTEM_3)
+        end
+    end)
+
+    return true
 end
 
 xi.squad.onTrade = function(player, trust, items)
@@ -6345,6 +6434,10 @@ for _, name in ipairs(templates) do
     end)
 
     m:addOverride(base .. '.onMobDeath', function(mob)
+        if mob:getLocalVar('SQUAD_ID') ~= 0 and xi.squad.onMateFell and (tonumber(xi.settings.main.SQUAD_MATES_RAISABLE) or 0) == 1 then
+            pcall(xi.squad.onMateFell, mob) -- (the body waits for a Raise)
+        end
+
         if mob:getLocalVar('SQUAD_ID') == 0 then
             super(mob)
         elseif dialogue.speakOnDeath then

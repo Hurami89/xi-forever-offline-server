@@ -147,6 +147,12 @@ auto CTrustController::Tick(timer::time_point tick) -> Task<void>
         co_return;
     }
 
+    // XI: Forever Offline (2026-11-23): a fallen squad mate's body stays for a Raise (trust_entity.cpp Die): it does nothing
+    if (PTrust->isDead())
+    {
+        co_return;
+    }
+
     // FFXI Offline squad: local var SQUAD_IDLE (set by squad.lua / squad_moves.lua, "Forward to Gambits") = the stock trust AI does nothing for
     // this squad mate: no engaging, no following, no range keeping. Its gambits and the Lua movement lines still act. A mate that is still
     // engaged lets go once its master is not fighting.
