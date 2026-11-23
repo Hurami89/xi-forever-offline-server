@@ -256,6 +256,7 @@ xi.settings.map =
 
     -- (XI: Forever Offline, 2026-11-22) 1 = no per-group merit caps: every merit can go to its own maximum.
     FULL_MERITS = 0, -- 1 = on, 0 = off (the era)
+    AH_ANYWHERE = 0, -- 1 = on, 0 = off (the era). The auction house answers in every area (the ahgo add-on's /ah). src/map/packets/c2s/0x04e_auc.cpp
 
     -- Minimum time between uses of yell command (in seconds).
     YELL_COOLDOWN = 30,
