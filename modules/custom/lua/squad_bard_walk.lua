@@ -21,7 +21,8 @@ local m = Module:new('squad_bard_walk')
 SQUAD_BARD_WALK = SQUAD_BARD_WALK or {}
 local W = SQUAD_BARD_WALK
 W.cfg = W.cfg or {}
-for k, v in pairs({ safe = 14, behind = 3, range = 9, mid = 5, arrive = 1.5, every = 1000, stuck = 5, mageSwitch = false, retarget = 5, castGate = true }) do
+-- (v0.3.3a) mageSwitch is ON by default: a party with casters gets the caster spot (the group switch below). SQUAD_BARD_WALK.cfg.mageSwitch = false puts a bard back beside the fighters only.
+for k, v in pairs({ safe = 14, behind = 3, range = 9, mid = 5, arrive = 1.5, every = 1000, stuck = 5, mageSwitch = true, retarget = 5, castGate = true }) do
     if W.cfg[k] == nil then W.cfg[k] = v end
 end
 local C = W.cfg
