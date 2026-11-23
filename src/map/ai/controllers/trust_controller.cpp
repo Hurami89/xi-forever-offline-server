@@ -190,6 +190,7 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
 
     position_t camp{};
     const bool inCamp = campOf(PTrust, camp);
+    CBattleEntity* POrdered = nullptr; // (!squad attack) the monster the player sent the squad at, while he is not engaged
     if (inCamp)
     {
         // camp: the fight at camp goes on without you; anything that wanders off is let go
@@ -201,8 +202,18 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
     }
     else if (!PMaster->PAI->IsEngaged())
     {
-        PTrust->PAI->Internal_Disengage();
-        m_CombatEndTime = m_Tick;
+        // (!squad attack, 2026-11-22) the player sent the squad at a monster and keeps out of the fight himself:
+        // stay on that monster. Without such an order a mate lets go when its master is not fighting, as before.
+        POrdered = OrderedTarget();
+        if (POrdered == nullptr)
+        {
+            PTrust->PAI->Internal_Disengage();
+            m_CombatEndTime = m_Tick;
+        }
+        else if (PTarget != POrdered)
+        {
+            PTrust->PAI->Internal_ChangeTarget(EntityId(POrdered));
+        }
     }
 
     if (inCamp && PMob && distance(PMob->loc.p, camp) > CampFightRadius)
@@ -256,7 +267,7 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
             float currentDistanceToTarget = distance(PTrust->loc.p, PTarget->loc.p);
             float currentDistanceToMaster = distance(PTrust->loc.p, PMaster->loc.p);
 
-            if (!inCamp && !PMaster->PAI->IsEngaged() && currentDistanceToTarget > WarpDistance)
+            if (!inCamp && !PMaster->PAI->IsEngaged() && POrdered == nullptr && currentDistanceToTarget > WarpDistance)
             {
                 PTrust->PAI->PathFind->WarpToOnMesh(PTarget->loc.p);
             }
@@ -495,6 +506,15 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
             }
         }
 
+        if (PFight == nullptr && !PMaster->PAI->IsEngaged())
+        {
+            // (!squad attack at a camp) a monster the player pointed out, if it is within the camp's reach
+            if (auto* POrdered = OrderedTarget(); POrdered != nullptr && distance(POrdered->loc.p, camp) <= CampFightRadius)
+            {
+                PFight = POrdered;
+            }
+        }
+
         for (auto* POther : PMaster->PTrusts)
         {
             if (PFight != nullptr)
@@ -575,6 +595,15 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
         if (EngageDelayPassed(PMasterTarget))
         {
             POwner->PAI->Internal_Engage(PMaster->battleTarget());
+        }
+    }
+    else if (auto* POrdered = PMaster->PAI->IsEngaged() ? nullptr : OrderedTarget(); POrdered != nullptr && POwner->GetModelId() != modelID_Cornelia)
+    {
+        // (!squad attack, 2026-11-22, Hasuko: "I'm a WHM. I shouldn't have to pull my weapon") the player pointed at a
+        // monster and stays out of the fight: go in without him. A mate's engage delay (!squad delay) counts from the order.
+        if (EngageDelayPassed(POrdered))
+        {
+            POwner->PAI->Internal_Engage(EntityId(POrdered));
         }
     }
     else if (!PMaster->PAI->IsEngaged() || PMasterTarget == nullptr)
@@ -673,6 +702,44 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
     }
 
     co_return;
+}
+
+// FFXI Offline squad (2026-11-22, Hasuko: "I'm a WHM. I shouldn't have to pull my weapon"): !squad attack sends the
+// squad at the player's target without the player engaging. squad.lua writes the monster's targid, the zone and the
+// time into the player's local vars SQUAD_ATTACK_TARGET / SQUAD_ATTACK_ZONE / SQUAD_ATTACK_SEEN. This returns that
+// monster while the order stands, and drops the order when the monster is dead or gone, the player is dead or in
+// another zone, the monster is farther than OrderLeash from the player, or no mate has looked at the order for
+// OrderStaleSec (nobody was out: the same monster must not be attacked again after it comes back).
+constexpr float  OrderLeash    = 60.0f;
+constexpr uint32 OrderStaleSec = 15;
+
+auto CTrustController::OrderedTarget() -> CBattleEntity*
+{
+    auto* PMaster = static_cast<CBattleEntity*>(POwner->PMaster);
+    if (PMaster == nullptr || POwner->GetLocalVar("SQUAD_ID") == 0)
+    {
+        return nullptr;
+    }
+
+    const uint32 targid = PMaster->GetLocalVar("SQUAD_ATTACK_TARGET");
+    if (targid == 0)
+    {
+        return nullptr;
+    }
+
+    const uint32 now  = earth_time::timestamp();
+    const uint32 seen = PMaster->GetLocalVar("SQUAD_ATTACK_SEEN");
+    auto*        PMob = dynamic_cast<CMobEntity*>(POwner->GetEntity(static_cast<uint16>(targid), TYPE_MOB));
+    if (PMob == nullptr || PMob->isDead() || PMob->status == xi::Status::Disappear || PMob->allegiance != xi::Allegiance::Mob ||
+        PMaster->isDead() || PMaster->GetLocalVar("SQUAD_ATTACK_ZONE") != static_cast<uint32>(static_cast<uint16>(PMaster->getZone())) ||
+        now > seen + OrderStaleSec || distance(PMob->loc.p, PMaster->loc.p) > OrderLeash)
+    {
+        PMaster->SetLocalVar("SQUAD_ATTACK_TARGET", 0);
+        return nullptr;
+    }
+
+    PMaster->SetLocalVar("SQUAD_ATTACK_SEEN", now);
+    return PMob;
 }
 
 // camp: stand on its own spot around the camp (one per party slot)

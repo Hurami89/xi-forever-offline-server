@@ -74,6 +74,7 @@ private:
     auto DoCampPullTick(timer::time_point tick, const position_t& camp) -> Task<void>; // FFXI Offline squad camp
     void CampHold(const position_t& camp);
     auto EngageDelayPassed(const CBattleEntity* PTarget) -> bool; // FFXI Offline squad: per-mate engage delay
+    auto OrderedTarget() -> CBattleEntity*;                       // FFXI Offline squad: !squad attack (the player's SQUAD_ATTACK_* local vars)
     void Declump(const CCharEntity* PMaster, const CBattleEntity* PTarget) const;
     void PathOutToDistance(const CBattleEntity* PTarget, float amount);
 

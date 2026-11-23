@@ -273,6 +273,7 @@ local function usage(player)
     say(player, '!squad food <slot>   - choose what that mate eats (a food is unlocked once, for its auction house price)   |   !squad food <slot> auto')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
     say(player, '!squad engage first | normal   - mates join as soon as you engage (the default), or after your first swing (retail)')
+    say(player, '!squad attack   - your squad attacks the monster you have targeted, without you drawing your weapon (also while you rest)   |   !squad stop')
     say(player, '!squad sync <name> | off   - Level Sync to a player, bot or squad mate in your party (party menu works too)')
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
     say(player, '!squad autoequip now [slot]   - put the best given gear on once, right now, and keep choosing by hand')
@@ -2824,6 +2825,80 @@ local REST_EVERY_SEC = 10
 local REST_HP_PERCENT = 10  -- of their max HP per tick
 local REST_MP_PERCENT = 10  -- of their max MP per tick
 
+-- your camp, if it is in the zone you are in
+local function campHere(player)
+    local c = camps[player:getID()]
+    return c and c.zone == player:getZoneID() and c or nil
+end
+
+-- (2026-11-22, Hasuko) !squad attack / !squad stop: see the command. Returns true when the squad was sent.
+xi.squad.ATTACK_REACH = 50      -- yalms from you: as far as you can target
+xi.squad.ATTACK_CAMP_REACH = 20 -- at a camp the squad only fights this close to it (CampFightRadius in trust_controller.cpp)
+xi.squad.attackOrder = function(player, stop)
+    local mates = squadTrusts(player)
+    if stop then
+        local had = player:getLocalVar('SQUAD_ATTACK_TARGET') ~= 0
+        player:setLocalVar('SQUAD_ATTACK_TARGET', 0)
+        if not player:isEngaged() then
+            for _, mate in ipairs(mates) do
+                if mate:isEngaged() and not campHere(player) then
+                    pcall(function() mate:disengage() end)
+                end
+            end
+        end
+
+        say(player, had and 'Your squad breaks off.' or 'Your squad has no attack order. (!squad attack sends it at your target.)')
+        return false
+    end
+
+    local mob = player:getCursorTarget()
+    if mob == nil or mob:getObjType() ~= xi.objType.MOB or
+        (xi.allegiance and xi.allegiance.MOB and mob:getAllegiance() ~= xi.allegiance.MOB)
+    then
+        say(player, 'Target a monster first, then !squad attack (or the Attack button in the Squads menu). You do not have to draw your weapon.')
+        return false
+    end
+
+    local name = (tostring(mob:getName()):gsub('_', ' '))
+    if not mob:isAlive() then
+        say(player, 'The ' .. name .. ' is already dead.')
+        return false
+    end
+
+    if #mates == 0 then
+        say(player, 'None of your squad mates is out. Call them first (!squad call all).')
+        return false
+    end
+
+    if player:checkDistance(mob) > xi.squad.ATTACK_REACH then
+        say(player, string.format('The %s is too far away (%d yalms; up to %d).', name, math.floor(player:checkDistance(mob)), xi.squad.ATTACK_REACH))
+        return false
+    end
+
+    local c = campHere(player)
+    if c then
+        local p = mob:getPos()
+        local away = math.sqrt((p.x - c.x) ^ 2 + (p.z - c.z) ^ 2)
+        if away > xi.squad.ATTACK_CAMP_REACH then
+            say(player, string.format('At a camp your squad only fights within %d yalms of it, and the %s is %d away. !squad camp off lets them roam with you.',
+                xi.squad.ATTACK_CAMP_REACH, name, math.floor(away)))
+            return false
+        end
+    end
+
+    player:setLocalVar('SQUAD_ATTACK_TARGET', mob:getTargID())
+    player:setLocalVar('SQUAD_ATTACK_ZONE', player:getZoneID())
+    player:setLocalVar('SQUAD_ATTACK_SEEN', os.time())
+    for _, mate in ipairs(mates) do
+        if mate:getAnimation() == xi.animation.HEALING then
+            mate:setAnimation(xi.animation.NONE) -- (sitting with you: up, the fight is on)
+        end
+    end
+
+    say(player, 'Your squad attacks the ' .. name .. '. Stay out of it if you like: no need to draw your weapon. !squad stop calls them back.')
+    return true
+end
+
 restTick = function(mob)
     local master = mob:getMaster()
     if master == nil or master:getObjType() ~= xi.objType.PC or not mob:isAlive() then
@@ -2833,7 +2908,8 @@ restTick = function(mob)
     local sitting = mob:getAnimation() == xi.animation.HEALING
     -- (2026-11-22: the camp pulls while you rest now, so the puller on its way out must not be sat down with you)
     local resting = master:getAnimation() == xi.animation.HEALING and not mob:isEngaged() and not master:isEngaged() and
-        mob:getLocalVar('SQUAD_PULL_PHASE') == 0
+        mob:getLocalVar('SQUAD_PULL_PHASE') == 0 and
+        master:getLocalVar('SQUAD_ATTACK_TARGET') == 0 -- (!squad attack: sent in while you rest, so not sitting with you)
 
     -- At camp (unless !squad camp rest off): rest between fights while the pull is out, until full again
     local c = camps[master:getID()]
@@ -4168,6 +4244,24 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         else
             local now = player:getCharVar('TrustEngageType') ~= 2 and 'first (as soon as you engage)' or 'normal (after your first swing)'
             say(player, '!squad engage first | normal   - when your mates join a fight. Now: ' .. now)
+        end
+
+        return
+    end
+
+    if action == 'attack' or action == 'stop' then
+        -- (2026-11-22, Hasuko: "I'm a WHM. I shouldn't have to pull my weapon. I should be as far back as possible
+        -- and/or resting during pulls". Yenkei: "I was hoping to get a squad attack button too") !squad attack sends the
+        -- squad at the monster you have targeted, without you engaging; !squad stop calls it back. The order is three
+        -- local vars on the player that trust_controller.cpp reads (OrderedTarget) and drops by itself when the monster
+        -- is dead or gone. Bot players in your party get the same order through their own party orders.
+        local wanted = string.lower(arg1 or '')
+        local stop = action == 'stop' or wanted == 'off' or wanted == 'stop'
+        local result = xi.squad.attackOrder(player, stop)
+        if xi.bots and type(xi.bots.partyOrder) == 'function' then
+            if stop or result == true then
+                pcall(xi.bots.partyOrder, player, stop and 'stop' or 'attack')
+            end
         end
 
         return
