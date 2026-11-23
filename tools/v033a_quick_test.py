@@ -38,11 +38,27 @@ def run_lua_file(path):
     return int(failed or 0) if isinstance(failed, (int, float)) else 0
 
 
+def defaults_check():
+    """Child mode: the v0.3.3a defaults are in the files (map.TRUST_AOE_RANGE retail, Bard casters group on, request extras on)."""
+    def read(*parts):
+        with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
+            return f.read()
+    checks = [("map.TRUST_AOE_RANGE default is retail", "TRUST_AOE_RANGE = 'retail'" in read("settings", "default", "map.lua")),
+              ("Bard casters group (mageSwitch) is on", "mageSwitch = true" in read("modules", "custom", "lua", "squad_bard_walk.lua")),
+              ("request extras are on unless turned off", "charVar(player, 'SQREQ_MORE_OFF') ~= 1" in read("modules", "custom", "lua", "squad_requests.lua"))]
+    for label, good in checks:
+        print(("ok   " if good else "FAIL ") + label)
+    return 0 if all(good for _, good in checks) else 1
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--defaults":
+        return defaults_check()
     if len(sys.argv) == 3 and sys.argv[1] == "--lua":
         return 1 if run_lua_file(sys.argv[2]) else 0
     jobs = [("core files: generated tables + core Lua tests", [sys.executable, os.path.join(ROOT, "tools", "core_files", "run_checks.py")]),
             ("Revamped hook points are harmless", [sys.executable, os.path.join(ROOT, "tools", "revamped", "test_revamped_hooks.py")])]
+    jobs.append(("v0.3.3a defaults are in place", [sys.executable, os.path.abspath(__file__), "--defaults"]))
     for path in sorted(glob.glob(os.path.join(ROOT, "modules", "custom", "tests", "test_*.lua"))):
         name = os.path.basename(path)
         if name.startswith("test_core_"):
