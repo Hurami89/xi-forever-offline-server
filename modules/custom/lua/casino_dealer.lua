@@ -37,6 +37,32 @@ local function gilText(n)
     return (out:gsub('^,', ''))
 end
 
+-- Change the player's gil by one amount in ONE step (not "take the bet, then pay double"), then check the balance
+-- really moved. Returns true when it did. If add/del did not take, it sets the balance directly as a fallback.
+local function changeGil(player, delta)
+    local before = player:getGil()
+
+    if delta > 0 then
+        player:addGil(delta)
+    elseif delta < 0 then
+        player:delGil(-delta)
+    end
+
+    if player:getGil() == before + delta then
+        return true
+    end
+
+    player:setGil(before + delta)
+
+    if player:getGil() == before + delta then
+        print(string.format('[casino_dealer] add/del did not change gil for %s; set it directly instead', player:getName()))
+        return true
+    end
+
+    print(string.format('[casino_dealer] could not change gil for %s by %d (had %d, has %d)', player:getName(), delta, before, player:getGil()))
+    return false
+end
+
 local function play(player, npc, bet)
     player:setFreezeFlag(false)
 
@@ -45,19 +71,28 @@ local function play(player, npc, bet)
         return
     end
 
-    player:delGil(bet)
-
     local mine   = math.random(0, MAX_ROLL - 1)
     local theirs = math.random(0, MAX_ROLL - 1)
+
+    -- what the bet does to the player's gil: win +bet (the bet is kept and doubled), tie 0, lose -bet
+    local delta = 0
+    if mine > theirs then
+        delta = bet
+    elseif mine < theirs then
+        delta = -bet
+    end
+
+    if delta ~= 0 and not changeGil(player, delta) then
+        say(player, npc, 'Something went wrong with the gil, so the bet is off. Nothing was taken.')
+        return
+    end
 
     say(player, npc, string.format('Dice Roll! %s rolls %d.', player:getName(), mine))
     say(player, npc, string.format('Dice Roll! %s rolls %d.', DEALER_NAME, theirs))
 
-    if mine > theirs then
-        player:addGil(bet * 2)
-        say(player, npc, string.format('You win! Your %s gil is doubled: %s gil paid out.', gilText(bet), gilText(bet * 2)))
-    elseif mine == theirs then
-        player:addGil(bet)
+    if delta > 0 then
+        say(player, npc, string.format('You win! Your %s gil is doubled: you now have %s gil more.', gilText(bet), gilText(bet)))
+    elseif delta == 0 then
         say(player, npc, 'A tie! Your bet is returned.')
     else
         say(player, npc, string.format('The house wins. You lose %s gil.', gilText(bet)))
