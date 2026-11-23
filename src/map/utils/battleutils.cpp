@@ -6254,10 +6254,18 @@ auto GetCoverAbilityUser(CBattleEntity* PCoverAbilityTarget, CBattleEntity* PMob
     CBattleEntity* PCoverAbilityUser    = nullptr;
     uint32         coverAbilityTargetID = PCoverAbilityTarget->id;
 
-    // If the cover ability target is in a party, try to find a cover ability user
-    if (PCoverAbilityTarget->PParty != nullptr)
+    // (XI: Forever Offline, 2026-11-22) A squad mate has no party of its own: it belongs to its master's. So a Paladin
+    // can Cover a squad mate, the mate's party is its master's.
+    const CParty* PTargetParty = PCoverAbilityTarget->PParty;
+    if (PTargetParty == nullptr && PCoverAbilityTarget->isSquadMate() && PCoverAbilityTarget->PMaster != nullptr)
     {
-        for (auto* PMember : PCoverAbilityTarget->PParty->members)
+        PTargetParty = PCoverAbilityTarget->PMaster->PParty;
+    }
+
+    // If the cover ability target is in a party, try to find a cover ability user
+    if (PTargetParty != nullptr)
+    {
+        for (auto* PMember : PTargetParty->members)
         {
             if (coverAbilityTargetID == PMember->GetLocalVar("COVER_ABILITY_TARGET") &&
                 PMember->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Cover) &&
