@@ -26,7 +26,7 @@
 // XI: Forever Offline: a script (Lua) can hold the stock trust AI's own decisions for one trust, one decision at a time.
 //
 // The stock AI acts before any gambit does: it engages as soon as the master engages, and it fires a weapon skill the moment TP
-// reaches 1000. A script that owns a trust's behaviour (a Squads or Gambits add-on) wants to say "not yet" to those, for example
+// reaches 1000. A script that owns a trust's behaviour (a Squads or other add-on) wants to say "not yet" to those, for example
 // until its tank holds the monster, and to let go when its own test passes. The hook is two local vars on the trust:
 //
 //   TRUST_HOLD      bit mask: HoldEngage = hold the stock engage, HoldWeaponSkill = hold the stock weapon skills
