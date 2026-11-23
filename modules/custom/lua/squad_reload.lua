@@ -835,10 +835,24 @@ if R.origRequire == nil then
     R.origRequire = require
 end
 
--- hand the first run of a file to the engine; a second run of a file we manage is a watcher re-run
-for name in pairs(activeSet()) do
-    R.seen[name] = true
+-- hand the first run of a file to the engine; a second run of a file we manage is a watcher re-run.
+-- Only files that init.txt names itself are known to be loaded already (this file is last). A file that is only covered by a
+-- folder line (custom/late) is loaded by the engine AFTER this file, so its first run must not count as a re-run: it is marked
+-- seen by the require hook below when that first run happens.
+local function seedSeen()
+    local named = {}
+    for _, line in ipairs(initLines()) do
+        named[line] = true
+    end
+
+    for name in pairs(activeSet()) do
+        if named[relOf(name)] then
+            R.seen[name] = true
+        end
+    end
 end
+R.seedSeen = seedSeen
+seedSeen()
 
 R.auto = R.auto ~= false
 
