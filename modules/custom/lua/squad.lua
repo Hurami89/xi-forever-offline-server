@@ -759,6 +759,7 @@ function squadCampLevels(player)
 
     return CAMP_LEVELS[1], CAMP_LEVELS[2], false
 end
+
 local CAMP_PULL_TIMEOUT = 300       -- seconds before a pull that did not work is given up (a 400 yalm run out and back)
 local CAMP_PULL_GAP     = { 4, 8 }  -- seconds of quiet at camp before the next pull
 local CAMP_READY_HP     = 60        -- everyone at least this much HP (%) before a pull
@@ -901,6 +902,38 @@ function squadLinkCount(pool, mob, pos)
 end
 
 -- the next monster for the puller: in range of camp, the right level, nobody else's, nearest to camp first
+-- (2026-11-22, Hasuko, FalconX51, Yenkei: "conflicting info from what level it will pull") The level the pull window is
+-- counted from: the lowest of you and your living squad mates (since 2026-11-19, so a pull is fair for everyone who
+-- has to fight it). The chat lines said "your level" and showed your own, so a party with lower mates looked stuck.
+-- Returns the level and whose it is. Global: squad.lua is at the local limit.
+function squadCampBase(player)
+    local lvl, who = player:getMainLvl(), player:getName()
+    pcall(function()
+        for _, t in ipairs(squadTrusts(player)) do
+            if t:isAlive() and t:getMainLvl() > 0 and t:getMainLvl() < lvl then
+                lvl, who = t:getMainLvl(), t:getPacketName()
+            end
+        end
+    end)
+
+    return lvl, who
+end
+
+-- "level 12-20 (counted from Aster, the lowest in your party at 18)" for the chat lines about the window
+function squadCampWindowText(player, low, high)
+    local lvl, who = squadCampBase(player)
+    if low == nil or high == nil then
+        low, high = squadCampLevels(player)
+    end
+
+    local text = string.format('level %d-%d', math.max(1, lvl + low), math.max(1, lvl + high))
+    if who ~= player:getName() then
+        text = text .. string.format(' (counted from %s, the lowest in your party at %d)', who, lvl)
+    end
+
+    return text
+end
+
 local function campPick(player, c)
     local zone = player:getZone()
     if zone == nil then
@@ -923,14 +956,7 @@ local function campPick(player, c)
 
     -- 2026-11-19: the level window is measured from the weakest one in the party, not from you (Nishiko pulled a level 46 Doom Scorpion
     -- onto a level 40 squad because you are higher): a pull has to be fair for everyone who has to fight it
-    local lvl = player:getMainLvl()
-    pcall(function()
-        for _, t in ipairs(squadTrusts(player)) do
-            if t:isAlive() and t:getMainLvl() > 0 and t:getMainLvl() < lvl then
-                lvl = t:getMainLvl()
-            end
-        end
-    end)
+    local lvl = squadCampBase(player)
 
     local range = campRange(player)
     local wants = campWants(c)
@@ -1436,7 +1462,13 @@ local function campTick(mob)
         if not c.noneSaid then
             c.noneSaid = true
             local wantLabel = campWantLabel(c)
-            campSay(player, nil, wantLabel and ('no ' .. wantLabel .. ' around right now, waiting for pops') or 'nothing to pull nearby, waiting for pops')
+            local okBase, baseLvl = pcall(squadCampBase, player)
+            local okText, window = pcall(squadCampWindowText, player)
+            if wantLabel then
+                campSay(player, nil, 'no ' .. wantLabel .. (okBase and string.format(' up to level %d', baseLvl + CAMP_WANT_ABOVE) or '') .. ' around right now, waiting for pops')
+            else
+                campSay(player, nil, 'nothing to pull nearby' .. (okText and (': looking for ' .. window .. '. !squad camp levels <below> <above> changes that') or ', waiting for pops'))
+            end
         end
 
         return
@@ -3594,15 +3626,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             if string.lower(arg2 or '') == 'reset' then
                 player:setCharVar('SQUAD_PULL_LOW', 0)
                 player:setCharVar('SQUAD_PULL_HIGH', 0)
-                say(player, string.format('Your puller is back to monsters from %d below to %d above your level.', -CAMP_LEVELS[1], CAMP_LEVELS[2]))
+                say(player, string.format('Your puller is back to monsters from %d below to %d above the lowest level in your party: %s.',
+                    -CAMP_LEVELS[1], CAMP_LEVELS[2], squadCampWindowText(player)))
             elseif low and high and low >= -30 and high <= 30 and low <= high then
                 player:setCharVar('SQUAD_PULL_LOW', math.floor(low) + 100)
                 player:setCharVar('SQUAD_PULL_HIGH', math.floor(high) + 100)
-                say(player, string.format('Your puller now goes for monsters from level %+d to %+d against yours (now %d-%d).',
-                    math.floor(low), math.floor(high), math.max(1, player:getMainLvl() + math.floor(low)), player:getMainLvl() + math.floor(high)))
+                say(player, string.format('Your puller now goes for monsters from %+d to %+d against the lowest level in your party: %s.',
+                    math.floor(low), math.floor(high), squadCampWindowText(player, math.floor(low), math.floor(high))))
             else
                 local l, h = squadCampLevels(player)
-                say(player, string.format('Pull levels: %+d to %+d against yours. Change: !squad camp levels <low> <high> (e.g. -10 0, from -30 to +10), or reset.', l, h))
+                say(player, string.format('Pull levels: %+d to %+d against the lowest level in your party, now %s. Change: !squad camp levels <low> <high> (e.g. -10 0, from -30 to +10), or reset.',
+                    l, h, squadCampWindowText(player)))
             end
         elseif what == 'rest' then
             -- mates sit and rest at camp while the pull is out (char var SQUAD_CAMP_NOREST: 0 = on, the default; 1 = off)
@@ -3668,8 +3702,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             end
 
             c.puller, c.pullerBot, c.state, c.nextPull = 0, pullBot:getID(), 'idle', os.time() + 2
-            say(player, string.format('%s pulls. Monsters level %d-%d within %d yalms of camp, one at a time.',
-                pullBot:getName(), math.max(1, player:getMainLvl() + CAMP_LEVELS[1]), player:getMainLvl() + CAMP_LEVELS[2], campRange(player)))
+            say(player, string.format('%s pulls. Monsters %s within %d yalms of camp, one at a time.',
+                pullBot:getName(), squadCampWindowText(player), campRange(player)))
             return
         elseif who ~= 'me' and who ~= 'off' then
             mate = findMate(squad, tonumber(who) or -1)
@@ -3709,8 +3743,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         end
 
         c.puller, c.nextPull = mate.id, os.time() + 2
-        say(player, string.format('%s pulls. Monsters level %d-%d within %d yalms of camp, one at a time when everyone is ready.',
-            mate.name, math.max(1, player:getMainLvl() + CAMP_LEVELS[1]), player:getMainLvl() + CAMP_LEVELS[2], campRange(player)))
+        say(player, string.format('%s pulls. Monsters %s within %d yalms of camp, one at a time when everyone is ready.',
+            mate.name, squadCampWindowText(player), campRange(player)))
         return
     end
 
