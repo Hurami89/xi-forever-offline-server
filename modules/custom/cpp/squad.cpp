@@ -20,7 +20,7 @@
 //   - DeleteSquadMate(charId, slot)
 //   - SetSquadEquip(squadId, job, slot, itemId)   (itemId 0 removes the item)
 //   - FindSquadItem(text)                         -> item id from a numeric id or an item name, 0 if not found
-//   - GetSquadItemInfo(itemId)                    -> { valid, name, level, jobs, slot, skill, shield } for equipment
+//   - GetSquadItemInfo(itemId)                    -> { valid, name, level, jobs, slot, skill, shield, dmg, delay, mods } for equipment
 //   - Trading: when a player trades items to one of their squad mates, the offered items are handed to the Lua function
 //              xi.squad.onTrade(player, trust, items), where items = array of { itemId, slot, quantity }.
 //   - BuildStarterGear(job)                       -> { [slot] = itemId } basic level 1 gear for that job
@@ -1058,12 +1058,28 @@ auto getSquadItemInfo(const uint32 itemId) -> sol::table
         info["shield"] = rset->get<uint8>("shieldSize");
     }
 
-    // (for the squad's auto-equip: two-handed weapons, grips and shields, ammo that fits the ranged weapon)
-    const auto rsetW = db::preparedStmt("SELECT skill FROM item_weapon WHERE itemId = ?", itemId);
+    // (for the squad's auto-equip: two-handed weapons, grips and shields, ammo that fits the ranged weapon;
+    //  2026-11-22, lilibun: damage and delay too, so a weapon can be rated for a job)
+    info["dmg"]   = 0;
+    info["delay"] = 0;
+    const auto rsetW = db::preparedStmt("SELECT skill, dmg, delay FROM item_weapon WHERE itemId = ?", itemId);
     FOR_DB_SINGLE_RESULT(rsetW)
     {
         info["skill"] = rsetW->get<uint8>("skill");
+        info["dmg"]   = rsetW->get<uint32>("dmg");
+        info["delay"] = rsetW->get<int32>("delay");
     }
+
+    // (2026-11-22, lilibun: "a Warrior equips a Silver Hairpin") what the piece adds: mods[modId] = value, for
+    // SQUAD_GEAR_SCORE.rate (modules/custom/late/squad_gear_score.lua). Lua's auto-equip keeps what it read.
+    auto       mods  = ::lua.create_table();
+    const auto rsetM = db::preparedStmt("SELECT modId, value FROM item_mods WHERE itemId = ?", itemId);
+    FOR_DB_MULTIPLE_RESULTS(rsetM)
+    {
+        mods[rsetM->get<uint16>("modId")] = rsetM->get<int16>("value");
+    }
+
+    info["mods"] = mods;
 
     return info;
 }

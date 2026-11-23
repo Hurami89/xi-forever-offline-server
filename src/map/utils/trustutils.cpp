@@ -1117,8 +1117,19 @@ void LoadTrustStatsAndSkills(CTrustEntity* PTrust)
                 break;
         }
 
-        PTrust->health.maxhp = static_cast<int16>(grade::GetBaseHP(squadRaceGroup, grade::GetJobGrade(mJob, 0), mLvl, grade::GetJobGrade(sJob, 0), sLvl));
-        PTrust->health.maxmp = static_cast<int16>(grade::GetBaseMP(squadRaceGroup, grade::GetJobGrade(mJob, 1), mLvl, grade::GetJobGrade(sJob, 1), sLvl));
+        // (XI: Forever Offline, 2026-11-22, delukard) the "Your HP" / "Your MP" rules count for squad mates too
+        // (charutils::CalculateStats has the player's side). 1.0 is the era; missing or zero counts as 1.0.
+        const auto vitalRate = [](std::string_view key) -> float
+        {
+            const float rate = settings::get<float>(key);
+            return rate > 0.0f ? std::clamp(rate, 0.5f, 3.0f) : 1.0f;
+        };
+
+        const float squadBaseHP = static_cast<float>(grade::GetBaseHP(squadRaceGroup, grade::GetJobGrade(mJob, 0), mLvl, grade::GetJobGrade(sJob, 0), sLvl));
+        const float squadBaseMP = static_cast<float>(grade::GetBaseMP(squadRaceGroup, grade::GetJobGrade(mJob, 1), mLvl, grade::GetJobGrade(sJob, 1), sLvl));
+
+        PTrust->health.maxhp = static_cast<int16>(std::min(30000.0f, squadBaseHP * vitalRate("map.PLAYER_HP_MULTIPLIER")));
+        PTrust->health.maxmp = static_cast<int16>(std::min(30000.0f, squadBaseMP * vitalRate("map.PLAYER_MP_MULTIPLIER")));
     }
 
     PTrust->health.tp = 0;

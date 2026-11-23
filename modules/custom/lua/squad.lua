@@ -2282,11 +2282,29 @@ end
 
 function squadAutoEquip(player, mate)
     local job, lvl = mate.mjob, levelsFor(mate)
-    local cand = {}
+    -- (2026-11-22, lilibun: a Warrior in a Silver Hairpin, the highest-level piece it could wear) every piece is rated
+    -- for the job: what it adds, and for a weapon how hard it hits in that job's hands (SQUAD_GEAR_SCORE,
+    -- modules/custom/late/squad_gear_score.lua). The best rated goes first; a piece that only hurts the job is left
+    -- off. Without ratings (an xi_map that sends no stats) the highest level goes first, as before.
+    local rate = type(SQUAD_GEAR_SCORE) == 'table' and SQUAD_GEAR_SCORE.rate or nil
+    SQUAD_ITEM_INFO = SQUAD_ITEM_INFO or {} -- (what an item is does not change while the server runs)
+    local cand, scored = {}, rate ~= nil
     for itemId in pairs(GetSquadUnlocks(player:getID()) or {}) do
-        local info = GetSquadItemInfo(itemId)
+        local info = SQUAD_ITEM_INFO[itemId]
+        if info == nil then
+            info = GetSquadItemInfo(itemId)
+            SQUAD_ITEM_INFO[itemId] = info
+        end
+
         if info and info.valid and info.level <= lvl and hasBit(info.jobs, job - 1) then
-            cand[#cand + 1] = { id = itemId, info = info }
+            local score = nil
+            if scored then
+                local ok, value = pcall(rate, info, job, lvl)
+                score = ok and type(value) == 'number' and value or nil
+                scored = score ~= nil
+            end
+
+            cand[#cand + 1] = { id = itemId, info = info, score = score }
         end
     end
 
@@ -2295,12 +2313,20 @@ function squadAutoEquip(player, mate)
     end
 
     table.sort(cand, function(a, b)
+        if scored and a.score ~= b.score then
+            return a.score > b.score
+        end
+
         return a.info.level > b.info.level or (a.info.level == b.info.level and a.id < b.id)
     end)
 
     local used, pick = {}, {}
     local function best(slot, ok)
         for _, c in ipairs(cand) do
+            if scored and c.score < 0 then
+                break -- (sorted: everything from here on would make this job worse)
+            end
+
             if hasBit(c.info.slot, slot) and not used[c.id] and (ok == nil or ok(c.info)) then
                 used[c.id] = true
                 return c.id, c.info

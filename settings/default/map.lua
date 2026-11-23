@@ -182,11 +182,15 @@ xi.settings.map =
     NM_HP_MULTIPLIER        = 1.0,
     MOB_HP_MULTIPLIER       = 1.0,
     ALTER_EGO_HP_MULTIPLIER = 1.0,
+    -- (XI: Forever Offline) you and your squad mates: base HP before gear, food and traits. 0.5 to 3.0
+    PLAYER_HP_MULTIPLIER    = 1.0,
 
     -- Adjust max MP pool for NMs, regular mobs, players, and trusts/fellows. Acts as a multiplier, so default is 1. Valid range: 0.1 to 2.0
     NM_MP_MULTIPLIER        = 1.0,
     MOB_MP_MULTIPLIER       = 1.0,
     ALTER_EGO_MP_MULTIPLIER = 1.0,
+    -- (XI: Forever Offline) you and your squad mates: base MP. 0.5 to 3.0
+    PLAYER_MP_MULTIPLIER    = 1.0,
 
     -- Sets the fraction of MP a subjob provides to the main job. Retail is half and this acts as a divisor so default is 2
     SJ_MP_DIVISOR = 2.0,
