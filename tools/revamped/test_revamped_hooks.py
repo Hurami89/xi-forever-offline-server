@@ -41,7 +41,8 @@ class Hooks(unittest.TestCase):
 
     def test_loaders_follow_squad_lua_and_gambits_own_follows_bard_walk(self):
         lines = init_lines()
-        sq = lines.index("custom/lua/squad.lua")
+        # (v0.3.3a) the v0.3.3 Squads Lua parts (squad_logic, sq_logic, squad_requests) load right after squad.lua; the placeholders follow them
+        sq = max(lines.index(x) for x in ("custom/lua/squad.lua", "custom/lua/squad_logic.lua", "custom/lua/sq_logic.lua", "custom/lua/squad_requests.lua") if x in lines)
         self.assertEqual(lines[sq + 1].startswith("# Revamped hook points"), True)
         self.assertEqual(lines[sq + 2], "custom/lua/xk_profiles.lua")
         bw = lines.index("custom/lua/squad_bard_walk.lua")
