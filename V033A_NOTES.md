@@ -5,7 +5,7 @@
 
 **What:** the setting explained above. Four engine files change (the party area target search, the trust spell range test, the setting declaration, and the Run ability loops).
 
-**Why:** Gambits Revamped movement and placement lines, Bard song positioning, COR roll stacking, healer and GEO placement, and Squads Revamped spacing. All of them only mean something on Retail.
+**Why:** Add-on movement and placement lines, Bard song positioning, COR roll stacking, healer and GEO placement, and Squads Revamped spacing. All of them only mean something on Retail.
 
 **Behaviour change:** **yes.** Default Retail changes what stock does; Extended is stock.
 Test steps (to be written against a v0.3.3 build; outline):
@@ -35,7 +35,7 @@ Test steps (to be written against a v0.3.3 build; outline):
 
 **What:** a squad mate that borrows a passive template body (Brygid, Cornelia) is targetable and can cast, so a Geomancer or Blue Mage mate casts for the first time (Indi, Geo and Cure spells; Blue spells with her set kept across the spawn). A mate can call a pet exactly as a player does (Call Wyvern, summons, Call Beast, Geo spells put a Luopan on the target) and a Luopan works for a trust master. A Puppetmaster mate fights with her own automaton, built from her own record through the Lua hook `SquadMateAutomaton` (frame, head, attachments, name; the player's own automaton is never read or written). The engine tests `IsSquadMate()` everywhere, so a retail trust is not touched.
 
-**Why:** Squads Revamped and Gambits Revamped job rows for GEO, BLU, SMN, DRG, BST and PUP mates. Without it those mates stand and cannot act (a passive trust cannot cast).
+**Why:** Squads Revamped and add-on job rows for GEO, BLU, SMN, DRG, BST and PUP mates. Without it those mates stand and cannot act (a passive trust cannot cast).
 
 **Behaviour change:** none for retail trusts. Squad mates of those jobs start acting; that is the point.
 
@@ -61,7 +61,7 @@ Test steps (to be written against a v0.3.3 build; outline):
 
 **What:** a neutral hook in the trust AI. A Lua script that owns a trust can hold the stock engage and / or the stock weapon skills of that one trust, and lets go again. Three local vars: `TRUST_HOLD` (1 engage, 2 weapon skills), `TRUST_HOLD_SEQ` (a counter the script raises about once a second), `TRUST_HOLD_ENGINE` (set to 1 on every trust: this build has the hook). The hold runs out three seconds after the last renewal, so a script that stops or crashes never leaves a trust frozen.
 
-**Why:** Gambits Revamped and Squads Revamped lines that say "not yet" to the stock engage or weapon skill until the tank holds the monster. Without it those lines are advisory, because the stock AI acts before any Lua row runs.
+**Why:** add-on and Squads Revamped lines that say "not yet" to the stock engage or weapon skill until the tank holds the monster. Without it those lines are advisory, because the stock AI acts before any Lua row runs.
 
 **Behaviour change:** none. The stock server never writes `TRUST_HOLD`; the only thing written on every trust is the marker var.
 
@@ -71,10 +71,10 @@ Test steps (to be written against a v0.3.3 build; outline):
 
 **Test steps:**
 1. With nothing set, call a trust (Kupipi) and engage a monster. Expected: the trust engages at once, as on v0.3.2. See it in: the trust draws her weapon; party list.
-2. On the trust set local var `TRUST_HOLD` = 1 and raise `TRUST_HOLD_SEQ` by 1 once a second (the Gambits Revamped gate does this; by hand: a repeating timer on the trust). Engage a monster. Expected: the trust does not engage while the counter keeps moving. See it in: she stays out of the fight.
+2. On the trust set local var `TRUST_HOLD` = 1 and raise `TRUST_HOLD_SEQ` by 1 once a second (an add-on that holds the stock decisions does this; by hand: a repeating timer on the trust). Engage a monster. Expected: the trust does not engage while the counter keeps moving. See it in: she stays out of the fight.
 3. Stop raising the counter, keep `TRUST_HOLD` = 1. Expected: within about 3 seconds she engages by herself. See it in: she draws her weapon; the monster turns on her or the fight shows her attacks.
 4. Set `TRUST_HOLD` = 2 and keep the counter moving; build 1000 TP on a melee trust. Expected: no stock weapon skill fires at 1000 TP while held; one fires within about 3 seconds after you stop the counter (or clear the mask). See it in: the combat log line of the weapon skill.
-5. Read `TRUST_HOLD_ENGINE` on a trust after her first tick. Expected: 1 on every trust. See it in: a Lua console read of the local var, or the Gambits Revamped command `!gown version` (trust_gate=built_in) once that add-on reads the neutral names.
+5. Read `TRUST_HOLD_ENGINE` on a trust after her first tick. Expected: 1 on every trust. See it in: a Lua console read of the local var, or the add-on's own version command, once it reads the neutral names.
 
 **Revert:** revert the commit; nothing else reads the vars.
 
@@ -87,7 +87,7 @@ Test steps (to be written against a v0.3.3 build; outline):
 
 **What:** the loop in `callMate` that decides which saved pieces a squad mate wears and which become looks (a Level Sync piece above the level still shows) moves into a pure function, `squad_equipment.projectSpawnGear`, loaded lazily with `require` (like `squad_ws`). Same inputs, same outfit and looks.
 
-**Why:** Squads Revamped and Gambits Revamped changing the gear rule through one function, without patching `squad.lua`.
+**Why:** Squads Revamped and other add-ons changing the gear rule through one function, without patching `squad.lua`.
 
 **Behaviour change:** none intended (a refactor).
 
@@ -111,7 +111,7 @@ Test steps (to be written against a v0.3.3 build; outline):
 
 **What:** The decisions of a party chat line (`cure me`, `all haste`, `poppelle cure momo`, `2hr`, `sneak attack`) were 274 lines of C++ in squad.cpp. squad.cpp now only decodes the packet and calls `xi.squad.onChatCommand`; the rules are `squad_logic.lua`. A player sees nothing different.
 
-**Why:** Every later item here, and Squads Revamped: a chat rule becomes a Lua edit that needs no restart (SC-03). The party request router of Gambits Revamped plugs into this file.
+**Why:** Every later item here, and Squads Revamped: a chat rule becomes a Lua edit that needs no restart (SC-03). The party request router of an add-on plugs into this file.
 
 **Behaviour change:** none (this is the same behaviour moved; the parity test is the proof). Switch: none; it is the reason the map server must be rebuilt (needs the map server rebuilt from this branch's squad.cpp).
 
@@ -208,7 +208,7 @@ Test steps (to be written against a v0.3.3 build; outline):
 
 **What:** With `!sqreq more on`: `sneak please`, `i need invis`, `can you cure me?`, `poppelle sneak please`, `{Sneak}`, `cure ii please` are requests. Before they were silent no-ops. A line with any other word (`we should sneak past the undead`, `sneak attack`) is conversation, passed on unchanged. The words are data (`squad_requests_data.lua`).
 
-**Why:** Gambits Revamped asks the same words (`!ask`).
+**Why:** An add-on asks the same words (`!ask`).
 
 **Behaviour change:** yes, behind a switch. Default off. Switch: `!sqreq more on` / `!sqreq more off`.
 
@@ -278,7 +278,7 @@ Test steps (to be written against a v0.3.3 build; outline):
 
 **What:** With the extras on: Cure at full health, a -na with nothing to cure, a buff already on are not cast; one mate says why, once. Raise needs somebody down, Escape and Reraise are refused with the reason, the words `poisoned`, `blind`, `i died` act only when there is something to do. The caster is chosen: the job that fits first (White Mage for Cure, Red Mage for stealth), then most MP, then nearest, then squad order. A mate you name is always the one asked.
 
-**Why:** The router behaviour Gambits Revamped has, on the dev team's Squads.
+**Why:** The router behaviour an add-on has, on the dev team's Squads.
 
 **Behaviour change:** yes, behind a switch. Default off. Switch: `!sqreq more on`.
 
@@ -492,13 +492,13 @@ Test steps (to be written against a v0.3.3 build; outline):
 <details>
 <summary><b>SH-01</b> Revamped hook points (server): <i>RE-TEST</i></summary>
 
-**What:** Placeholder Lua files (`xk_*`, `sq_*`, `gambits_own.lua`) listed in `modules/init.txt`, a few guarded hook calls in `squad.lua` and `squad_bard_walk.lua`; none of them does anything until a Revamped package replaces the placeholders. See `docs/REVAMPED-HOOKS.md`.
+**What:** Placeholder Lua files (`xk_*`, `sq_*`, `addon_owner.lua`) listed in `modules/init.txt`, a few guarded hook calls in `squad.lua` and `squad_bard_walk.lua`; none of them does anything until a Revamped package replaces the placeholders. See `docs/REVAMPED-HOOKS.md`.
 
-**Why:** Lets Gambits Revamped and Squads Revamped install without patching these files.
+**Why:** Lets add-ons and Squads Revamped install without patching these files.
 
 **Commits:** `0b192d9ca7`
 
-**Files:** `docs/REVAMPED-HOOKS.md`, `modules/custom/lua/gambits_own.lua`, `modules/custom/lua/sq_act.lua`, `modules/custom/lua/sq_automaton.lua`, `modules/custom/lua/sq_backend_dev.lua`, `modules/custom/lua/sq_export.lua`, `modules/custom/lua/sq_gate.lua`, `modules/custom/lua/sq_gearview.lua`, `modules/custom/lua/sq_guard.lua`, `modules/custom/lua/sq_owner.lua`, `modules/custom/lua/sq_plan.lua`, `modules/custom/lua/sq_profile.lua`, `modules/custom/lua/sq_rows_bard.lua`, `modules/custom/lua/sq_rows_boost.lua` and 26 more
+**Files:** `docs/REVAMPED-HOOKS.md`, `modules/custom/lua/addon_owner.lua`, `modules/custom/lua/sq_act.lua`, `modules/custom/lua/sq_automaton.lua`, `modules/custom/lua/sq_backend_dev.lua`, `modules/custom/lua/sq_export.lua`, `modules/custom/lua/sq_gate.lua`, `modules/custom/lua/sq_gearview.lua`, `modules/custom/lua/sq_guard.lua`, `modules/custom/lua/sq_owner.lua`, `modules/custom/lua/sq_plan.lua`, `modules/custom/lua/sq_profile.lua`, `modules/custom/lua/sq_rows_bard.lua`, `modules/custom/lua/sq_rows_boost.lua` and 26 more
 
 **Test steps:**
 1. `python tools/revamped/test_revamped_hooks.py`. Expected: 11 tests OK.
@@ -675,9 +675,9 @@ none (a comment). Check the diff: only the comment line changes. Expected: no co
 <details>
 <summary><b>SC-05</b> Stopped mates do not answer chat orders (G15): <i>proof carried</i></summary>
 
-**What:** A mate that is stopped (`!idle on`, Actions OFF, `SQUAD_IDLE`) or owned by another system (`GAMBITS_OWNED`) is not asked by `cure`, `sneak`, `2hr`. Before, stopped did not mean nothing for chat.
+**What:** A mate that is stopped (`!idle on`, Actions OFF, `SQUAD_IDLE`) or owned by another system (`ADDON_OWNED`) is not asked by `cure`, `sneak`, `2hr`. Before, stopped did not mean nothing for chat.
 
-**Why:** Gambits Revamped (a Gambits-owned mate acts through its own lines) and the rule 'stopped means nothing'.
+**Why:** an add-on (an add-on owned mate acts through its own lines) and the rule 'stopped means nothing'.
 
 **Behaviour change:** yes: a stopped mate stays silent. Bug fix. Switch: `!sqreq off`.
 
@@ -749,7 +749,7 @@ none (a comment). Check the diff: only the comment line changes. Expected: no co
 
 **What:** Warp, Escape, Reraise, Utsusemi and Tonko cannot be put on you. `warp` got a false 'On it' or 'nothing to cast on'. One mate now says the spell only takes its caster; nothing is cast.
 
-**Why:** Honest answers; Gambits Revamped asks the right spell (Warp II) itself.
+**Why:** Honest answers; An add-on asks the right spell (Warp II) itself.
 
 **Behaviour change:** yes: one true line instead of a false one. Bug fix. The audit could not verify in the engine what the old unnamed request did, so this item has no engine before/after. Switch: `!sqreq off`.
 
