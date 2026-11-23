@@ -1,5 +1,5 @@
 -----------------------------------
--- Squad requests: the words (XI Forever v0.3.3). DATA ONLY, no behavior. Used by squad_requests.lua when the extras are on (!sqreq more on).
+-- Squad requests: the words (XI Forever v0.3.3). DATA ONLY, no behavior. Used by squad_requests.lua when the extras are on (on by default since v0.3.3a; !sqreq more off turns them off).
 --
 --   FILLER     words that carry no meaning ("please", "can you", "i need"); a line may hold them besides the request itself
 --   ME, GROUP  who gets it: you, or everyone ("us", "party", "all")

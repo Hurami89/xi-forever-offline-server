@@ -9,7 +9,7 @@
 --
 --   !sqreq              what is on
 --   !sqreq off | on     all of the fixes (character variable SQREQ_OFF, default: on)
---   !sqreq more on|off  the extras that change what a line means: looser words, groups, best spell, ... (SQREQ_MORE, default: off)
+--   !sqreq more on|off  the extras that change what a line means: looser words, groups, best spell, ... (default: on since v0.3.3a; `!sqreq more off` turns them off, character variable SQREQ_MORE_OFF)
 --
 -- With the fixes off, or with this file removed from init.txt, squad_logic.lua does exactly what it did before.
 -- Hot reloadable (tools/squads/hot_reload). Load order: after squad_logic.lua.
@@ -44,9 +44,10 @@ function R.on(player)
     return charVar(player, 'SQREQ_OFF') ~= 1
 end
 
--- the extras that change what a line means are on only when the player asked
+-- the extras that change what a line means are on unless the player turned them off (!sqreq more off). v0.3.3a: on by default;
+-- SQREQ_MORE_OFF = 1 is "turned off" (an unset character variable reads 0, so "off" has to be the stored value)
 function R.more(player)
-    return R.on(player) and charVar(player, 'SQREQ_MORE') == 1
+    return R.on(player) and charVar(player, 'SQREQ_MORE_OFF') ~= 1
 end
 
 -----------------------------------
@@ -1136,7 +1137,7 @@ local function tell(player, text)
 end
 
 function R.status(player)
-    tell(player, string.format('squad requests: fixes %s, extras %s', R.on(player) and 'ON' or 'OFF (!sqreq on)', R.more(player) and 'ON' or 'off (!sqreq more on)'))
+    tell(player, string.format('squad requests: fixes %s, extras %s', R.on(player) and 'ON' or 'OFF (!sqreq on)', R.more(player) and 'ON (!sqreq more off turns them off)' or 'off (!sqreq more on)'))
 end
 
 function R.command(player, a, b)
@@ -1144,7 +1145,7 @@ function R.command(player, a, b)
     if a == 'off' or a == 'on' then
         player:setCharVar('SQREQ_OFF', a == 'off' and 1 or 0)
     elseif a == 'more' and (b == 'on' or b == 'off') then
-        player:setCharVar('SQREQ_MORE', b == 'on' and 1 or 0)
+        player:setCharVar('SQREQ_MORE_OFF', b == 'off' and 1 or 0)
     elseif a ~= '' and a ~= 'status' then
         tell(player, '!sqreq | !sqreq off | !sqreq on | !sqreq more on | !sqreq more off')
     end
