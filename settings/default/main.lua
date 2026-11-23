@@ -344,6 +344,7 @@ xi.settings.main =
     EPHEMERAL_MOOGLES            = 1,     -- 1 = on (default), 0 = off. The crafting guilds' Ephemeral Moogles (Seekers of Adoulin) keep your crystals. src/map/utils/zoneutils.cpp
     SQUAD_UNLIMITED_JUICE        = 0,     -- 1 = on, 0 = off (default). A squad mate with none of the juices you gave it drinks one for its level, free. modules/custom/lua/squad_juice.lua
     SQUAD_MATES_RAISABLE         = 1,     -- 1 = on (default), 0 = off. A fallen squad mate stays where it fell for 5 minutes and can be Raised. src/map/entities/trust_entity.cpp, modules/custom/lua/squad.lua
+    CONQUEST_WARP_RING           = 0,     -- 1 = on, 0 = off (default). Your nation's Conquest Overseers also sell the Warp Ring (5,000 conquest points). modules/custom/late/warp_ring.lua
     EXP_CHAIN_TIME_MULTIPLIER    = 1.000, -- Multiplies the time you have to keep an experience chain going (1 = the era). scripts/globals/experience_points.lua
     PLAYER_DAMAGE_TAKEN_MULTIPLIER = 1.000, -- Multiplies the damage players and squad mates take (0.5 = half, 2 = double; 1 = the era). modules/custom/late/comforts.lua
     SEAL_DROP_MINUTES            = 5,     -- Minutes a party waits after a Beastmen's or Kindred's Seal (or another special drop) before the next can drop. 5 = the base's rule, 0 = no wait. src/map/entities/mob_entity.cpp

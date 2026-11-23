@@ -2485,4 +2485,30 @@ xi.bots.partyOrder = function(player, text)
     end
 end
 
+-- (2026-11-23, Yenkei) !squad attack / !squad stop (squad.lua) order the bot players in your party too, as "attack" /
+-- "stop" in party chat do. Returns how many bots took the order.
+xi.bots.partyOrder = function(player, word, mob)
+    local n = 0
+    for _, member in pairs(player:getParty() or {}) do
+        local id = member:getID()
+        if member:getObjType() == xi.objType.PC and BotIsBot and BotIsBot(id) and member:getZoneID() == player:getZoneID() and member:isAlive() then
+            local st = state[id] or {}
+            state[id] = st
+            if word == 'attack' and mob ~= nil then
+                st.attacking = mob:getID()
+                BotAttack(id, mob)
+                BotFollow(id, mob, MELEE_STOP)
+            elseif word == 'stop' then
+                st.attacking = nil
+                BotAttackOff(id)
+                BotStop(id)
+            end
+
+            n = n + 1
+        end
+    end
+
+    return n
+end
+
 return m

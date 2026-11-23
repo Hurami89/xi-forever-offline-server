@@ -2964,6 +2964,10 @@ xi.squad.attackOrder = function(player, stop)
     if stop then
         local had = player:getLocalVar('SQUAD_ATTACK_TARGET') ~= 0
         player:setLocalVar('SQUAD_ATTACK_TARGET', 0)
+        if xi.bots and xi.bots.partyOrder then
+            local okBots, n = pcall(xi.bots.partyOrder, player, 'stop')
+            had = had or (okBots and (n or 0) > 0)
+        end
         if not player:isEngaged() then
             for _, mate in ipairs(mates) do
                 if mate:isEngaged() and not campHere(player) then
@@ -2990,7 +2994,15 @@ xi.squad.attackOrder = function(player, stop)
         return false
     end
 
-    if #mates == 0 then
+    -- (2026-11-23, Yenkei) bot players in your party take the order too
+    local botCount = 0
+    for _, member in pairs(player:getParty() or {}) do
+        if member:getObjType() == xi.objType.PC and BotIsBot and BotIsBot(member:getID()) then
+            botCount = botCount + 1
+        end
+    end
+
+    if #mates == 0 and botCount == 0 then
         say(player, 'None of your squad mates is out. Call them first (!squad call all).')
         return false
     end
@@ -3018,6 +3030,10 @@ xi.squad.attackOrder = function(player, stop)
         if mate:getAnimation() == xi.animation.HEALING then
             mate:setAnimation(xi.animation.NONE) -- (sitting with you: up, the fight is on)
         end
+    end
+
+    if botCount > 0 and xi.bots and xi.bots.partyOrder then
+        pcall(xi.bots.partyOrder, player, 'attack', mob)
     end
 
     say(player, 'Your squad attacks the ' .. name .. '. Stay out of it if you like: no need to draw your weapon. !squad stop calls them back.')
@@ -3323,6 +3339,10 @@ xi.squad.onTrade = function(player, trust, items)
             xi.squad.juice.onTrade(player, owner, trust, offer, function(event, vars)
                 speak(player, who, event, vars)
             end)
+        elseif food.meals and food.meals.giveFood and food.meals.giveFood(player, owner, offer, food, function(event, vars)
+            speak(player, who, event, vars)
+        end) then
+            -- (2026-11-23, FalconX51) a food: unlocked for the squad's food menu (squad_meals.lua)
         elseif squadLearnScroll(owner, function(text) player:printToPlayer(text, xi.msg.channel.SYSTEM_3) end, offer.itemId,
             function() return player:delItemAt(offer.itemId, 1, xi.inv.INVENTORY, offer.slot) end) then
             -- (a spell scroll: learned or told why not)
@@ -3422,6 +3442,34 @@ local function save(player, mate)
     say(player, 'Saved: ' .. describe(mate, player) .. '  (dismiss and call them again to apply)')
 end
 
+-- (2026-11-23, ChazDingle, Sirloinofbeef; the user: only a GM character) !squad setlevel <slot> <job> <level>: set a mate's
+-- level in one job (its exp starts over at that level). Takes effect the next time the mate is called. (global: the
+-- command function below is at LuaJIT's limit of outside names)
+function squadGmSetLevel(player, squad, slotArg, jobArg, levelArg)
+    if player:getGMLevel() <= 0 then
+        say(player, 'Only a GM character can set a squad mate\'s level (SYSTEM > GM and testing in the launcher).')
+        return
+    end
+
+    local mate = findMate(squad, tonumber(slotArg) or 0)
+    local wanted = string.upper(tostring(jobArg or ''))
+    local job = nil
+    for id, name in pairs(jobNames) do
+        if name == wanted then
+            job = id
+        end
+    end
+
+    local level = math.floor(tonumber(levelArg) or 0)
+    if mate == nil or job == nil or level < 1 or level > MAX_LEVEL then
+        say(player, string.format('!squad setlevel <slot> <job> <1-%d>   e.g. !squad setlevel 2 WHM 30 (GM only)', MAX_LEVEL))
+        return
+    end
+
+    SetSquadJob(mate.id, job, level, 0)
+    say(player, string.format('%s is now a level %d %s. Dismiss and call them again to see it.', mate.name, level, wanted))
+end
+
 commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9)
     local charId = player:getID()
     if action ~= 'panel' and action ~= 'sheet' then
@@ -3480,6 +3528,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             say(player, 'Squad mates on the linkshell are not available (squad_shell.lua did not load).')
         end
 
+        return
+    end
+
+    if action == 'setlevel' then
+        squadGmSetLevel(player, squad, arg1, arg2, arg3)
         return
     end
 
