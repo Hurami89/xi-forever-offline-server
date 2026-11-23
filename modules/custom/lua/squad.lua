@@ -5204,6 +5204,13 @@ local CATEGORY_NAMES =
     {
         tankja  = { 'PROVOKE', 'SENTINEL', 'HOLY_CIRCLE', 'THIRD_EYE', 'YONIN' },
         utility = { 'CONVERT', 'CHAKRA' },
+        -- (2026-11-23, krazy: a Corsair set to Support never rolled) a Phantom Roll is a buff for the party, not a melee
+        -- move: every job ability that was not listed counted as "meleeja", which Support and Healer drop
+        buff    = { 'PHANTOM_ROLL', 'CORSAIRS_ROLL', 'CHAOS_ROLL', 'HUNTERS_ROLL', 'FIGHTERS_ROLL', 'MONKS_ROLL', 'HEALERS_ROLL',
+                    'WIZARDS_ROLL', 'WARLOCKS_ROLL', 'ROGUES_ROLL', 'GALLANTS_ROLL', 'BEAST_ROLL', 'CHORAL_ROLL', 'SAMURAI_ROLL',
+                    'NINJA_ROLL', 'DRACHEN_ROLL', 'EVOKERS_ROLL', 'MAGUSS_ROLL', 'PUPPET_ROLL', 'DANCERS_ROLL', 'SCHOLARS_ROLL',
+                    'BOLTERS_ROLL', 'CASTERS_ROLL', 'COURSERS_ROLL', 'BLITZERS_ROLL', 'TACTICIANS_ROLL', 'ALLIES_ROLL', 'MISERS_ROLL',
+                    'COMPANIONS_ROLL', 'AVENGERS_ROLL', 'NATURALISTS_ROLL', 'RUNEISTS_ROLL' },
     },
 }
 
@@ -5332,7 +5339,8 @@ local function behaviorFilter(role, mode, target, condition, action)
                 return math.max(15, math.min(90, value + shift))
             end)
         end
-    elseif mode == 'conserve' and (category == 'buff' or category == 'debuff' or category == 'nuke' or category == 'cleanse') then
+    elseif mode == 'conserve' and action[1] == ai.r.MA and (category == 'buff' or category == 'debuff' or category == 'nuke' or category == 'cleanse') then
+        -- (a job ability costs no mana: a Phantom Roll is never held back for it)
         condition = withMpFloor(condition, CONSERVE_MP)
     end
 
