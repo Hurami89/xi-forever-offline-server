@@ -53,7 +53,7 @@ end
 -----------------------------------
 -- G15: a mate that is stopped does not answer chat orders
 -- "!idle on" (squad_idle.lua) and Actions OFF (squad_actions.lua) set SQUAD_IDLE: that mate does nothing until you let it. A mate that
--- another system owns (GAMBITS_OWNED, set by Gambits Revamped) acts through that system's own lines, not through a chat order.
+-- another system owns (ADDON_OWNED, set by the hook in squad.lua) acts through that system's own lines, not through a chat order.
 -----------------------------------
 function R.mayAnswer(player, mate)
     if not R.on(player) then
@@ -61,7 +61,7 @@ function R.mayAnswer(player, mate)
     end
 
     local ok, idle, owned = pcall(function()
-        return mate:getLocalVar('SQUAD_IDLE'), mate:getLocalVar('GAMBITS_OWNED')
+        return mate:getLocalVar('SQUAD_IDLE'), mate:getLocalVar('ADDON_OWNED')
     end)
 
     if ok and ((idle or 0) ~= 0 or (owned or 0) ~= 0) then

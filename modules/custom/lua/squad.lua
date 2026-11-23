@@ -2644,7 +2644,7 @@ local function callMate(player, mate)
             resyncSquad(mobArg)
         end
         -- (Jon Tanta, 2026-11-21) SQUAD_IDLE (trust_controller.cpp): a mate the player has stopped gets no built-in Thief positioning
-        if squadThiefTick ~= nil and mobArg:getLocalVar('GAMBITS_OWNED') == 0 and mobArg:getLocalVar('SQUAD_IDLE') == 0 and mobArg:isAlive() and mobArg:getMaster() ~= nil then
+        if squadThiefTick ~= nil and mobArg:getLocalVar('ADDON_OWNED') == 0 and mobArg:getLocalVar('SQUAD_IDLE') == 0 and mobArg:isAlive() and mobArg:getMaster() ~= nil then
             pcall(squadThiefTick, mobArg)
         end
         -- SQUAD_SEAM v2 begin sr_tick
@@ -2652,8 +2652,8 @@ local function callMate(player, mate)
             pcall(SQUAD_PROFILE.tick, mobArg)
         end
         -- SQUAD_SEAM v2 end sr_tick
-        -- GAMBITS_SEAM v1 (team tick): Gambits owns this mate, so Squads' spacing (TRUST_DISTANCE), chain and ext chain stay off it
-        if mobArg:getLocalVar('GAMBITS_OWNED') == 0 then
+        -- SQUAD_SEAM v1 (team tick): an add-on owns this mate, so Squads' spacing (TRUST_DISTANCE), chain and ext chain stay off it
+        if mobArg:getLocalVar('ADDON_OWNED') == 0 then
             squadTeamTick(mobArg) -- (spacing and the skillchain wait, once a second)
         end
         chatTick(mobArg)
@@ -4058,35 +4058,35 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
     -- The Squad menu's "Apply now": the mates who are out come back with their new settings (no cooldown)
     if action == 'reapply' then
         local out = {}
-        -- GAMBITS_SEAM v1 (reapply gate): Apply now never dismisses, calls or applies a Rule Set to a mate Gambits owns
-        local gownSkipped = {}
+        -- SQUAD_SEAM v1 (reapply gate): Apply now never dismisses, calls or applies a Rule Set to a mate an add-on owns
+        local addonSkipped = {}
         for _, mate in ipairs(orderedSquad(player, squad)) do
             if isSummoned(player, mate.id) then
-                local gownOk, gownOwned = false, false
-                if type(rawget(_G, 'GAMBITS_OWN')) == 'table' and type(GAMBITS_OWN.owns) == 'function' then
-                    gownOk, gownOwned = pcall(GAMBITS_OWN.owns, player, summonedMate(player, mate.id))
+                local addonOk, addonOwned = false, false
+                if type(rawget(_G, 'ADDON_OWNER')) == 'table' and type(ADDON_OWNER.owns) == 'function' then
+                    addonOk, addonOwned = pcall(ADDON_OWNER.owns, player, summonedMate(player, mate.id))
                 end
-                if gownOk and gownOwned == true then
-                    gownSkipped[#gownSkipped + 1] = mate
+                if addonOk and addonOwned == true then
+                    addonSkipped[#addonSkipped + 1] = mate
                 else
                     out[#out + 1] = mate
                 end
             end
         end
 
-        if #gownSkipped == 0 then
+        if #addonSkipped == 0 then
             player:clearTrusts()
         else
-            -- only the mates Gambits does not own leave and come back (one by one); without SquadDismissMate they stay as they are
-            for _, mate in ipairs(gownSkipped) do
-                say(player, string.format('Gambits owns %s: Squads reapply skipped', mate.name))
+            -- only the mates an add-on does not own leave and come back (one by one); without SquadDismissMate they stay as they are
+            for _, mate in ipairs(addonSkipped) do
+                say(player, string.format('An add-on owns %s: Squads reapply skipped', mate.name))
             end
-            local gownKept = {}
+            local addonKept = {}
             for _, mate in ipairs(out) do
-                local gownTrust = summonedMate(player, mate.id)
-                if gownTrust ~= nil and SquadDismissMate ~= nil and SquadDismissMate(gownTrust) then gownKept[#gownKept + 1] = mate end
+                local addonTrust = summonedMate(player, mate.id)
+                if addonTrust ~= nil and SquadDismissMate ~= nil and SquadDismissMate(addonTrust) then addonKept[#addonKept + 1] = mate end
             end
-            out = gownKept
+            out = addonKept
         end
         for index, mate in ipairs(out) do
             player:timer(RECALL_WAIT_MS + (index - 1) * CALL_GAP_MS, function(entity)
@@ -4094,7 +4094,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             end)
         end
 
-        if #out == 0 and #gownSkipped == 0 then
+        if #out == 0 and #addonSkipped == 0 then
             say(player, 'None of your squad mates are out.')
         end
 
@@ -6119,20 +6119,20 @@ end
 local function squadSpawn(mob)
     local main = jobs[mob:getMainJob()]
     if main == nil then
-        -- GAMBITS_SEAM v1 (spawn_norules): a job Squads has no rules for (SCH, DNC, RUN, GEO ...) is still marked owned when Gambits owns the mate
-        local gambitsMasterNoRules = mob:getMaster()
-        if gambitsMasterNoRules ~= nil and mob:getLocalVar('SQUAD_ID') ~= 0 and (gambitsMasterNoRules:getCharVar('GAMBITS_OWN_' .. mob:getLocalVar('SQUAD_ID')) or 0) > 0 then
-            mob:setLocalVar('GAMBITS_OWNED', 1)
+        -- SQUAD_SEAM v1 (spawn_norules): a job Squads has no rules for (SCH, DNC, RUN, GEO ...) is still marked owned when an add-on owns the mate
+        local addonMasterNoRules = mob:getMaster()
+        if addonMasterNoRules ~= nil and mob:getLocalVar('SQUAD_ID') ~= 0 and (addonMasterNoRules:getCharVar('ADDON_OWN_' .. mob:getLocalVar('SQUAD_ID')) or 0) > 0 then
+            mob:setLocalVar('ADDON_OWNED', 1)
             return true
         end
 
         return false
     end
 
-    -- GAMBITS_SEAM v1 (spawn): Gambits owns this mate (charvar GAMBITS_OWN_<slot> > 0 on its master): Squads builds nothing for it
-    local gambitsMaster = mob:getMaster()
-    if gambitsMaster ~= nil and mob:getLocalVar('SQUAD_ID') ~= 0 and (gambitsMaster:getCharVar('GAMBITS_OWN_' .. mob:getLocalVar('SQUAD_ID')) or 0) > 0 then
-        mob:setLocalVar('GAMBITS_OWNED', 1)
+    -- SQUAD_SEAM v1 (spawn): an add-on owns this mate (charvar ADDON_OWN_<slot> > 0 on its master): Squads builds nothing for it
+    local addonMaster = mob:getMaster()
+    if addonMaster ~= nil and mob:getLocalVar('SQUAD_ID') ~= 0 and (addonMaster:getCharVar('ADDON_OWN_' .. mob:getLocalVar('SQUAD_ID')) or 0) > 0 then
+        mob:setLocalVar('ADDON_OWNED', 1)
         return true
     end
 
@@ -6811,7 +6811,7 @@ SQUAD_SEAM = { version = 2, owners = { base = 0, profile = 1, advanced = 2 }, ba
 SQUAD_DEV_CMD = function(...) return commandObj.onTrigger(...) end
 -- SQUAD_SEAM v2 end sr_handshake
 
--- GAMBITS_SEAM v1 (handshake): set once, only after the whole file loaded; Gambits reads it to know its hooks survived
-GAMBITS_SEAM = { version = 1 }
+-- SQUAD_SEAM v1 (handshake): set once, only after the whole file loaded; an add-on reads it to know its hooks survived
+SQUAD_SEAM_V1 = { version = 1 }
 
 return m
