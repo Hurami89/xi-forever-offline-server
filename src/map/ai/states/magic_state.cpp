@@ -47,13 +47,12 @@
 // XI Forever Offline: map.TRUST_AOE_RANGE = 'retail' (default) | 'extended'. Retail: trusts, squad mates and pets obey the area
 // radius and the player cast range like a player. Extended: the stock behavior of the server (they skip the radius test, and
 // trusts cast to 28.5 yalms). settings::get is cached per thread and follows a settings reload.
-static auto trustAoeRetail() -> bool
+namespace
+{
+auto trustAoeRetail() -> bool
 {
     return settings::get<std::string>("map.TRUST_AOE_RANGE") != "extended";
 }
-
-namespace
-{
 
 // distance a player has to cover before a cast counts them as having moved
 constexpr float movementThreshold = 0.3f;
