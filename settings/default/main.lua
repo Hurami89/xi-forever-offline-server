@@ -342,6 +342,7 @@ xi.settings.main =
     GUILD_SHOPS_ALWAYS_STOCKED   = 0,     -- 1 = on, 0 = off (the era). Guild shops never run out of the items they sell.
     GUILD_SHOPS_ALWAYS_OPEN      = 1,     -- 1 = on, 0 = off (the era). Guild shops have no closing hours and no weekly holiday.
     EXP_CHAIN_TIME_MULTIPLIER    = 1.000, -- Multiplies the time you have to keep an experience chain going (1 = the era). scripts/globals/experience_points.lua
+    PLAYER_DAMAGE_TAKEN_MULTIPLIER = 1.000, -- Multiplies the damage players and squad mates take (0.5 = half, 2 = double; 1 = the era). modules/custom/late/comforts.lua
 
     -- SYSTEM
     DISABLE_INACTIVITY_WATCHDOG = false, -- true/false. If this is enabled, the watchdog which detects if the main loop isn't being ticked will no longer be able to kill the process.

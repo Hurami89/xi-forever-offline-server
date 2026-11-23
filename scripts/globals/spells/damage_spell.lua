@@ -749,7 +749,13 @@ xi.spells.damage.calculateEbullienceMultiplier = function(caster, spellGroup)
 end
 
 -- CUSTOM function supported in settings.
-xi.spells.damage.calculateSkillTypeMultiplier = function(skillType)
+-- (XI: Forever Offline, 2026-11-22) These are the launcher's "damage you deal" sliders, so a monster's own spells
+-- stay as they are: only players, squad mates, trusts and pets get the multiplier.
+xi.spells.damage.calculateSkillTypeMultiplier = function(skillType, caster)
+    if caster ~= nil and caster:isMob() then
+        return 1
+    end
+
     if skillType == xi.skill.ELEMENTAL_MAGIC then
         return xi.settings.main.ELEMENTAL_POWER
     elseif skillType == xi.skill.DARK_MAGIC then
@@ -1122,7 +1128,7 @@ xi.spells.damage.useDamageSpell = function(caster, target, spell)
     local divineEmblemMultiplier      = xi.spells.damage.calculateDivineEmblemMultiplier(caster, skillType)
     local eleSealMultiplier           = xi.spells.damage.calculateEnhancedElementalSealMultiplier(caster, skillType, spellElement)
     local ebullienceMultiplier        = xi.spells.damage.calculateEbullienceMultiplier(caster, spellGroup)
-    local skillTypeMultiplier         = xi.spells.damage.calculateSkillTypeMultiplier(skillType)
+    local skillTypeMultiplier         = xi.spells.damage.calculateSkillTypeMultiplier(skillType, caster)
     local ninSkillBonus               = xi.spells.damage.calculateNinSkillBonus(caster, spellId, skillType)
     local ninFutaeBonus               = xi.spells.damage.calculateNinFutaeBonus(caster, skillType)
     local ninjutsuMultiplier          = xi.spells.damage.calculateNinjutsuMultiplier(caster, target, skillType)

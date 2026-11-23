@@ -2430,6 +2430,11 @@ local function callMate(player, mate)
     if meals then
         pcall(meals.onSpawn, player, trust, mate) -- the food it was told to eat (!squad food <slot>)
     end
+
+    -- (2026-11-22) the "damage you and your squad take" rule (modules/custom/late/comforts.lua)
+    if type(xi.comforts) == 'table' and type(xi.comforts.damageTaken) == 'function' then
+        pcall(xi.comforts.damageTaken, trust)
+    end
     trust:setLocalVar('SQUAD_WSTP', player:getCharVar('SQUAD_WSTP_' .. mate.id)) -- its own weapon skill timing (!squad ws)
     if wsSettings then
         -- Gambits weapon skill settings for this job (Custom / Squad default), else the !squad ws timing just set
