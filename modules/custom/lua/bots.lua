@@ -1033,7 +1033,10 @@ think = function(bot, token)
                 end
             end
 
-            if partyPlay and (not st.resting or emergency) then
+            -- (2026-11-22) a bot that sits only to keep you company (you /heal, it is full) still does its job: before it
+            -- sat with you it stood there and cured you, and it must not stop now. Once a cure has cost it MP it is no
+            -- longer full, so from then on it rests for itself and only an emergency gets it up.
+            if partyPlay and (not st.resting or emergency or (leaderRests and full)) then
                 partyPlay.act(bot, st, leader, nil)
             end
 
