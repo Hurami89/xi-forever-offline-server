@@ -278,6 +278,7 @@ local function usage(player)
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call); with "Squad gets all gear" on, the best their jobs can wear')
     say(player, '!squad autoequip now [slot]   - put the best gear on once, right now, and keep choosing by hand')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
+    say(player, '!squad juice   - the juices each mate carries (trade juices to a mate: it drinks one when its MP runs low)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
     say(player, '!squad blu <slot> [set | unset <spell>] | auto   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
@@ -316,6 +317,16 @@ if not mealsLoaded or type(meals) ~= 'table' then
 end
 
 food.meals = meals -- (the command function below is at LuaJIT's limit of 60 outside names: it reaches this one through food)
+
+do -- (2026-11-23, Frost, Syfin) squad mates drink the juices you trade them (squad_juice.lua); reached as xi.squad.juice
+    local okJuice, juiceModule = pcall(require, 'modules/custom/lua/squad_juice')
+    xi = xi or {}
+    xi.squad = xi.squad or {}
+    xi.squad.juice = okJuice and type(juiceModule) == 'table' and juiceModule or nil
+    if not xi.squad.juice then
+        print('[squad] could not load squad_juice.lua: ' .. tostring(juiceModule))
+    end
+end
 
 local function chooseFood(job, level)
     local role = food.roleByJob and food.roleByJob[job]
@@ -2646,6 +2657,9 @@ local function callMate(player, mate)
         end
 
         pcall(squadCutsceneTick, mobArg, owner)
+        if xi.squad.juice then
+            pcall(xi.squad.juice.tick, mobArg) -- drinks a juice when its MP runs low (squad_juice.lua)
+        end
         campTick(mobArg)
         if restTick ~= nil then
             restTick(mobArg)
@@ -3205,7 +3219,12 @@ xi.squad.onTrade = function(player, trust, items)
     for _, offer in ipairs(items) do
         local info = GetSquadItemInfo(offer.itemId)
 
-        if squadLearnScroll(owner, function(text) player:printToPlayer(text, xi.msg.channel.SYSTEM_3) end, offer.itemId,
+        if xi.squad.juice and xi.squad.juice.isJuice(offer.itemId) then
+            -- (2026-11-23) juices: this mate keeps them and drinks one when its MP runs low (squad_juice.lua)
+            xi.squad.juice.onTrade(player, owner, trust, offer, function(event, vars)
+                speak(player, who, event, vars)
+            end)
+        elseif squadLearnScroll(owner, function(text) player:printToPlayer(text, xi.msg.channel.SYSTEM_3) end, offer.itemId,
             function() return player:delItemAt(offer.itemId, 1, xi.inv.INVENTORY, offer.slot) end) then
             -- (a spell scroll: learned or told why not)
         elseif not info.valid then
@@ -3360,6 +3379,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             xi.squad.shell.command(player, say, arg1, arg2)
         else
             say(player, 'Squad mates on the linkshell are not available (squad_shell.lua did not load).')
+        end
+
+        return
+    end
+
+    -- (2026-11-23) !squad juice: the juices each mate carries (squad_juice.lua)
+    if action == 'juice' or action == 'juices' then
+        if xi.squad.juice then
+            xi.squad.juice.command(player, GetSquad(player:getID()) or {})
+        else
+            say(player, 'Squad juices are not available (squad_juice.lua did not load).')
         end
 
         return
@@ -3590,6 +3620,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         --   squadsheet:haste|<gear|magic|ability>|<hundredths of a percent>
         --   squadsheet:eq|<slot index>|<slot name>|<item name>|<item id>
         --   squadsheet:note|<text>
+        --   squadsheet:spell|<name>|<MP>   squadsheet:ability|<name>|<level>   (a called mate's; 2026-11-23)
         --   squadsheet:end
         local mate = arg1 ~= nil and findMate(squad, tonumber(arg1) or 0) or nil
         if mate == nil then
@@ -3687,6 +3718,21 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         for slot, itemId in pairs((squadLockstyleGet(player, mate.id))) do
             local info = GetSquadItemInfo(itemId)
             say(player, string.format('squadsheet:ls|%d|%s|%s|%d', slot, equipSlotNames[slot], clean(info.valid and info.name or itemId), itemId))
+        end
+
+        -- (2026-11-23, Frost) the spells and job abilities a called mate can use now (squad.cpp SquadKnownActions):
+        --   squadsheet:spell|<name>|<MP cost>      squadsheet:ability|<name>|<level>
+        if live ~= nil and SquadKnownActions then
+            local okKnown, known = pcall(SquadKnownActions, live)
+            if okKnown and type(known) == 'table' then
+                for _, sp in ipairs(known.spells or {}) do
+                    say(player, string.format('squadsheet:spell|%s|%d', clean(sp.name), tonumber(sp.mp) or 0))
+                end
+
+                for _, ab in ipairs(known.abilities or {}) do
+                    say(player, string.format('squadsheet:ability|%s|%d', clean(ab.name), tonumber(ab.level) or 0))
+                end
+            end
         end
 
         say(player, 'squadsheet:end')

@@ -203,7 +203,13 @@ void InsertNPCs(CZone* PZone, const xi::ZoneId zoneId, const xi::data::Npcs& npc
         PNpc->setWidescan(entry.Widescan);
         PNpc->setAlwaysRelevant(entry.King);
 
-        if (!luautils::IsContentEnabled(entry.Content))
+        // XI: Forever Offline (2026-11-23, Gilder, stanky kong; the user: on by default): the crafting guilds' Ephemeral
+        // Moogles (crystal storage, from Seekers of Adoulin) are there with the rest switched off when main.EPHEMERAL_MOOGLES
+        // is 1 (the launcher's switch).
+        const bool ephemeralMoogle = std::string_view(entry.Script).starts_with("Ephemeral_Moogle") &&
+                                     settings::get<uint8>("main.EPHEMERAL_MOOGLES") == 1;
+
+        if (!ephemeralMoogle && !luautils::IsContentEnabled(entry.Content))
         {
             PNpc->loc.p.x = 0.f;
             PNpc->loc.p.y = 0.f;

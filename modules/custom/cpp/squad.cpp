@@ -1739,6 +1739,78 @@ auto squadUseAbility(CLuaBaseEntity* player, CLuaBaseEntity* mate, const uint16 
     return spellResultName(trySquadAbility(PChar, PTrust, ability::GetAbility(abilityId)));
 }
 
+// (2026-11-23, Frost: "a way to know which spells they can even cast") the spells and job abilities a called mate can use
+// right now, for the profile window's Spells and abilities list: { spells = { {name, mp}, ... }, abilities = { {name, level}, ... } }.
+// Spells: what its spell lists hold (they follow its jobs, levels and, with the scroll rule on, the scrolls it was given).
+// Abilities: its main and support jobs' abilities it has the level for and the squad rules allow (squadMateMayUse).
+auto squadKnownActions(CLuaBaseEntity* mate) -> sol::table
+{
+    auto out       = ::lua.create_table();
+    auto spells    = ::lua.create_table();
+    auto abilities = ::lua.create_table();
+    out["spells"]    = spells;
+    out["abilities"] = abilities;
+
+    auto* PTrust = toSquadMate(mate);
+    if (PTrust == nullptr)
+    {
+        return out;
+    }
+
+    if (PTrust->SpellContainer != nullptr)
+    {
+        std::set<uint16> seen;
+        int              n    = 0;
+        auto*            cont = PTrust->SpellContainer;
+        for (const auto* list : { &cont->m_healList, &cont->m_naList, &cont->m_raiseList, &cont->m_buffList, &cont->m_debuffList,
+                                  &cont->m_damageList, &cont->m_gaList, &cont->m_severeList })
+        {
+            for (const auto spellId : *list)
+            {
+                auto* PSpell = spell::GetSpell(spellId);
+                if (PSpell == nullptr || !seen.insert(static_cast<uint16>(spellId)).second)
+                {
+                    continue;
+                }
+
+                auto row  = ::lua.create_table();
+                row["id"]   = static_cast<uint16>(spellId);
+                row["name"] = PSpell->getName();
+                row["mp"]   = PSpell->getMPCost();
+                spells[++n] = row;
+            }
+        }
+    }
+
+    std::set<uint16> seenAbility;
+    int              n = 0;
+    for (const auto job : { PTrust->GetMJob(), PTrust->GetSJob() })
+    {
+        if (job == xi::Job::NONE)
+        {
+            continue;
+        }
+
+        for (auto* PAbility : ability::GetAbilities(job))
+        {
+            if (PAbility == nullptr || !seenAbility.insert(PAbility->getID()).second || !ability::CanLearnAbility(PTrust, PAbility->getID()) ||
+                !squadMateMayUse(PTrust, PAbility) ||
+                (PAbility == ability::GetTwoHourAbility(PAbility->getJob()) && PTrust->GetMJob() != PAbility->getJob()))
+            {
+                continue;
+            }
+
+            auto row     = ::lua.create_table();
+            row["id"]    = PAbility->getID();
+            row["name"]  = PAbility->getName();
+            row["level"] = PAbility->getLevel();
+            abilities[++n] = row;
+        }
+    }
+
+    return out;
+}
+
 // Party chat named a job ability (or "2hr"): the first mate who can uses it ("all" = everyone who can)
 void handleAbilityChat(CCharEntity* PChar, const std::vector<CTrustEntity*>& askedMates, const bool everyone, const std::string& name)
 {
@@ -2244,6 +2316,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("SquadSpawnPet", squadSpawnPet);
         ::lua.set_function("SquadHasPet", squadHasPet);
         ::lua.set_function("SquadDismissMate", squadDismissMate);
+        ::lua.set_function("SquadKnownActions", squadKnownActions); // the profile window's spells and abilities
         ::lua.set_function("SquadRefreshLook", squadRefreshLook); // re-send a mate's look after zoning (see above)
         ::lua.set_function("SquadLevelSync", squadLevelSync);
         ::lua.set_function("SquadSyncLevelled", squadSyncLevelled);

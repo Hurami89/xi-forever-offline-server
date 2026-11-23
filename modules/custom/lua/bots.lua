@@ -10,7 +10,7 @@
 -- In game (any of your characters):
 --   !bots                         roster status (how many, how many online, in this area)
 --   !bots list                    every bot and who is online
---   !bots online <0-550>           how many are on at a time, right now (the launcher value is used again at the next PLAY)
+--   !bots online <0-1500>           how many are on at a time, right now (the launcher value is used again at the next PLAY)
 --   !bots on / off                the roster logs in / everyone logs out (until the next PLAY)
 --   !bots hunt <Name>             send a bot out hunting now (to watch it: !bots where <Name>)
 --   !bots where <Name>            which area a bot is in, its level, what it is doing, its personality and gil
@@ -1924,11 +1924,11 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
     elseif action == 'online' and life then
         local n = tonumber(a1)
         if not n then
-            tell(player, 'Usage: !bots online <0-550>')
+            tell(player, 'Usage: !bots online <0-1500>')
             return
         end
 
-        life.config().online = math.max(0, math.min(550, math.floor(n)))
+        life.config().online = math.max(0, math.min(1500, math.floor(n)))
         tell(player, 'Bots online at a time: ' .. life.config().online .. ' (they log in or out over the next minutes)')
     elseif (action == 'on' or action == 'off') and life then
         life.config().enabled = action == 'on'
@@ -2208,7 +2208,7 @@ xi.bots.setOnline = function(n)
         return false
     end
 
-    life.config().online = math.max(0, math.min(550, math.floor(n)))
+    life.config().online = math.max(0, math.min(1500, math.floor(n)))
     return true
 end
 
