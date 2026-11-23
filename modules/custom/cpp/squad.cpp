@@ -64,6 +64,7 @@
 #include "map/spell.h"
 #include "map/blue_spell.h"
 #include "map/packets/basic.h"
+#include "map/packets/entity_update.h" // MODEL_EQUIPPED (squadRefreshLook)
 #include "map/ai/controllers/trust_controller.h"
 #include "map/ai/helpers/gambits_container.h"
 #include "map/packets/c2s/0x032_trade_req.h"
@@ -1258,6 +1259,22 @@ bool squadDismissMate(CLuaBaseEntity* mate)
     return true;
 }
 
+// (2026-11-23, Jker_s81, Rysan, Meli, krazy: the first mate out after zoning or a warp showed no armor, or the template's
+// outfit) the look goes out once, in the spawn packet; a client still loading the area drops it and draws the mate from
+// the later partial updates. squad.lua calls this a few seconds after a mate comes out: the look is sent again (the
+// renamed look layout in entity_update.cpp keeps it whole), so a lost spawn look is redrawn. Harmless when it was fine.
+bool squadRefreshLook(CLuaBaseEntity* mate)
+{
+    auto* PTrust = toSquadMate(mate);
+    if (PTrust == nullptr || PTrust->released() || PTrust->look.size != MODEL_EQUIPPED)
+    {
+        return false;
+    }
+
+    PTrust->updatemask |= UPDATE_LOOK;
+    return true;
+}
+
 // !squad sync <name> | off: the party menu's Level Sync, by name (a player, a bot or a squad mate in your party).
 // The same call the menu's packet makes, so the same rules apply (you lead the party, the target is 10+ and here).
 // Returns: 1 done (the server's own messages tell the result), 0 no party, -1 not the leader.
@@ -2227,6 +2244,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("SquadSpawnPet", squadSpawnPet);
         ::lua.set_function("SquadHasPet", squadHasPet);
         ::lua.set_function("SquadDismissMate", squadDismissMate);
+        ::lua.set_function("SquadRefreshLook", squadRefreshLook); // re-send a mate's look after zoning (see above)
         ::lua.set_function("SquadLevelSync", squadLevelSync);
         ::lua.set_function("SquadSyncLevelled", squadSyncLevelled);
         ::lua.set_function("SquadPetAttack", squadPetAttack);

@@ -2594,12 +2594,24 @@ local function callMate(player, mate)
     player:timer(1500, function(entity)
         entity:reloadParty()
     end)
+    -- (2026-11-23, Jker_s81, Rysan, Meli: the first mate out after zoning or a warp had no armor or the wrong outfit)
+    -- the look is in the spawn packet only; a client still loading the area loses it. Send it again a little later.
+    if SquadRefreshLook then
+        for _, wait in ipairs({ 4000, 10000 }) do
+            trust:timer(wait, function(mob)
+                pcall(SquadRefreshLook, mob)
+            end)
+        end
+    end
     trust:setLocalVar('SQUAD_CAP', cap or 0)  -- the level it was synced to, to notice when yours changes
     trust:setLocalVar('SQUAD_OWN', jobLevel(mate, mate.mjob))
 
     if dialogue.speakOnSpawn then
         local okPack, saidPack = false, false
-        if type(xi.squad.pack) == 'table' then
+        -- (2026-11-23, Waxworks: "only the first one I summon uses my greetings") the pack's recruit / bond / race lines
+        -- came first and the mate's own greetings were skipped. A mate with its own greeting lines always uses them.
+        local own = dialogue.linesByName and dialogue.linesByName[mate.name] and dialogue.linesByName[mate.name].spawn
+        if type(xi.squad.pack) == 'table' and not (type(own) == 'table' and #own > 0) then
             okPack, saidPack = pcall(xi.squad.pack.onCall, player, trust, mate.name, mate.race, mate.mjob, jobLevel(mate, mate.mjob))
         end
 
