@@ -275,8 +275,8 @@ local function usage(player)
     say(player, '!squad engage first | normal   - mates join as soon as you engage (the default), or after your first swing (retail)')
     say(player, '!squad attack   - your squad attacks the monster you have targeted, without you drawing your weapon (also while you rest)   |   !squad stop')
     say(player, '!squad sync <name> | off   - Level Sync to a player, bot or squad mate in your party (party menu works too)')
-    say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
-    say(player, '!squad autoequip now [slot]   - put the best given gear on once, right now, and keep choosing by hand')
+    say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call); with "Squad gets all gear" on, the best their jobs can wear')
+    say(player, '!squad autoequip now [slot]   - put the best gear on once, right now, and keep choosing by hand')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
     say(player, '!squad blu <slot> [set | unset <spell>] | auto   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
@@ -2304,6 +2304,46 @@ function squadOutfitFix(outfit)
     return outfit, #dropped > 0
 end
 
+-- (2026-11-22, the user: with the launcher's "Squad gets all gear" on, auto-equip did nothing, because it only looked
+-- at gear that was given) With that switch on every piece counts as given, so auto-equip chooses from everything the
+-- job can wear at its level: GetSquadGearPool (squad.cpp) hands over all of it at once, read once per job while the
+-- server runs. From that pool a piece is only put on when it adds something for the job: a costume, a fishing rod or
+-- a linkshell pearl is "wearable" too. Never put on by itself: the game masters' Judge's set, which every job can
+-- wear at level 1 (it stays in the gear picker), a thing with damage but no weapon skill (the Soulgauger), a bow, gun
+-- or throwing weapon (and its ammunition) for a job with no skill in it (a Black Mage with a bow), and a piece made
+-- for another race (the game's own rule, CItemEquipment::isEquippableByRace). Gear you gave is chosen as before, and
+-- wins a tie.
+SQUAD_GEAR_POOL = SQUAD_GEAR_POOL or {}
+function squadAutoSkips(name)
+    return type(name) == 'string' and name:lower():find('^judges_') ~= nil
+end
+
+function squadAutoPoolFits(info, race, job)
+    local skill = info.skill or 0
+    if squadAutoSkips(info.name) or ((info.dmg or 0) > 0 and skill == 0) then
+        return false
+    end
+
+    if skill >= 25 and skill <= 27 then
+        local ranks = type(SQUAD_GEAR_SCORE) == 'table' and type(SQUAD_GEAR_SCORE.ranks) == 'table' and SQUAD_GEAR_SCORE.ranks[job] or nil
+        if ranks == nil or ranks[skill] == nil then
+            return false
+        end
+    end
+
+    local only = type(info.mods) == 'table' and xi.mod and info.mods[xi.mod.EQUIPMENT_ONLY_RACE] or 0
+    return not (only > 0 and math.floor(only / 2 ^ (race - 1)) % 2 == 0)
+end
+
+function squadGearPool(job)
+    if SQUAD_GEAR_POOL[job] == nil and type(GetSquadGearPool) == 'function' then
+        local ok, pool = pcall(GetSquadGearPool, job, 99)
+        SQUAD_GEAR_POOL[job] = ok and type(pool) == 'table' and pool or false
+    end
+
+    return SQUAD_GEAR_POOL[job] or nil
+end
+
 function squadAutoEquip(player, mate)
     local job, lvl = mate.mjob, levelsFor(mate)
     -- (2026-11-22, lilibun: a Warrior in a Silver Hairpin, the highest-level piece it could wear) every piece is rated
@@ -2313,7 +2353,8 @@ function squadAutoEquip(player, mate)
     local rate = type(SQUAD_GEAR_SCORE) == 'table' and SQUAD_GEAR_SCORE.rate or nil
     SQUAD_ITEM_INFO = SQUAD_ITEM_INFO or {} -- (what an item is does not change while the server runs)
     local cand, scored = {}, rate ~= nil
-    for itemId in pairs(GetSquadUnlocks(player:getID()) or {}) do
+    local given = GetSquadUnlocks(player:getID()) or {}
+    for itemId in pairs(given) do
         local info = SQUAD_ITEM_INFO[itemId]
         if info == nil then
             info = GetSquadItemInfo(itemId)
@@ -2328,7 +2369,21 @@ function squadAutoEquip(player, mate)
                 scored = score ~= nil
             end
 
-            cand[#cand + 1] = { id = itemId, info = info, score = score }
+            cand[#cand + 1] = { id = itemId, info = info, score = score, given = true }
+        end
+    end
+
+    -- "Squad gets all gear": the rest of what the job can wear, only the pieces that add something for it
+    local pool = scored and squadAllGear() and squadGearPool(job) or nil
+    if pool then
+        local race = (mate.race or 0) > 0 and mate.race or 1 -- (a mate with no race chosen is a Hume male)
+        for itemId, info in pairs(pool) do
+            if not given[itemId] and info.valid and info.level <= lvl and squadAutoPoolFits(info, race, job) then
+                local ok, value = pcall(rate, info, job, lvl)
+                if ok and type(value) == 'number' and value > (info.level or 0) * 0.005 + 0.0001 then
+                    cand[#cand + 1] = { id = itemId, info = info, score = value }
+                end
+            end
         end
     end
 
@@ -2341,7 +2396,15 @@ function squadAutoEquip(player, mate)
             return a.score > b.score
         end
 
-        return a.info.level > b.info.level or (a.info.level == b.info.level and a.id < b.id)
+        if (a.given == true) ~= (b.given == true) then
+            return a.given == true -- (as good as each other: the piece you gave)
+        end
+
+        if a.info.level ~= b.info.level then
+            return a.info.level > b.info.level
+        end
+
+        return a.id < b.id
     end)
 
     local used, pick = {}, {}
@@ -4167,6 +4230,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
     if action == 'autoequip' or action == 'auto' then
         local wanted = string.lower(arg1 or '')
+        -- (2026-11-22) with "Squad gets all gear" on the choice is from everything their jobs can wear, and the lines say so
+        local allGear = squadAllGear()
+        local fromWhat = allGear and 'the best gear their jobs and levels can wear ("Squad gets all gear" is on)' or 'the best gear you have given them'
+        local noPool = allGear and type(GetSquadGearPool) ~= 'function'
+            and ' This server build cannot list all gear yet (update or rebuild it), so only the gear you gave was looked at.' or ''
         if wanted == 'on' or wanted == '1' then
             player:setCharVar('SQUAD_AUTOEQUIP', 1)
             local total = 0
@@ -4175,7 +4243,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 total = total + ((ok and n) or 0)
             end
 
-            say(player, string.format('Auto-equip is on: your squad wears the best gear you have given them (%d piece(s) changed), and picks again each time they are called. Apply now (or dismiss and call) to see it. !squad autoequip off to choose by hand.', total))
+            say(player, string.format('Auto-equip is on: your squad wears %s (%d piece(s) changed), and picks again each time they are called. Apply now (or dismiss and call) to see it. !squad autoequip off to choose by hand.%s', fromWhat, total, noPool))
         elseif wanted == 'off' or wanted == '0' then
             player:setCharVar('SQUAD_AUTOEQUIP', 0)
             say(player, 'Auto-equip is off: your squad keeps what it wears now, and you choose gear by hand.')
@@ -4195,11 +4263,12 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             if mates == 0 then
                 say(player, string.format('You have no squad mate in slot %s.', tostring(arg2)))
             else
-                say(player, string.format('Best gear put on %s: %d piece(s) changed. Apply now (or dismiss and call) to see it. Auto-equip stays %s.',
-                    only and ('slot ' .. only) or 'every mate', total, player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off, so you can still change any piece by hand'))
+                say(player, string.format('Best gear put on %s%s: %d piece(s) changed. Apply now (or dismiss and call) to see it. Auto-equip stays %s.%s',
+                    only and ('slot ' .. only) or 'every mate', allGear and ', from everything their jobs can wear' or '', total,
+                    player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off, so you can still change any piece by hand', noPool))
             end
         else
-            say(player, '!squad autoequip on | off | now [slot]   - mates wear the best given gear for their job and level (now = once, right away). Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
+            say(player, '!squad autoequip on | off | now [slot]   - mates wear ' .. (allGear and 'the best gear their job and level can wear' or 'the best given gear for their job and level') .. ' (now = once, right away). Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
         end
 
         return

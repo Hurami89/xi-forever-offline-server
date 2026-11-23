@@ -1117,6 +1117,72 @@ auto getSquadGearChoices(const uint32 equipSlot, const uint32 job, const uint32 
     return list;
 }
 
+// (2026-11-22, the user: with "Squad gets all gear" on, auto-equip did nothing: it only looked at gear that was given)
+// Everything a job can wear up to a level, with what getSquadItemInfo tells about each piece, in three queries instead
+// of three per piece: pool[itemId] = { valid, name, level, jobs, slot, shield, skill, dmg, delay, mods = { [modId] = value } }.
+// squad.lua (squadGearPool) asks once per job and keeps the answer while the server runs.
+auto getSquadGearPool(const uint32 job, const uint32 level) -> sol::table
+{
+    auto pool = ::lua.create_table();
+    if (job < 1 || job > 22)
+    {
+        return pool;
+    }
+
+    const uint32                 jobBit = 1u << (job - 1);
+    std::map<uint32, sol::table> pieces;
+
+    const auto rset = db::preparedStmt("SELECT itemId, name, level, jobs, slot, shieldSize FROM item_equipment "
+                                       "WHERE (jobs & ?) <> 0 AND level <= ? AND ilevel = 0",
+                                       jobBit, level);
+    FOR_DB_MULTIPLE_RESULTS(rset)
+    {
+        const auto itemId = rset->get<uint32>("itemId");
+        auto       info   = ::lua.create_table();
+        info["valid"]     = true;
+        info["name"]      = rset->get<std::string>("name");
+        info["level"]     = rset->get<uint8>("level");
+        info["jobs"]      = rset->get<uint32>("jobs");
+        info["slot"]      = rset->get<uint32>("slot");
+        info["shield"]    = rset->get<uint8>("shieldSize");
+        info["skill"]     = 0;
+        info["dmg"]       = 0;
+        info["delay"]     = 0;
+        info["mods"]      = ::lua.create_table();
+        pieces.emplace(itemId, info);
+        pool[itemId] = info;
+    }
+
+    const auto rsetW = db::preparedStmt("SELECT w.itemId, w.skill, w.dmg, w.delay FROM item_weapon w "
+                                        "JOIN item_equipment e ON e.itemId = w.itemId "
+                                        "WHERE (e.jobs & ?) <> 0 AND e.level <= ? AND e.ilevel = 0",
+                                        jobBit, level);
+    FOR_DB_MULTIPLE_RESULTS(rsetW)
+    {
+        if (const auto it = pieces.find(rsetW->get<uint32>("itemId")); it != pieces.end())
+        {
+            it->second["skill"] = rsetW->get<uint8>("skill");
+            it->second["dmg"]   = rsetW->get<uint32>("dmg");
+            it->second["delay"] = rsetW->get<int32>("delay");
+        }
+    }
+
+    const auto rsetM = db::preparedStmt("SELECT m.itemId, m.modId, m.value FROM item_mods m "
+                                        "JOIN item_equipment e ON e.itemId = m.itemId "
+                                        "WHERE (e.jobs & ?) <> 0 AND e.level <= ? AND e.ilevel = 0",
+                                        jobBit, level);
+    FOR_DB_MULTIPLE_RESULTS(rsetM)
+    {
+        if (const auto it = pieces.find(rsetM->get<uint32>("itemId")); it != pieces.end())
+        {
+            sol::table mods                   = it->second["mods"];
+            mods[rsetM->get<uint16>("modId")] = rsetM->get<int16>("value");
+        }
+    }
+
+    return pool;
+}
+
 // Basic level 1 gear a job can wear: main hand, head, body, hands, legs and feet.
 // For each slot we take the lowest-numbered plain (no script, no item level) level 1 item that the job can equip.
 auto buildStarterGear(const uint32 job) -> sol::table
@@ -2153,6 +2219,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("FindSquadItem", findSquadItem);
         ::lua.set_function("GetSquadItemInfo", getSquadItemInfo);
         ::lua.set_function("GetSquadGearChoices", getSquadGearChoices); // "Squad gets all gear" in the gear picker
+        ::lua.set_function("GetSquadGearPool", getSquadGearPool);       // ...and for auto-equip: everything a job can wear
         ::lua.set_function("SquadScrollSpell", squadScrollSpell);
         ::lua.set_function("SquadBlueSpellsOf", squadBlueSpellsOf);
         ::lua.set_function("SquadKnownBlue", squadKnownBlue);
