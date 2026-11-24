@@ -522,6 +522,17 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
 
     pcall(H.wearTitle, player, mode)
 
+    -- (2026-11-24) a mode character never keeps the new-player "?": the game shows your own "?" from your saved
+    -- settings, not from the status, so it covered the shield on characters that became hardcore or Randomized
+    -- before this fix (Nyurami, Kandra). Turned off for good at log in; it shows from the next zone or log in.
+    if mode ~= 0 then
+        pcall(function()
+            if player:getNewPlayer() then
+                player:setNewPlayer(false)
+            end
+        end)
+    end
+
     -- a world that only takes hardcore visitors
     if mode == 0 and H.hardcoreOnly and xi.coop and xi.coop.isGuest and xi.coop.isGuest(player) then
         tell(player, 'This world only takes hardcore and Randomized visitors (Iron, Steel, Silver and Randomized characters). Taking you home...')
