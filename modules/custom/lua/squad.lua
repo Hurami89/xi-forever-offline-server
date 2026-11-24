@@ -3683,6 +3683,18 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             say(player, string.format('squadpanel:%d|%s|%s|%d|%s|%d|%s|%s|%d|%d', mate.slot, mate.name, jobNames[mate.mjob] or '???', main,
                 sub ~= 0 and jobNames[sub] or '-', subLevel, role, mode, isSummoned(player, mate.id) and 1 or 0,
                 switchesOf(player, mate.id)))
+            -- (2026-11-23, Dugahst) jl|<slot>|<JOB>:<level>,...: each job's own level, for the Job and Sub lists
+            -- (servermenu 1.26m shows "WHM (34)"); an older menu ignores the line
+            local levels = {}
+            for job, info in pairs(mate.jobs or {}) do
+                if jobNames[job] and info and (info.level or 0) > 0 then
+                    levels[#levels + 1] = string.format('%s:%d', jobNames[job], info.level)
+                end
+            end
+            if #levels > 0 then
+                table.sort(levels)
+                say(player, string.format('squadpanel:jl|%d|%s', mate.slot, table.concat(levels, ',')))
+            end
         end
 
         -- the menu's Camp row (servermenu 1.6): camp|<on>|<puller slot, 0 = you>|<paused>|<pulls>
