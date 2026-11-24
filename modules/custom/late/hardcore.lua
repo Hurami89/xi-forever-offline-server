@@ -670,6 +670,71 @@ local function giveJob(player, job, first)
     applyJobs(player)
 end
 
+-- The starting set (2026-11-23, the user): a new Randomized character arrives dressed in random level 1 gear its job
+-- can wear (HardcoreStarterPool: auction house items only), one piece in each slot that has any, equipped, plus
+-- 10,000 gil. Once ([HC]Kit), and only while the character is still level 1. Ranged and ammo stay empty (a bow
+-- needs the right arrows). When the game's creation screen made it, the kit waits until Fate has changed its looks.
+local VAR_KIT     = '[HC]Kit'
+local KIT_GIL     = 10000
+local KIT_SLOTS   = { 0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } -- main, sub, head .. back (the game's slot numbers)
+
+H.starterGear = function(player, job)
+    if type(HardcoreStarterPool) ~= 'function' then
+        return {}
+    end
+
+    local pool = HardcoreStarterPool(job, player:getRace())
+    local used, given = {}, {}
+    local main
+    for _, slot in ipairs(KIT_SLOTS) do
+        local skip = slot == 1 and main ~= nil and pool.twoHanded and pool.twoHanded[main]
+        local list = pool[slot]
+        if not skip and type(list) == 'table' then
+            local choices = {}
+            for _, id in ipairs(list) do
+                if not used[id] then
+                    choices[#choices + 1] = id
+                end
+            end
+
+            if #choices > 0 then
+                local id = choices[math.random(#choices)]
+                used[id] = true
+                if player:addItem(id) then
+                    player:equipItem(id, nil, slot)
+                    given[#given + 1] = id
+                    if slot == 0 then
+                        main = id
+                    end
+                end
+            end
+        end
+    end
+
+    return given
+end
+
+local function starterKit(player)
+    if player:getCharVar(VAR_KIT) ~= 0 then
+        return
+    end
+
+    local rolled = player:getCharVar(VAR_JOBS)
+    for job = 1, ERA_JOBS do
+        if hasBit(rolled, job) and player:getJobLevel(job) > 1 then
+            player:setCharVar(VAR_KIT, 1)             -- an older Randomized character: no kit
+            return
+        end
+    end
+
+    player:setCharVar(VAR_KIT, 1)
+    local ok, given = pcall(H.starterGear, player, player:getMainJob())
+    player:addGil(KIT_GIL)
+    local pieces = ok and #given or 0
+    tell(player, string.format('Fate dressed you for the road: %d piece%s of gear, and %d gil in your pocket.',
+        pieces, pieces == 1 and '' or 's', KIT_GIL))
+end
+
 H.randomLogin = function(player)
     if player:getCharVar(VAR_JOBS) == 0 then
         local job = rollJob(0)
@@ -691,7 +756,10 @@ H.randomLogin = function(player)
                 entity:setCharVar(VAR_LOOKS, 0)       -- try again next time
             end
         end)
+        return                                        -- the starting set comes when it arrives with its new looks
     end
+
+    starterKit(player)
 end
 
 H.randomGrants = function(player)

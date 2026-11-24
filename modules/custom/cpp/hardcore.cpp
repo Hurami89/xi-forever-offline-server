@@ -44,6 +44,8 @@
 #include "map/packets/s2c/0x061_clistatus.h"
 #include "map/packets/s2c/0x01b_job_info.h"
 #include "map/entities/mob_entity.h"
+#include "map/items/item_equipment.h"
+#include "map/items/item_weapon.h"
 #include "map/utils/itemutils.h"
 #include "map/zone.h"
 #include "map/party.h"
@@ -51,6 +53,7 @@
 #include "map/utils/hardcoreutils.h"
 #include "map/utils/zoneutils.h"
 
+#include <array>
 #include <cstring>
 #include <set>
 #include <string>
@@ -282,6 +285,76 @@ class HardcoreModule : public CPPModule
                                                                             });
                                                       });
                                return toTable(ids);
+                           });
+
+        // Randomized (2026-11-23): the level 1 gear a new character of this job and race can wear, by equipment slot
+        // (0 main .. 15 back, the game's slot numbers), for its random starting set. Only items sold on the auction house
+        // (no event, GM or reward pieces) and no item level. "twoHanded" lists main-hand weapons that leave no room
+        // for a shield (two-handed and hand-to-hand); "shields" are the sub-slot items that are shields.
+        ::lua.set_function("HardcoreStarterPool", [](uint8 job, uint8 race) -> sol::table
+                           {
+                               auto result    = ::lua.create_table();
+                               auto twoHanded = ::lua.create_table();
+                               auto shields   = ::lua.create_table();
+                               std::array<int, 16> count{};
+                               std::array<sol::table, 16> slots;
+                               for (uint8 slot = 0; slot < 16; ++slot)
+                               {
+                                   slots[slot] = ::lua.create_table();
+                                   result[slot] = slots[slot];
+                               }
+
+                               if (job < 1 || job > 22)
+                               {
+                                   return result;
+                               }
+
+                               for (uint32 id = 1; id < MAX_ITEMID; ++id)
+                               {
+                                   const auto* PItem = xi::items::lookup<CItemEquipment>(static_cast<uint16>(id));
+                                   if (PItem == nullptr || PItem->getReqLvl() > 1 || PItem->getILvl() > 0 ||
+                                       !(PItem->getJobs() & (1U << (job - 1))) || !PItem->isEquippableByRace(race))
+                                   {
+                                       continue;
+                                   }
+
+                                   const uint8 cat = PItem->getAHCat();
+                                   if (cat == 0 || cat >= 99)
+                                   {
+                                       continue;
+                                   }
+
+                                   const uint16 mask = PItem->getEquipSlotId();
+                                   for (uint8 slot = 0; slot < 16; ++slot)
+                                   {
+                                       if (mask & (1U << slot))
+                                       {
+                                           if (slot == 1 && !PItem->IsShield())
+                                           {
+                                               continue; // a second weapon or a grip needs more than level 1 brings
+                                           }
+
+                                           slots[slot][++count[slot]] = static_cast<uint16>(id);
+                                           if (slot == 1)
+                                           {
+                                               shields[static_cast<uint16>(id)] = true;
+                                           }
+                                       }
+                                   }
+
+                                   if (mask & 1U)
+                                   {
+                                       if (const auto* PWeapon = dynamic_cast<const CItemWeapon*>(PItem);
+                                           PWeapon != nullptr && (PWeapon->isTwoHanded() || PWeapon->isHandToHand()))
+                                       {
+                                           twoHanded[static_cast<uint16>(id)] = true;
+                                       }
+                                   }
+                               }
+
+                               result["twoHanded"] = twoHanded;
+                               result["shields"]   = shields;
+                               return result;
                            });
 
         ShowInfo("[hardcore] hardcore modes loaded (Iron / Steel / Silver / Randomized)");

@@ -7,6 +7,12 @@ HardcoreSetJobs = function(id, mask) masks[id] = mask; players[id].unlocked = ma
 HardcoreCanSwap = function(id) return id >= 1000 and id < 2000 end
 HardcoreLootPool = function(zone) return { 1001, 1002, 1003 } end
 HardcoreNMPool = function() return { 1900, 1901 } end
+HardcoreStarterPool = function(job, race)
+    local t = { twoHanded = { [16001] = true }, shields = { [12001] = true } }
+    for slot = 0, 15 do t[slot] = {} end
+    t[0] = { 16001 }; t[1] = { 12001 }; t[4] = { 12400 }; t[5] = { 12500 }; t[13] = { 13500, 13501 }; t[14] = { 13500, 13501 }
+    return t
+end
 dofile('hardcore.lua')
 applyAll()
 local H = xi.hardcore
@@ -21,9 +27,23 @@ function r:raceChange(a, b, c) self.race = { a, b, c }; return true end
 function r:addSpell() self.carb = true end
 function r:setPetName() end
 function r:unlockAttachment() end
+r.bag, r.worn, r.gil = {}, {}, 0
+function r:getRace() return 3 end
+function r:addItem(id) r.bag[#r.bag + 1] = id; return true end
+function r:equipItem(id, c, slot) r.worn[slot] = id end
+function r:addGil(g) r.gil = r.gil + g end
 xi.player.onGameIn(r, true, false)
 check(H.mode(r) == 4, 'pending Randomized applied')
 runTimers(); runTimers()
+check(r.gil == 0 and #r.bag == 0, 'no kit before Fate has changed the looks')
+xi.player.onGameIn(r, false, true); runTimers()
+check(r.gil == 10000, 'the starting 10,000 gil')
+check(r.worn[0] == 16001 and r.worn[1] == nil, 'a two-handed weapon: no shield')
+check(r.worn[4] == 12400 and r.worn[5] == 12500, 'head and body filled')
+check(r.worn[13] and r.worn[14] and r.worn[13] ~= r.worn[14], 'two different rings')
+check(r.worn[2] == nil and r.worn[3] == nil, 'ranged and ammo left empty')
+xi.player.onGameIn(r, false, true); runTimers()
+check(r.gil == 10000 and #r.bag == 5, 'the kit comes once')
 local rolled = r:getCharVar('[HC]Jobs')
 check(rolled ~= 0 and r.mjob >= 1 and r.mjob <= 18 and bit.band(rolled, bit.lshift(1, r.mjob)) ~= 0, 'one era job rolled and set as main: ' .. r.mjob)
 check(r.unlocked == rolled, 'only the rolled job is open to the character (mask ' .. r.unlocked .. ')')
