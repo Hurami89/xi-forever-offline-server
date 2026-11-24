@@ -2641,6 +2641,14 @@ local function callMate(player, mate)
         for _, wait in ipairs({ 4000, 10000 }) do
             trust:timer(wait, function(mob)
                 pcall(SquadRefreshLook, mob)
+                -- (2026-11-23, Hasuko: after zoning the mates were gone from the party list while still in the party) the
+                -- party list sent while the area was loading is lost the same way: send it again with the look
+                pcall(function()
+                    local master = mob:getMaster()
+                    if master ~= nil and master:isPC() then
+                        master:reloadParty()
+                    end
+                end)
             end)
         end
     end
@@ -5177,7 +5185,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
         player:setCharVar('SQUAD_RANGE_' .. mate.id, choice)
         say(player, string.format('%s now fights %s. Dismiss and call them again to apply it.', mate.name,
-            ({ [0] = 'at its job\'s usual distance', 'up close', 'from mid range (6 yalms)', 'from long range (12 yalms)' })[choice]))
+            ({ [0] = 'at its job\'s usual distance', 'up close', 'from mid range (15 yalms)', 'from long range (20 yalms)' })[choice]))
         return
     elseif action == 'ws' then
         -- When this mate weapon skills, and which one: !squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]
@@ -6423,8 +6431,9 @@ local function squadSpawn(mob)
     local rangeMaster = mob:getMaster()
     local rangeChoice = rangeMaster and rangeMaster:getCharVar('SQUAD_RANGE_' .. mob:getLocalVar('SQUAD_ID')) or 0
     if rangeChoice >= 1 and rangeChoice <= 3 then
-        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, ({ xi.trust.movementType.MELEE, xi.trust.movementType.MID_RANGE,
-            xi.trust.movementType.LONG_RANGE })[rangeChoice])
+        -- (2026-11-23, Jaymz: 6 and 12 yalms still ate every AoE) mid 15 and far 20 yalms: out of most area attacks,
+        -- and still inside spell and ranged attack reach (about 20 yalms) of the monster
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, ({ xi.trust.movementType.MELEE, 15, 20 })[rangeChoice])
     end
 
     -- (2026-11-20, Badtouch) a mate you set to mid or long range with a bow, gun or throwing weapon shoots with it.
