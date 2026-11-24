@@ -67,6 +67,7 @@
 #include "map/packets/entity_update.h" // MODEL_EQUIPPED (squadRefreshLook)
 #include "map/ai/controllers/trust_controller.h"
 #include "map/ai/helpers/gambits_container.h"
+#include "map/ai/helpers/squad_spell_kind.h"
 #include "map/packets/c2s/0x032_trade_req.h"
 #include "map/packets/c2s/0x0b5_chat_std.h"
 #include "map/packets/c2s/0x036_item_transfer.h"
@@ -1763,7 +1764,13 @@ auto squadCastSpell(CLuaBaseEntity* player, CLuaBaseEntity* mate, const uint16 s
 
 // Lua: SquadSpellKind(spellId) -> "enemy" | "dead" | "party" | "self" | "" (unknown spell)
 // What a spell can be cast on, read from the server's spell table with the same flags trySquadCast uses: an attack or debuff spell goes on an
-// enemy, a Raise on a fallen party member, a buff or heal on a party member, and anything else (Warp, Escape, Utsusemi, Reraise) only on its caster.
+// enemy, a Raise on a fallen party member, a buff or heal on a party member, and anything else (Warp, Utsusemi, Reraise) only on its caster.
+// (2026-11-24) A spell cast on the caster that reaches the party around it (Protectra, Shellra, the Bar-ra spells, a Teleport, a song) is
+// "party" too: the rule is in map/ai/helpers/squad_spell_kind.h.
+static_assert(squad::spellkind::TargetSelf == TARGET_SELF && squad::spellkind::TargetParty == TARGET_PLAYER_PARTY &&
+              squad::spellkind::TargetAlliance == TARGET_PLAYER_ALLIANCE && squad::spellkind::TargetDead == TARGET_PLAYER_DEAD);
+static_assert(squad::spellkind::AoeRadial == SPELLAOE_RADIAL && squad::spellkind::AoePianissimo == SPELLAOE_PIANISSIMO);
+
 auto squadSpellKind(const uint16 spellId) -> std::string
 {
     CSpell* PSpell = spell::GetSpell(static_cast<SpellID>(spellId));
@@ -1772,22 +1779,15 @@ auto squadSpellKind(const uint16 spellId) -> std::string
         return "";
     }
 
-    if (PSpell->canTargetEnemy())
-    {
-        return "enemy";
-    }
+    const squad::spellkind::Facts facts{
+        .canTargetEnemy = PSpell->canTargetEnemy(),
+        .validTargets   = PSpell->getValidTarget(),
+        .aoe            = PSpell->getAOE(),
+        .radius         = PSpell->getRadius(),
+        .song           = PSpell->getSpellGroup() == SPELLGROUP_SONG,
+    };
 
-    if ((PSpell->getValidTarget() & TARGET_PLAYER_DEAD) != 0)
-    {
-        return "dead";
-    }
-
-    if ((PSpell->getValidTarget() & (TARGET_PLAYER_PARTY | TARGET_PLAYER_ALLIANCE)) != 0)
-    {
-        return "party";
-    }
-
-    return "self";
+    return squad::spellkind::Name(squad::spellkind::Classify(facts));
 }
 
 // Lua: SquadTryAbility(player, mate, abilityId) -> result name (cast, unknown, notready, notarget, busy)
