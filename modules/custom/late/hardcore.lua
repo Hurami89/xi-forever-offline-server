@@ -36,6 +36,16 @@ local H = xi.hardcore
 H.IRON, H.STEEL, H.SILVER, H.RANDOM = 1, 2, 3, 4
 H.NAMES = { [1] = 'Iron', [2] = 'Steel', [3] = 'Silver', [4] = 'Randomized' }
 H.GIFTS = { [1] = 1, [2] = 2, [3] = 3 } -- cosmetics per milestone
+-- each mode's own title, always worn (the C++ side keeps it on: charutils::setTitle, hardcoreutils::modeTitle). The
+-- client's title list has empty slots 1078 - 1115; the launcher writes these names into the game's title file.
+H.TITLES = { [1] = 1078, [2] = 1079, [3] = 1080, [4] = 1081 }
+H.TITLE_NAMES =
+{
+    [1] = 'Forged in Solitude',
+    [2] = 'Tempered by Ruin',
+    [3] = 'Bearer of a Single Flame',
+    [4] = "Altana's Wild Card",
+}
 H.MILESTONE_STEP = 10
 H.MILESTONE_TOP = 70
 H.LOCK_DAYS = 7
@@ -355,7 +365,7 @@ local function becomeHardcore(player, mode)
         [1] = 'No auction house, bazaars, trades or deliveries from other characters. Everything you have, you earn.',
         [2] = 'No auction house, trades or teleports. When you are knocked out, the job you are on goes back to level 1.',
         [3] = 'No auction house, trades or teleports. When you are knocked out, this character is gone. For good.',
-        [4] = 'Fate picks your looks and your jobs; every drop is a surprise. Your squad can still learn any job.',
+        [4] = 'Fate picks your looks and your jobs; every drop, chest and casket is a surprise. Your squad can still learn any job. Your auction house is your own: its stock changes every 6 hours and its prices swing up to 20% more.',
     }
     if mode == H.RANDOM then
         tell(player, 'You are now a Randomized character. ' .. rules[mode])
@@ -367,6 +377,8 @@ local function becomeHardcore(player, mode)
     if mode ~= H.RANDOM then                     -- (a Randomized start is told once its job is rolled)
         writeOut('start', player, mode, player:getMainJob(), 1, '')
     end
+    pcall(H.wearTitle, player, mode)
+    tell(player, string.format('Your title is now "%s". It stays on as long as you play this mode.', H.TITLE_NAMES[mode]))
     print(string.format('[hardcore] %s is now %s', player:getName(), H.modeName(mode)))
 end
 
@@ -466,6 +478,19 @@ local function watchReset(player, tries)
     end)
 end
 
+-- the mode's title goes on (and comes off a character that stepped down to a regular one)
+H.wearTitle = function(player, mode)
+    local want = H.TITLES[mode]
+    local now  = player:getTitle()
+    if want ~= nil then
+        if now ~= want then
+            player:setTitle(want)
+        end
+    elseif now >= H.TITLES[1] and now <= H.TITLES[4] then
+        player:setTitle(0)
+    end
+end
+
 m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     local result = super(player, firstLogin, zoning)
     if isBot(player) then
@@ -485,6 +510,8 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
             end
         end
     end
+
+    pcall(H.wearTitle, player, mode)
 
     -- a world that only takes hardcore visitors
     if mode == 0 and H.hardcoreOnly and xi.coop and xi.coop.isGuest and xi.coop.isGuest(player) then
@@ -710,6 +737,11 @@ end)
 
 local lootPools, nmPool = {}, nil
 
+local function zonePool(zone)
+    lootPools[zone] = lootPools[zone] or HardcoreLootPool(zone)
+    return lootPools[zone]
+end
+
 H.randomLoot = function(player, mob, itemId)
     if type(HardcoreCanSwap) ~= 'function' or not HardcoreCanSwap(itemId) then
         return itemId
@@ -720,16 +752,19 @@ H.randomLoot = function(player, mob, itemId)
         nmPool = nmPool or HardcoreNMPool()
         pool = nmPool
     else
-        local zone = mob:getZoneID()
-        lootPools[zone] = lootPools[zone] or HardcoreLootPool(zone)
-        pool = lootPools[zone]
+        pool = zonePool(mob:getZoneID())
     end
 
+    return H.pickFrom(pool, itemId)
+end
+
+-- something else from the pool than what it was, most of the time
+H.pickFrom = function(pool, itemId)
     if pool == nil or #pool < 2 then
         return itemId
     end
 
-    for _ = 1, 4 do                             -- something else than what it was, most of the time
+    for _ = 1, 4 do
         local pick = pool[math.random(#pool)]
         if pick ~= itemId then
             return pick
@@ -738,6 +773,125 @@ H.randomLoot = function(player, mob, itemId)
 
     return itemId
 end
+
+-- A battlefield's pool: what every battlefield with the same level cap can give (their own loot tables), so a
+-- level 20 fight gives level 20 fight things and an uncapped one gives uncapped ones.
+local bcPools = {}
+
+H.battlefieldPool = function(battlefieldId)
+    local contents = xi.battlefield and xi.battlefield.contents or {}
+    local content  = contents[battlefieldId]
+    if content == nil then
+        return nil
+    end
+
+    local cap = content.levelCap or 0
+    if bcPools[cap] then
+        return bcPools[cap]
+    end
+
+    local ids, have = {}, {}
+    for _, other in pairs(contents) do
+        if (other.levelCap or 0) == cap and type(other.loot) == 'table' then
+            for _, group in ipairs(other.loot) do
+                if type(group) == 'table' then
+                    for _, entry in ipairs(group) do
+                        local id = type(entry) == 'table' and entry.itemId or nil
+                        if id and id ~= xi.item.GIL and not have[id] and HardcoreCanSwap(id) then
+                            have[id] = true
+                            ids[#ids + 1] = id
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    bcPools[cap] = ids
+    return ids
+end
+
+-- Randomized: what comes out of a treasure chest or coffer, or a battlefield's crate (the C++ addTreasure asks).
+-- In a battlefield: the pool of battlefields with its level cap; elsewhere: the area's own drop pool.
+H.randomTreasure = function(player, dropper, itemId)
+    if type(HardcoreCanSwap) ~= 'function' or not HardcoreCanSwap(itemId) then
+        return itemId
+    end
+
+    local pool
+    local battlefield = player:getBattlefield()
+    if battlefield then
+        pool = H.battlefieldPool(battlefield:getID())
+    end
+
+    if pool == nil or #pool < 2 then
+        pool = zonePool(player:getZoneID())
+    end
+
+    if pool == nil or #pool < 2 then
+        nmPool = nmPool or HardcoreNMPool()
+        pool = nmPool
+    end
+
+    return H.pickFrom(pool, itemId)
+end
+
+-- Randomized: the casket a Randomized character's kill leaves (casket_tweaks.lua fills it when it appears) holds
+-- random items of the area's pool, each a different one
+H.randomCasket = function(player, items)
+    if H.mode(player) ~= H.RANDOM or type(HardcoreCanSwap) ~= 'function' then
+        return items
+    end
+
+    local pool, out, used = zonePool(player:getZoneID()), {}, {}
+    for slot = 1, 4 do
+        local id = items[slot] or 0
+        if id > 0 and HardcoreCanSwap(id) then
+            for _ = 1, 6 do
+                local pick = H.pickFrom(pool, id)
+                if not used[pick] then
+                    id = pick
+                    break
+                end
+            end
+        end
+
+        used[id] = true
+        out[slot] = id
+    end
+
+    return out
+end
+
+-- The same for the game's own caskets, when casket_tweaks.lua is not loaded. The casket rolls its items the
+-- first time it is opened, with xi.itemUtils.pickItemRandom; for a Randomized opener each roll is swapped for an
+-- item of the area's pool before the casket shows them, so what you see is what you get.
+m:addOverride('xi.caskets.onTrigger', function(player, npc)
+    if H.mode(player) ~= H.RANDOM or npc:getLocalVar('[caskets]ITEMS_SET') == 1 or
+        type(xi.itemUtils) ~= 'table' or type(xi.itemUtils.pickItemRandom) ~= 'function'
+    then
+        return super(player, npc)
+    end
+
+    local original = xi.itemUtils.pickItemRandom
+    local pool     = zonePool(player:getZoneID())
+    xi.itemUtils.pickItemRandom = function(...)
+        local id = original(...)
+        if type(id) == 'number' and id > 0 and HardcoreCanSwap(id) then
+            return H.pickFrom(pool, id)
+        end
+
+        return id
+    end
+
+    local ok, result = pcall(super, player, npc)
+    xi.itemUtils.pickItemRandom = original
+    if not ok then
+        error(result)
+    end
+
+    return result
+end)
 
 -----------------------------------
 -- deaths

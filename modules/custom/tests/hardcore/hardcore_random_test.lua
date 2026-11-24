@@ -54,4 +54,28 @@ local n = H.randomLoot(r, nm, 1500); check(n == 1900 or n == 1901, 'an NM drop c
 r.dead = true; xi.player.onPlayerDeath(r); r.dead = false
 check(r:getCharVar('[HC]Dead') == 0 and r:getCharVar('[HC]Reset') == 0, 'a Randomized death is a normal death')
 check(H.noFastTravel(r) == false, 'Randomized keeps teleports')
+-- titles: the mode's own, on from the start; a character without a mode loses one
+check(r:getTitle() == 1081, "Randomized wears Altana's Wild Card (1081)")
+local plain = newPlayer(60, 'Plainjane'); plain.title = 1079; xi.player.onGameIn(plain, false, false)
+check(plain:getTitle() == 0, 'a character that stepped down loses the mode title')
+-- chests and battlefield crates
+xi.item.GIL = 65535
+xi.battlefield = { contents = {
+    [10] = { levelCap = 20, loot = { { { itemId = 1101 }, { itemId = 1102 }, { itemId = xi.item.GIL }, quantity = 2 }, { { itemId = 4096 } } } },
+    [11] = { levelCap = 20, loot = { { { itemId = 1103 } } } },
+    [12] = { levelCap = 50, loot = { { { itemId = 1500 }, { itemId = 1501 } } } } } }
+local pool20 = H.battlefieldPool(10)
+check(#pool20 == 3, 'battlefield pool: the level 20 fights\' items, no gil or crystals (' .. #pool20 .. ')')
+r.battlefield = { getID = function() return 11 end }
+local bc = H.randomTreasure(r, nil, 1101)
+check(bc == 1102 or bc == 1103, 'a level 20 crate gives another level 20 crate item: ' .. bc)
+check(H.randomTreasure(r, nil, 4096) == 4096, 'a crystal in a crate stays')
+r.battlefield = nil
+local chest = H.randomTreasure(r, nil, 1001)
+check(chest == 1002 or chest == 1003, 'a chest gives an item of the area pool')
+-- caskets (casket_tweaks.lua asks)
+local items = H.randomCasket(r, { 1001, 1002, 0, 0 })
+check(items[1] ~= 0 and items[2] ~= 0 and items[1] ~= items[2] and items[3] == 0, 'casket: two different area items, empty slots stay empty')
+local same = H.randomCasket(plain, { 1001, 0, 0, 0 })
+check(same[1] == 1001, 'a regular casket is left alone')
 print('RANDOM PASSED')

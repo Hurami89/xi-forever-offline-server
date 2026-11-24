@@ -4255,6 +4255,21 @@ auto delTitle(CCharEntity* PChar, uint16 Title) -> int32
 
 void setTitle(CCharEntity* PChar, uint16 Title)
 {
+    // (XI: Forever Offline, 2026-11-23) Iron, Steel, Silver and Randomized characters always wear their mode's title
+    // (hardcoreutils::modeTitle). Any other title they earn is still added to their list; it just doesn't go on.
+    // A mode's title never goes on a character without that mode.
+    const uint16 locked = hardcoreutils::modeTitle(hardcoreutils::mode(PChar));
+    if ((locked != 0 && Title != locked) || (locked == 0 && hardcoreutils::isModeTitle(Title)))
+    {
+        if (!hardcoreutils::isModeTitle(Title))
+        {
+            addTitle(PChar, Title);
+            SaveTitles(PChar);
+        }
+
+        return;
+    }
+
     PChar->profile.title = Title;
     PChar->pushPacket<GP_SERV_COMMAND_CLISTATUS>(PChar);
 

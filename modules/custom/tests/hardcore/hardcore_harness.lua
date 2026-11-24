@@ -16,7 +16,7 @@ package.preload['modules/module_utils'] = function() return true end
 npcUtil = { giveReward = function(p) return xi.settings.main.GIL_RATE end, completeQuest = function(p) return xi.settings.main.GIL_RATE end,
   completeMission = function(p) return xi.settings.main.GIL_RATE end }
 xi.regime = { checkRegime = function(p) return xi.settings.main.TABS_RATE end }
-xi.caskets = { spawnCasket = function(p) return 0 end }
+xi.caskets = { spawnCasket = function(p) return 0 end, onTrigger = function(p, npc) return 'casket' end }
 xi.homepoint = { onTrigger = function(p) return xi.settings.main.HOMEPOINT_TELEPORT end, onEventUpdate = function() end, onEventFinish = function() end }
 xi.survivalGuide = { onTrigger = function(p) return xi.settings.main.ENABLE_SURVIVAL_GUIDE end, onEventUpdate = function() end, onEventFinish = function() end }
 xi.player = { onGameIn = function() return 'base' end, onPlayerDeath = function() end, onPlayerLevelUp = function() end }
@@ -46,6 +46,10 @@ function newPlayer(id, name)
   function p:leaveGame() kicked[self.id] = true end
   function p:hasItem(i) return self.items[i] end
   function p:getGMLevel() return self.gm or 0 end
+  function p:getTitle() return self.title or 0 end
+  function p:setTitle(t) self.title = t end
+  function p:getZoneID() return self.zone or 100 end
+  function p:getBattlefield() return self.battlefield end
   players[id] = p
   return p
 end
