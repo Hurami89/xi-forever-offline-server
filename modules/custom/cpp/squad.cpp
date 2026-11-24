@@ -1271,7 +1271,12 @@ bool squadRefreshLook(CLuaBaseEntity* mate)
         return false;
     }
 
-    PTrust->updatemask |= UPDATE_LOOK;
+    // (2026-11-24, Ricc: mates standing at a camp vanished a few seconds after they were called) for a renamed entity with an equipped
+    // look, the update that carries the look is always sent as position + claim + general + look (CEntityUpdatePacket::updateWith
+    // sets its flags to 0x57), but the packet only fills the parts its own mask asks for. With the look alone, a mate that stood
+    // still (nothing else pending) went out with a position of 0, 0, 0 and no HP, and the client put it there. Ask for those parts
+    // too, so what the flags announce is in the packet: the same parts the spawn packet carries.
+    PTrust->updatemask |= UPDATE_COMBAT | UPDATE_LOOK;
     return true;
 }
 
