@@ -1080,6 +1080,24 @@ void CMobEntity::DropItems(CCharEntity* PChar)
     // Adds an item to the treasure pool. Treasure pool will automatically kick out items if the pool is full (prioritizing non rare non ex items)
     auto AddItemToPool = [this, PChar](uint16 ItemID)
     {
+        // XI: Forever Offline (2026-11-23): a Randomized character's claim turns a drop into a random item that fits
+        // the area (or the NM pool); the game's own items (quest items, crystals, seals, Rare/Ex) are left alone
+        if (hardcoreutils::mode(PChar) == 4)
+        {
+            if (sol::protected_function fn = hardcoreutils::randomLootFunction(); fn.valid())
+            {
+                auto result = fn(CLuaBaseEntity(PChar), CLuaBaseEntity(this), ItemID);
+                if (result.valid())
+                {
+                    const sol::optional<uint16> swapped = result.get<sol::optional<uint16>>();
+                    if (swapped && *swapped != 0)
+                    {
+                        ItemID = *swapped;
+                    }
+                }
+            }
+        }
+
         PChar->PTreasurePool->addItem(ItemID, this);
         PAI->EventHandler.triggerListener("TREASUREPOOL", CLuaBaseEntity(this), CLuaBaseEntity(PChar), ItemID);
     };

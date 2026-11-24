@@ -573,7 +573,9 @@ xi.squad.eatNow = eatIfNeeded
 local STARTER_JOB_MAX = 6
 
 local function jobUnlocked(player, job)
-    return job <= STARTER_JOB_MAX or player:hasJob(job)
+    -- (2026-11-23, Randomized mode) a Randomized character's job quests unlock the job for its squad only (hardcore.lua)
+    return job <= STARTER_JOB_MAX or player:hasJob(job) or
+        (xi.hardcore ~= nil and xi.hardcore.squadJob ~= nil and xi.hardcore.squadJob(player, job) == true)
 end
 
 local function lockedMessage(player, job)

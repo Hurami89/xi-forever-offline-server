@@ -14,6 +14,12 @@
 //
 //   Lua:
 //     HardcoreResetJob(charId) -> bool   Steel: the main job back to level 1 with 0 exp (an online character)
+//     HardcoreSetJobs(charId, mask)     Randomized: the jobs the character may play (char_jobs.unlocked)
+//     HardcoreCanSwap(itemId) -> bool   Randomized: may this drop be swapped (sold on the AH, not Rare/Ex, no crystal)
+//     HardcoreLootPool(zoneId) -> {ids} Randomized: what the area's monsters (not NMs) can drop, swappable items only
+//     HardcoreNMPool() -> {ids}         Randomized: what every NM can drop, swappable items only
+//
+//   Randomized characters (mode 4) are not hardcore: none of the blocks below apply to them, and they party with anyone.
 //
 //   GMs are held to the same rules (step the character down to test without them).
 //
@@ -36,12 +42,17 @@
 #include "map/packets/c2s/0x074_group_solicit_res.h"
 #include "map/packets/s2c/0x017_chat_std.h"
 #include "map/packets/s2c/0x061_clistatus.h"
+#include "map/packets/s2c/0x01b_job_info.h"
+#include "map/entities/mob_entity.h"
+#include "map/utils/itemutils.h"
+#include "map/zone.h"
 #include "map/party.h"
 #include "map/utils/charutils.h"
 #include "map/utils/hardcoreutils.h"
 #include "map/utils/zoneutils.h"
 
 #include <cstring>
+#include <set>
 #include <string>
 
 namespace
@@ -56,6 +67,8 @@ namespace
                 return "Steel";
             case 3:
                 return "Silver";
+            case 4:
+                return "Randomized";
             default:
                 return "normal";
         }
@@ -132,6 +145,68 @@ namespace
 
         return true;
     }
+
+    // Randomized: a drop that may be swapped for another (one the auction house sells, not Rare/Ex, no crystals)
+    auto canSwap(uint16 itemId) -> bool
+    {
+        if (itemId == 0 || (itemId >= 4096 && itemId <= 4111))
+        {
+            return false;
+        }
+
+        const CItem* item = xi::items::lookup(itemId);
+        if (item == nullptr || item->hasFlag(xi::ItemFlag::Rare) || item->hasFlag(xi::ItemFlag::Exclusive))
+        {
+            return false;
+        }
+
+        const uint8 cat = item->getAHCat();
+        return cat > 0 && cat < 99;
+    }
+
+    void collect(const DropList_t* list, std::set<uint16>& out)
+    {
+        if (list == nullptr)
+        {
+            return;
+        }
+
+        for (const auto& item : list->Items)
+        {
+            if (canSwap(item.ItemID))
+            {
+                out.insert(item.ItemID);
+            }
+        }
+
+        for (const auto& group : list->Groups)
+        {
+            for (const auto& item : group.Items)
+            {
+                if (canSwap(item.ItemID))
+                {
+                    out.insert(item.ItemID);
+                }
+            }
+        }
+    }
+
+    auto isNM(const CMobEntity* PMob) -> bool
+    {
+        return (PMob->m_Type & xi::MobType::Notorious) != xi::MobType::Normal;
+    }
+
+    auto toTable(const std::set<uint16>& ids) -> sol::table
+    {
+        auto table = ::lua.create_table();
+        int  n     = 1;
+        for (const uint16 id : ids)
+        {
+            table[n++] = id;
+        }
+
+        return table;
+    }
 } // namespace
 
 class HardcoreModule : public CPPModule
@@ -157,7 +232,59 @@ class HardcoreModule : public CPPModule
                                return true;
                            });
 
-        ShowInfo("[hardcore] hardcore modes loaded (Iron / Steel / Silver)");
+        ::lua.set_function("HardcoreSetJobs", [](uint32 charId, uint32 mask) -> bool
+                           {
+                               CCharEntity* PChar = zoneutils::GetChar(charId);
+                               if (PChar == nullptr)
+                               {
+                                   return false;
+                               }
+
+                               PChar->jobs.unlocked = mask;
+                               charutils::SaveCharJob(PChar, PChar->GetMJob());
+                               PChar->pushPacket<GP_SERV_COMMAND_JOB_INFO>(PChar);
+                               return true;
+                           });
+
+        ::lua.set_function("HardcoreCanSwap", [](uint16 itemId) -> bool
+                           {
+                               return canSwap(itemId);
+                           });
+
+        ::lua.set_function("HardcoreLootPool", [](uint16 zoneId) -> sol::table
+                           {
+                               std::set<uint16> ids;
+                               if (CZone* PZone = zoneutils::GetZone(static_cast<xi::ZoneId>(zoneId)))
+                               {
+                                   PZone->ForEachMob([&](CMobEntity* PMob)
+                                                     {
+                                                         if (PMob != nullptr && !isNM(PMob))
+                                                         {
+                                                             collect(PMob->dropList(), ids);
+                                                         }
+                                                     });
+                               }
+
+                               return toTable(ids);
+                           });
+
+        ::lua.set_function("HardcoreNMPool", []() -> sol::table
+                           {
+                               std::set<uint16> ids;
+                               zoneutils::ForEachZone([&](CZone* PZone)
+                                                      {
+                                                          PZone->ForEachMob([&](CMobEntity* PMob)
+                                                                            {
+                                                                                if (PMob != nullptr && isNM(PMob))
+                                                                                {
+                                                                                    collect(PMob->dropList(), ids);
+                                                                                }
+                                                                            });
+                                                      });
+                               return toTable(ids);
+                           });
+
+        ShowInfo("[hardcore] hardcore modes loaded (Iron / Steel / Silver / Randomized)");
     }
 
     auto OnIncomingPacket(MapSession* session, CCharEntity* PChar, CBasicPacket& packet) -> bool override
@@ -171,7 +298,7 @@ class HardcoreModule : public CPPModule
         const int32  mine = hardcoreutils::mode(PChar);
 
         // auction house
-        if (type == 0x04E && mine > 0)
+        if (type == 0x04E && hardcoreutils::isHardcore(mine))
         {
             const auto* auc = packet.as<GP_CLI_COMMAND_AUC>();
             if (auc->Command == GP_CLI_COMMAND_AUC_COMMAND::AskCommit || auc->Command == GP_CLI_COMMAND_AUC_COMMAND::LotIn ||
@@ -185,7 +312,7 @@ class HardcoreModule : public CPPModule
         }
 
         // buying from a bazaar
-        if (type == 0x106 && mine > 0)
+        if (type == 0x106 && hardcoreutils::isHardcore(mine))
         {
             tell(PChar, fmt::format("{} characters can't buy from bazaars.", modeName(mine)));
             return true;
@@ -196,9 +323,9 @@ class HardcoreModule : public CPPModule
         {
             const auto* req     = packet.as<GP_CLI_COMMAND_TRADE_REQ>();
             const int32 theirs  = modeById(req->UniqueNo);
-            if (mine > 0 || theirs > 0)
+            if (hardcoreutils::isHardcore(mine) || hardcoreutils::isHardcore(theirs))
             {
-                tell(PChar, mine > 0 ? fmt::format("{} characters can't trade with other characters.", modeName(mine))
+                tell(PChar, hardcoreutils::isHardcore(mine) ? fmt::format("{} characters can't trade with other characters.", modeName(mine))
                                      : fmt::format("That character is {} hardcore and can't trade with anyone.", modeName(theirs)));
                 return true;
             }
@@ -206,7 +333,7 @@ class HardcoreModule : public CPPModule
             return false;
         }
 
-        if (type == 0x033 && mine > 0)
+        if (type == 0x033 && hardcoreutils::isHardcore(mine))
         {
             const auto* res  = packet.as<GP_CLI_COMMAND_TRADE_RES>();
             const auto  kind = static_cast<GP_CLI_COMMAND_TRADE_RES_KIND>(res->Kind);
@@ -229,14 +356,14 @@ class HardcoreModule : public CPPModule
                 return false;
             }
 
-            if (mine > 0)
+            if (hardcoreutils::isHardcore(mine))
             {
                 tell(PChar, fmt::format("{} characters can't send items through the delivery box.", modeName(mine)));
                 return true;
             }
 
             std::string target(reinterpret_cast<const char*>(pbx->TargetName), strnlen(reinterpret_cast<const char*>(pbx->TargetName), sizeof(pbx->TargetName)));
-            if (const int32 theirs = modeByName(target); theirs > 0)
+            if (const int32 theirs = modeByName(target); hardcoreutils::isHardcore(theirs))
             {
                 tell(PChar, fmt::format("{} is a {} hardcore character and can't receive items from other characters.", target, modeName(theirs)));
                 return true;

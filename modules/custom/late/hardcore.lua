@@ -33,8 +33,8 @@ xi = xi or {}
 xi.hardcore = xi.hardcore or {}
 local H = xi.hardcore
 
-H.IRON, H.STEEL, H.SILVER = 1, 2, 3
-H.NAMES = { [1] = 'Iron', [2] = 'Steel', [3] = 'Silver' }
+H.IRON, H.STEEL, H.SILVER, H.RANDOM = 1, 2, 3, 4
+H.NAMES = { [1] = 'Iron', [2] = 'Steel', [3] = 'Silver', [4] = 'Randomized' }
 H.GIFTS = { [1] = 1, [2] = 2, [3] = 3 } -- cosmetics per milestone
 H.MILESTONE_STEP = 10
 H.MILESTONE_TOP = 70
@@ -86,6 +86,14 @@ local DEFAULT_RATES =
         ['main.GIL_RATE'] = 3.0, ['main.TABS_RATE'] = 3.0, ['main.BOOK_EXP_RATE'] = 3.5, ['main.CASKET_DROP_RATE'] = 0.27,
         ['main.HOMEPOINT_TELEPORT'] = 0, ['main.ENABLE_SURVIVAL_GUIDE'] = 0,
     },
+    [4] = -- Randomized (not hardcore): the user's "random mode" profile
+    {
+        ['map.EXP_RATE'] = 2.0, ['map.DROP_RATE_MULTIPLIER'] = 2.2, ['map.MOB_GIL_MULTIPLIER'] = 2.3,
+        ['map.ALL_MOBS_GIL_BONUS'] = 1, ['map.SKILLUP_CHANCE_MULTIPLIER'] = 2.2, ['map.BLUE_LEARN_MULTIPLIER'] = 3.0,
+        ['map.CRAFT_CHANCE_MULTIPLIER'] = 2.2, ['map.CRAFT_HQ_CHANCE_MULTIPLIER'] = 5.0, ['map.FISHING_SKILL_MULTIPLIER'] = 2.0,
+        ['main.GIL_RATE'] = 3.3, ['main.TABS_RATE'] = 3.0, ['main.BOOK_EXP_RATE'] = 0.5, ['main.CASKET_DROP_RATE'] = 0.28,
+        ['main.HOMEPOINT_TELEPORT'] = 1, ['main.ENABLE_SURVIVAL_GUIDE'] = 1,
+    },
 }
 
 -- these always hold, whatever a profile file says (the user's rules, not rates)
@@ -112,7 +120,7 @@ end
 local function loadRates()
     local rates = {}
     local file = readLuaFile(PROFILES) or {}
-    for mode = 1, 3 do
+    for mode = 1, 4 do
         local row = {}
         for key, value in pairs(DEFAULT_RATES[mode]) do
             row[key] = value
@@ -169,7 +177,7 @@ H.mode = function(player)
     end
 
     local mode = player:getCharVar(VAR_MODE)
-    if mode >= 1 and mode <= 3 then
+    if mode >= 1 and mode <= 4 then
         return mode
     end
 
@@ -322,7 +330,7 @@ local function pendingFor(player)
     for _, entry in ipairs(list) do
         if type(entry) == 'table' and type(entry.name) == 'string' and string.lower(entry.name) == name then
             local mode = tonumber(entry.mode) or 0
-            if mode >= 1 and mode <= 3 then
+            if mode >= 1 and mode <= 4 then
                 return mode
             end
         end
@@ -347,10 +355,18 @@ local function becomeHardcore(player, mode)
         [1] = 'No auction house, bazaars, trades or deliveries from other characters. Everything you have, you earn.',
         [2] = 'No auction house, trades or teleports. When you are knocked out, the job you are on goes back to level 1.',
         [3] = 'No auction house, trades or teleports. When you are knocked out, this character is gone. For good.',
+        [4] = 'Fate picks your looks and your jobs; every drop is a surprise. Your squad can still learn any job.',
     }
-    tell(player, string.format('You are now a %s hardcore character. %s', H.modeName(mode), rules[mode]))
-    announce(player, string.format('%s has begun a %s hardcore journey.', player:getName(), H.modeName(mode)))
-    writeOut('start', player, mode, player:getMainJob(), 1, '')
+    if mode == H.RANDOM then
+        tell(player, 'You are now a Randomized character. ' .. rules[mode])
+        announce(player, string.format('%s has begun a Randomized journey.', player:getName()))
+    else
+        tell(player, string.format('You are now a %s hardcore character. %s', H.modeName(mode), rules[mode]))
+        announce(player, string.format('%s has begun a %s hardcore journey.', player:getName(), H.modeName(mode)))
+    end
+    if mode ~= H.RANDOM then                     -- (a Randomized start is told once its job is rolled)
+        writeOut('start', player, mode, player:getMainJob(), 1, '')
+    end
     print(string.format('[hardcore] %s is now %s', player:getName(), H.modeName(mode)))
 end
 
@@ -472,7 +488,7 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
 
     -- a world that only takes hardcore visitors
     if mode == 0 and H.hardcoreOnly and xi.coop and xi.coop.isGuest and xi.coop.isGuest(player) then
-        tell(player, 'This world only takes hardcore visitors (Iron, Steel and Silver characters). Taking you home...')
+        tell(player, 'This world only takes hardcore and Randomized visitors (Iron, Steel, Silver and Randomized characters). Taking you home...')
         player:timer(8000, function(entity)
             entity:leaveGame()
         end)
@@ -486,6 +502,16 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     online[player:getID()] = mode
 
     if lockedOut(player) then
+        return result
+    end
+
+    if mode == H.RANDOM then
+        player:timer(1500, function(entity)
+            pcall(H.randomLogin, entity)
+        end)
+        player:timer(4000, function(entity)
+            pcall(H.tellIcons, entity)
+        end)
         return result
     end
 
@@ -508,6 +534,212 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
 end)
 
 -----------------------------------
+-- Randomized (mode 4, not hardcore): random looks, random jobs, random drops
+--   * the first login: a random race (one of the 8 models), face and size (the Ancestry Moogle's own change, which
+--     moves you to the area again so the model loads) and one random job of the 18 era jobs
+--   * another random job when the highest of its jobs reaches 18, 33 and 65 ([HC]Grants counts them)
+--   * only the rolled jobs can be played ([HC]Jobs, a bit per job). A job unlock quest done by a Randomized character
+--     does not unlock it for the character: it goes to [HC]SquadJobs, for the squad mates (squad.lua asks
+--     xi.hardcore.squadJob). The six starting jobs are always open to the squad, as for everyone.
+--   * every drop of its claim is a random item that fits: the same area's drop pool, or the NM pool for an NM
+--     (HardcoreLootPool / HardcoreNMPool); quest items, crystals, seals and Rare/Ex items stay what they are
+-----------------------------------
+local VAR_JOBS    = '[HC]Jobs'
+local VAR_SQUAD   = '[HC]SquadJobs'
+local VAR_GRANTS  = '[HC]Grants'
+local VAR_LOOKS   = '[HC]Looks'
+local GRANT_AT    = { 18, 33, 65 }
+local ERA_JOBS    = 18                 -- WAR .. PUP (no DNC, SCH, GEO, RUN)
+local SUPPORT_BIT = 1                  -- bit 0 of the unlocked jobs: the support (sub) job quest
+
+local function hasBit(mask, job)
+    return bit.band(mask, bit.lshift(1, job)) ~= 0
+end
+
+-- what a job needs to work from level 1 that its unlock quest would have given
+local function jobKit(player, job)
+    if job == xi.job.SMN then
+        pcall(function()
+            player:addSpell(xi.magic.spell.CARBUNCLE)
+        end)
+    elseif job == xi.job.PUP then
+        pcall(function()
+            player:setPetName(xi.petType.AUTOMATON, 118 + math.random(0, 7))
+            player:unlockAttachment(xi.item.HARLEQUIN_FRAME)
+            player:unlockAttachment(xi.item.HARLEQUIN_HEAD)
+        end)
+    end
+end
+
+local function rollJob(mask)
+    local choices = {}
+    for job = 1, ERA_JOBS do
+        if not hasBit(mask, job) then
+            choices[#choices + 1] = job
+        end
+    end
+
+    return #choices > 0 and choices[math.random(#choices)] or nil
+end
+
+local function applyJobs(player)
+    local rolled = player:getCharVar(VAR_JOBS)
+    if rolled == 0 or type(HardcoreSetJobs) ~= 'function' then
+        return
+    end
+
+    -- the unlocked jobs as the game has them now (a bit per job)
+    local unlocked = 0
+    for job = 0, 22 do
+        local ok, has = pcall(function()
+            return player:hasJob(job)
+        end)
+        if ok and has then
+            unlocked = bit.bor(unlocked, bit.lshift(1, job))
+        end
+    end
+
+    local allowed = bit.bor(bit.band(unlocked, SUPPORT_BIT), rolled)
+    local extra = bit.band(unlocked, bit.bnot(allowed))
+    local fromQuests = bit.band(extra, bit.bnot(0x7E)) -- (the six starting jobs every new character has don't count)
+    if fromQuests ~= 0 then
+        local before = player:getCharVar(VAR_SQUAD)
+        player:setCharVar(VAR_SQUAD, bit.bor(before, fromQuests))
+        local names = {}
+        for job = 1, 22 do
+            if hasBit(fromQuests, job) and not hasBit(before, job) then
+                names[#names + 1] = jobName(job)
+            end
+        end
+
+        if #names > 0 then
+            tell(player, string.format('Your squad mates can now be %s. (A Randomized character only plays the jobs fate gave it.)', table.concat(names, ', ')))
+        end
+    end
+
+    if extra ~= 0 then
+        HardcoreSetJobs(player:getID(), allowed)
+    end
+
+    if not hasBit(rolled, player:getMainJob()) then
+        for job = 1, ERA_JOBS do
+            if hasBit(rolled, job) then
+                player:changeJob(job)
+                break
+            end
+        end
+    end
+end
+
+local function giveJob(player, job, first)
+    local rolled = bit.bor(player:getCharVar(VAR_JOBS), bit.lshift(1, job))
+    player:setCharVar(VAR_JOBS, rolled)
+    player:unlockJob(job)
+    jobKit(player, job)
+    if first then
+        player:changeJob(job)
+    end
+
+    applyJobs(player)
+end
+
+H.randomLogin = function(player)
+    if player:getCharVar(VAR_JOBS) == 0 then
+        local job = rollJob(0)
+        giveJob(player, job, true)
+        tell(player, string.format('Fate has spoken: you are a %s.', jobName(job)))
+        writeOut('start', player, H.RANDOM, job, 1, '')
+    else
+        applyJobs(player)
+    end
+
+    if player:getCharVar(VAR_LOOKS) == 0 then
+        player:setCharVar(VAR_LOOKS, 1)
+        local race = math.random(1, 8)
+        local face = math.random(0, 15)
+        local size = math.random(0, 2)
+        tell(player, 'Fate is choosing how you look... (you move to the area again in a moment)')
+        player:timer(2500, function(entity)
+            if not entity:raceChange(race, face, size) then
+                entity:setCharVar(VAR_LOOKS, 0)       -- try again next time
+            end
+        end)
+    end
+end
+
+H.randomGrants = function(player)
+    local rolled = player:getCharVar(VAR_JOBS)
+    local highest = 0
+    for job = 1, ERA_JOBS do
+        if hasBit(rolled, job) then
+            highest = math.max(highest, player:getJobLevel(job))
+        end
+    end
+
+    local grants = player:getCharVar(VAR_GRANTS)
+    while grants < #GRANT_AT and highest >= GRANT_AT[grants + 1] do
+        grants = grants + 1
+        player:setCharVar(VAR_GRANTS, grants)
+        local job = rollJob(player:getCharVar(VAR_JOBS))
+        if job == nil then
+            break
+        end
+
+        giveJob(player, job, false)
+        tell(player, string.format('Fate has a new path for you: %s! Change jobs at a Moogle to try it.', jobName(job)))
+        announce(player, string.format('%s (Randomized) was given %s at level %d.', player:getName(), jobName(job), GRANT_AT[grants]))
+        writeOut('grant', player, H.RANDOM, job, GRANT_AT[grants], '')
+    end
+end
+
+-- squad.lua asks: may a squad mate of this player be this job? (the starting six and the player's own jobs are asked
+-- there first)
+H.squadJob = function(player, job)
+    return H.mode(player) == H.RANDOM and hasBit(player:getCharVar(VAR_SQUAD), job)
+end
+
+-- a job unlock quest done by a Randomized character goes to its squad, not to the character
+m:addOverride('npcUtil.completeQuest', function(player, ...)
+    local result = super(player, ...)
+    if H.mode(player) == H.RANDOM then
+        pcall(applyJobs, player)
+    end
+
+    return result
+end)
+
+local lootPools, nmPool = {}, nil
+
+H.randomLoot = function(player, mob, itemId)
+    if type(HardcoreCanSwap) ~= 'function' or not HardcoreCanSwap(itemId) then
+        return itemId
+    end
+
+    local pool
+    if mob:isNM() then
+        nmPool = nmPool or HardcoreNMPool()
+        pool = nmPool
+    else
+        local zone = mob:getZoneID()
+        lootPools[zone] = lootPools[zone] or HardcoreLootPool(zone)
+        pool = lootPools[zone]
+    end
+
+    if pool == nil or #pool < 2 then
+        return itemId
+    end
+
+    for _ = 1, 4 do                             -- something else than what it was, most of the time
+        local pick = pool[math.random(#pool)]
+        if pick ~= itemId then
+            return pick
+        end
+    end
+
+    return itemId
+end
+
+-----------------------------------
 -- deaths
 -----------------------------------
 m:addOverride('xi.player.onPlayerDeath', function(player)
@@ -519,6 +751,10 @@ m:addOverride('xi.player.onPlayerDeath', function(player)
     end
 
     player:setCharVar(VAR_DEATHS, player:getCharVar(VAR_DEATHS) + 1)
+    if mode == H.RANDOM then
+        return                                  -- not hardcore: a normal death
+    end
+
     local job = player:getMainJob()
     local level = player:getJobLevel(job)
 
@@ -553,6 +789,11 @@ m:addOverride('xi.player.onPlayerLevelUp', function(player)
 
     local mode = H.mode(player)
     if mode == 0 or isBot(player) then
+        return
+    end
+
+    if mode == H.RANDOM then
+        pcall(H.randomGrants, player)
         return
     end
 
@@ -662,8 +903,8 @@ end
 -- (a host's own switches; at home the hardcore profiles keep them off anyway)
 -----------------------------------
 local function hardcoreOnline()
-    for id, _ in pairs(online) do
-        if GetPlayerByID(id) ~= nil then
+    for id, mode in pairs(online) do
+        if GetPlayerByID(id) ~= nil and mode <= 3 then
             return true
         end
 

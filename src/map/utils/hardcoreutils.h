@@ -28,10 +28,16 @@ namespace hardcoreutils
 
     inline auto cleanMode(int32 value) -> int32
     {
-        return (value >= 1 && value <= 3) ? value : 0;
+        return (value >= 1 && value <= 4) ? value : 0;
     }
 
-    // 0 = a normal character, 1 = Iron, 2 = Steel, 3 = Silver
+    // Iron, Steel and Silver are hardcore (no auction house or trades); 4 = Randomized is not
+    inline auto isHardcore(int32 mode) -> bool
+    {
+        return mode >= 1 && mode <= 3;
+    }
+
+    // 0 = a normal character, 1 = Iron, 2 = Steel, 3 = Silver, 4 = Randomized
     inline auto mode(const CCharEntity* PChar) -> int32
     {
         if (PChar == nullptr)
@@ -53,8 +59,8 @@ namespace hardcoreutils
         return cleanMode(charutils::FetchCharVar(charId, ModeVar).first);
     }
 
-    // Iron parties with anyone; Steel and Silver only with other hardcore characters (Iron, Steel, Silver).
-    // Bot players have no mode, so they never join a Steel or Silver party.
+    // Iron parties with anyone; Steel and Silver only with other hardcore characters (Iron, Steel, Silver) and with
+    // Randomized characters, who may join anyone. Bot players have no mode, so they never join a Steel or Silver party.
     inline auto canGroup(int32 a, int32 b) -> bool
     {
         if (a >= 2 || b >= 2)
@@ -101,5 +107,24 @@ namespace hardcoreutils
 
         const sol::optional<double> value = (*row)[key].get<sol::optional<double>>();
         return value ? *value : base;
+    }
+
+    // Randomized: xi.hardcore.randomLoot(player, mob, itemId) -> the item that drops instead (custom/late/hardcore.lua)
+    inline auto randomLootFunction() -> sol::protected_function
+    {
+        const sol::optional<sol::table> xiTable = ::lua["xi"].get<sol::optional<sol::table>>();
+        if (!xiTable)
+        {
+            return sol::protected_function();
+        }
+
+        const sol::optional<sol::table> hcTable = (*xiTable)["hardcore"].get<sol::optional<sol::table>>();
+        if (!hcTable)
+        {
+            return sol::protected_function();
+        }
+
+        const sol::optional<sol::protected_function> fn = (*hcTable)["randomLoot"].get<sol::optional<sol::protected_function>>();
+        return fn ? *fn : sol::protected_function();
     }
 } // namespace hardcoreutils
