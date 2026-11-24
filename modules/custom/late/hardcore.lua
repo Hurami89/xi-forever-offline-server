@@ -1,0 +1,873 @@
+-----------------------------------
+-- Hardcore modes (XI: Forever Offline, 2026-11-23): Iron, Steel and Silver
+--
+-- A character becomes hardcore from the launcher's HARDCORE menu, before it gains its first level. The mode is the
+-- character variable [HC]Mode (1 = Iron, 2 = Steel, 3 = Silver) and goes wherever the character goes (co-op, the hub).
+--
+--   Iron    its own rates (the Iron profile); no auction house, no bazaars, no trades or delivery box with other
+--           characters; parties with anyone.
+--   Steel   the Steel profile; the same blocks, no Home Point / Survival Guide teleports; when it is knocked out, the
+--           job it was on goes back to level 1 (everything completed stays; squad mates keep their levels);
+--           only parties with hardcore characters, so no bot players.
+--   Silver  the Silver profile; the same as Steel, but when it is knocked out the character is locked for good: it can't
+--           log in, it is on the memorial, and the launcher deletes it after 7 days (a GM can restore it in that time).
+--
+-- "Knocked out" means HP 0, even if it is raised afterwards. A crash or a disconnect is not a death.
+-- Every 10 levels on a job (10, 20, ... 70), once per job: random cosmetics in the delivery box, 1 for Iron, 2 for Steel,
+-- 3 for Silver. Milestones, Steel delevels and Silver deaths are announced to the whole world, written to
+-- hardcore_out.txt for the launcher (the hub and Stinkshell), and the hub shows other worlds' lines from hardcore_in.txt.
+--
+-- Where the rules are kept:
+--   * the C++ side (src/map/utils/hardcoreutils.h, modules/custom/cpp/hardcore.cpp): kill experience, drops, mob gil,
+--     skill-ups, crafting, fishing, blue magic; the auction house, bazaars, trades, the delivery box; party invites
+--   * here: the rates the game's scripts read from xi.settings.main (quest gil, tabs, page experience, casket chance,
+--     Home Point and Survival Guide teleports), the deaths, the milestones, the announcements
+-- The rates of each mode are in hardcore_profiles.lua (written by the launcher from its hardcore profiles). A key a
+-- profile leaves out uses the world's own setting.
+-----------------------------------
+require('modules/module_utils')
+-----------------------------------
+local m = Module:new('hardcore_modes')
+
+xi = xi or {}
+xi.hardcore = xi.hardcore or {}
+local H = xi.hardcore
+
+H.IRON, H.STEEL, H.SILVER = 1, 2, 3
+H.NAMES = { [1] = 'Iron', [2] = 'Steel', [3] = 'Silver' }
+H.GIFTS = { [1] = 1, [2] = 2, [3] = 3 } -- cosmetics per milestone
+H.MILESTONE_STEP = 10
+H.MILESTONE_TOP = 70
+H.LOCK_DAYS = 7
+
+local VAR_MODE    = '[HC]Mode'
+local VAR_START   = '[HC]Start'    -- when it became hardcore (os.time)
+local VAR_DEAD    = '[HC]Dead'     -- Silver: when it died (os.time); 0 = alive
+local VAR_DEATHS  = '[HC]Deaths'   -- times knocked out (every mode)
+local VAR_RESET   = '[HC]Reset'    -- Steel: a job waiting to go back to level 1 (job id + 100)
+local VAR_RESETS  = '[HC]Resets'   -- Steel: how many times a job went back to 1
+local VAR_GIFTS   = '[HC]GiftsDue' -- cosmetics earned but not sent yet (the delivery box refused)
+local VAR_MS      = '[HC]MS'       -- .. job: the highest milestone paid on that job
+
+local OUT_FILE    = 'modules/custom/lua/hardcore_out.txt'
+local IN_FILE     = 'modules/custom/lua/hardcore_in.txt'
+local PENDING     = 'modules/custom/lua/hardcore_pending.lua'
+local PROFILES    = 'modules/custom/lua/hardcore_profiles.lua'
+local WORLD_CFG   = 'modules/custom/lua/hardcore_world.lua'
+
+-----------------------------------
+-- the profiles (character rates of each mode)
+-----------------------------------
+-- The user's three profiles (2026-11-23). The launcher writes hardcore_profiles.lua from its own copy at every PLAY;
+-- these are only used when that file is missing.
+local DEFAULT_RATES =
+{
+    [1] =
+    {
+        ['map.EXP_RATE'] = 1.0, ['map.DROP_RATE_MULTIPLIER'] = 1.2, ['map.MOB_GIL_MULTIPLIER'] = 1.2,
+        ['map.ALL_MOBS_GIL_BONUS'] = 0, ['map.SKILLUP_CHANCE_MULTIPLIER'] = 1.2, ['map.BLUE_LEARN_MULTIPLIER'] = 1.2,
+        ['map.CRAFT_CHANCE_MULTIPLIER'] = 1.2, ['map.CRAFT_HQ_CHANCE_MULTIPLIER'] = 1.2, ['map.FISHING_SKILL_MULTIPLIER'] = 1.2,
+        ['main.GIL_RATE'] = 1.2, ['main.TABS_RATE'] = 1.0, ['main.BOOK_EXP_RATE'] = 0.125, ['main.CASKET_DROP_RATE'] = 0.1,
+        ['main.HOMEPOINT_TELEPORT'] = 1, ['main.ENABLE_SURVIVAL_GUIDE'] = 1,
+    },
+    [2] =
+    {
+        ['map.EXP_RATE'] = 2.0, ['map.DROP_RATE_MULTIPLIER'] = 2.0, ['map.MOB_GIL_MULTIPLIER'] = 2.0,
+        ['map.ALL_MOBS_GIL_BONUS'] = 2, ['map.SKILLUP_CHANCE_MULTIPLIER'] = 2.0, ['map.BLUE_LEARN_MULTIPLIER'] = 2.0,
+        ['map.CRAFT_CHANCE_MULTIPLIER'] = 2.0, ['map.CRAFT_HQ_CHANCE_MULTIPLIER'] = 2.0, ['map.FISHING_SKILL_MULTIPLIER'] = 2.0,
+        ['main.GIL_RATE'] = 2.0, ['main.TABS_RATE'] = 2.0, ['main.BOOK_EXP_RATE'] = 2.0, ['main.CASKET_DROP_RATE'] = 0.2,
+        ['main.HOMEPOINT_TELEPORT'] = 0, ['main.ENABLE_SURVIVAL_GUIDE'] = 0,
+    },
+    [3] =
+    {
+        ['map.EXP_RATE'] = 3.5, ['map.DROP_RATE_MULTIPLIER'] = 3.0, ['map.MOB_GIL_MULTIPLIER'] = 3.0,
+        ['map.ALL_MOBS_GIL_BONUS'] = 3, ['map.SKILLUP_CHANCE_MULTIPLIER'] = 3.0, ['map.BLUE_LEARN_MULTIPLIER'] = 3.0,
+        ['map.CRAFT_CHANCE_MULTIPLIER'] = 3.0, ['map.CRAFT_HQ_CHANCE_MULTIPLIER'] = 3.0, ['map.FISHING_SKILL_MULTIPLIER'] = 3.0,
+        ['main.GIL_RATE'] = 3.0, ['main.TABS_RATE'] = 3.0, ['main.BOOK_EXP_RATE'] = 3.5, ['main.CASKET_DROP_RATE'] = 0.27,
+        ['main.HOMEPOINT_TELEPORT'] = 0, ['main.ENABLE_SURVIVAL_GUIDE'] = 0,
+    },
+}
+
+-- these always hold, whatever a profile file says (the user's rules, not rates)
+local FIXED =
+{
+    [2] = { ['main.HOMEPOINT_TELEPORT'] = 0, ['main.ENABLE_SURVIVAL_GUIDE'] = 0 },
+    [3] = { ['main.HOMEPOINT_TELEPORT'] = 0, ['main.ENABLE_SURVIVAL_GUIDE'] = 0 },
+}
+
+local function readLuaFile(path)
+    local chunk = loadfile(path)
+    if not chunk then
+        return nil
+    end
+
+    local ok, value = pcall(chunk)
+    if ok and type(value) == 'table' then
+        return value
+    end
+
+    return nil
+end
+
+local function loadRates()
+    local rates = {}
+    local file = readLuaFile(PROFILES) or {}
+    for mode = 1, 3 do
+        local row = {}
+        for key, value in pairs(DEFAULT_RATES[mode]) do
+            row[key] = value
+        end
+
+        if type(file[mode]) == 'table' then
+            for key, value in pairs(file[mode]) do
+                if type(key) == 'string' and tonumber(value) ~= nil then
+                    row[key] = tonumber(value)
+                end
+            end
+        end
+
+        for key, value in pairs(FIXED[mode] or {}) do
+            row[key] = value
+        end
+
+        rates[mode] = row
+    end
+
+    return rates
+end
+
+H.rates = loadRates() -- read by the C++ side too (hardcoreutils::rate)
+
+local world = readLuaFile(WORLD_CFG) or {}
+H.hardcoreOnly = world.hardcore_only == true -- this world only lets hardcore visitors in
+H.isHub = world.hub == true                   -- the hub shows other worlds' lines (hardcore_in.txt)
+H.shareOnline = world.share ~= false          -- write lines for the launcher to send online (hub, Stinkshell)
+H.worldName = type(world.world) == 'string' and world.world or ''
+
+-----------------------------------
+-- small helpers
+-----------------------------------
+local function tell(player, text)
+    player:printToPlayer(text, xi.msg.channel.SYSTEM_3)
+end
+
+local function isBot(player)
+    if player:getCharVar('[Bot]Started') ~= 0 then
+        return true
+    end
+
+    return BotIsBot ~= nil and BotIsBot(player:getID()) and true or false
+end
+
+local function clean(text)
+    return (tostring(text or ''):gsub('[|\r\n]', ' '))
+end
+
+H.mode = function(player)
+    if player == nil or player:getObjType() ~= xi.objType.PC then
+        return 0
+    end
+
+    local mode = player:getCharVar(VAR_MODE)
+    if mode >= 1 and mode <= 3 then
+        return mode
+    end
+
+    return 0
+end
+
+H.modeName = function(mode)
+    return H.NAMES[mode] or 'normal'
+end
+
+local JOB_NAMES = { 'WAR', 'MNK', 'WHM', 'BLM', 'RDM', 'THF', 'PLD', 'DRK', 'BST', 'BRD', 'RNG', 'SAM', 'NIN', 'DRG',
+                    'SMN', 'BLU', 'COR', 'PUP', 'DNC', 'SCH', 'GEO', 'RUN' }
+
+local function jobName(job)
+    return JOB_NAMES[job] or ('job ' .. tostring(job))
+end
+
+H.survivalText = function(seconds)
+    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+    local days = math.floor(seconds / 86400)
+    local hours = math.floor(seconds % 86400 / 3600)
+    local minutes = math.floor(seconds % 3600 / 60)
+    if days > 0 then
+        return string.format('%dd %dh', days, hours)
+    elseif hours > 0 then
+        return string.format('%dh %02dm', hours, minutes)
+    end
+
+    return string.format('%dm', minutes)
+end
+
+-- seconds this character has been hardcore, counted in play time when the server knows it
+local function survived(player)
+    local start = player:getCharVar(VAR_START)
+    if start > 0 then
+        return os.time() - start
+    end
+
+    return 0
+end
+
+-----------------------------------
+-- the rates the scripts read from xi.settings.main: swapped in while a hardcore player's own call runs
+-----------------------------------
+H.withRates = function(player, fn, ...)
+    local mode = H.mode(player)
+    local row = mode > 0 and H.rates[mode] or nil
+    if row == nil or xi.settings == nil or xi.settings.main == nil then
+        return fn(...)
+    end
+
+    local saved = {}
+    for key, value in pairs(row) do
+        local name = key:match('^main%.([%w_]+)$')
+        if name then
+            saved[name] = xi.settings.main[name]
+            xi.settings.main[name] = value
+        end
+    end
+
+    local results = { pcall(fn, ...) }
+    for name, value in pairs(saved) do
+        xi.settings.main[name] = value
+    end
+
+    if not results[1] then
+        error(results[2], 0)
+    end
+
+    return unpack(results, 2, table.maxn(results))
+end
+
+-- no Home Point / Survival Guide teleports for this character? (used by fpxport.lua too)
+H.noFastTravel = function(player)
+    local mode = H.mode(player)
+    return mode > 0 and H.rates[mode] ~= nil and H.rates[mode]['main.HOMEPOINT_TELEPORT'] == 0
+end
+
+local function wrap(path)
+    m:addOverride(path, function(player, ...)
+        if H.mode(player) == 0 then
+            return super(player, ...)
+        end
+
+        return H.withRates(player, super, player, ...)
+    end)
+end
+
+wrap('npcUtil.giveReward')
+wrap('npcUtil.completeQuest')
+wrap('npcUtil.completeMission')
+wrap('xi.regime.checkRegime')
+wrap('xi.caskets.spawnCasket')
+wrap('xi.homepoint.onTrigger')
+wrap('xi.homepoint.onEventUpdate')
+wrap('xi.homepoint.onEventFinish')
+wrap('xi.survivalGuide.onTrigger')
+wrap('xi.survivalGuide.onEventUpdate')
+wrap('xi.survivalGuide.onEventFinish')
+
+-----------------------------------
+-- announcements: the whole world now; the launcher sends hardcore_out.txt lines on to the hub and Stinkshell
+-----------------------------------
+local function writeOut(kind, player, mode, job, level, extra)
+    if not H.shareOnline then
+        return
+    end
+
+    local handle = io.open(OUT_FILE, 'a')
+    if handle then
+        handle:write(string.format('%d|%s|%s|%s|%s|%d|%s|%s\n', os.time(), kind, clean(player:getName()), H.modeName(mode),
+                                   jobName(job), tonumber(level) or 0, clean(extra), clean(H.worldName)))
+        handle:close()
+    end
+end
+
+local function announce(player, text)
+    local decorated = string.format('\129\154 %s \129\154', text)
+    local ok = pcall(function()
+        player:printToArea(decorated, xi.msg.channel.SYSTEM_3, xi.msg.area.SYSTEM, '', false)
+    end)
+    if not ok then
+        tell(player, decorated)
+    end
+end
+
+-----------------------------------
+-- becoming hardcore (the launcher's pending list) and the login checks
+-----------------------------------
+local function eligible(player)
+    for job = 1, #JOB_NAMES do
+        local ok, level = pcall(function()
+            return player:getJobLevel(job)
+        end)
+        if ok and (tonumber(level) or 0) > 1 then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function pendingFor(player)
+    local list = readLuaFile(PENDING)
+    if type(list) ~= 'table' then
+        return 0
+    end
+
+    local name = string.lower(player:getName())
+    for _, entry in ipairs(list) do
+        if type(entry) == 'table' and type(entry.name) == 'string' and string.lower(entry.name) == name then
+            local mode = tonumber(entry.mode) or 0
+            if mode >= 1 and mode <= 3 then
+                return mode
+            end
+        end
+    end
+
+    return 0
+end
+
+local function becomeHardcore(player, mode)
+    player:setCharVar(VAR_MODE, mode)
+    player:setCharVar(VAR_START, os.time())
+    player:setCharVar(VAR_DEAD, 0)
+    player:setCharVar(VAR_DEATHS, 0)
+    player:setCharVar(VAR_RESET, 0)
+    player:setCharVar(VAR_RESETS, 0)
+    for job = 1, #JOB_NAMES do
+        player:setCharVar(VAR_MS .. job, 0)
+    end
+
+    local rules =
+    {
+        [1] = 'No auction house, bazaars, trades or deliveries from other characters. Everything you have, you earn.',
+        [2] = 'No auction house, trades or teleports. When you are knocked out, the job you are on goes back to level 1.',
+        [3] = 'No auction house, trades or teleports. When you are knocked out, this character is gone. For good.',
+    }
+    tell(player, string.format('You are now a %s hardcore character. %s', H.modeName(mode), rules[mode]))
+    announce(player, string.format('%s has begun a %s hardcore journey.', player:getName(), H.modeName(mode)))
+    writeOut('start', player, mode, player:getMainJob(), 1, '')
+    print(string.format('[hardcore] %s is now %s', player:getName(), H.modeName(mode)))
+end
+
+local online = {} -- [char id] = mode, the hardcore players seen this session
+local seen = {}   -- [char id] = true, every real player seen this session (to show the hub's lines)
+
+local function lockedOut(player)
+    local dead = player:getCharVar(VAR_DEAD)
+    if H.mode(player) ~= H.SILVER or dead == 0 then
+        return false
+    end
+
+    local left = math.max(0, H.LOCK_DAYS * 86400 - (os.time() - dead))
+    tell(player, string.format('%s fell as a Silver hardcore character and rests on the memorial. %s', player:getName(),
+         left > 0 and string.format('The character is deleted in %s.', H.survivalText(left)) or 'The character is being deleted.'))
+    player:timer(6000, function(entity)
+        entity:leaveGame()
+    end)
+    return true
+end
+
+local function sendGifts(player, count)
+    local pool = H.cosmeticPool()
+    if #pool == 0 or count <= 0 then
+        return 0
+    end
+
+    local fresh = {}
+    for _, itemId in ipairs(pool) do
+        if not player:hasItem(itemId) then
+            fresh[#fresh + 1] = itemId
+        end
+    end
+
+    local sent, names = 0, {}
+    for _ = 1, count do
+        local from = #fresh > 0 and fresh or pool
+        local index = math.random(#from)
+        local itemId = from[index]
+        local code = tonumber(SendItemToDeliveryBox(player:getName(), itemId, 1, 'Hardcore'))
+        if code ~= nil and code >= 2 then
+            break
+        end
+
+        sent = sent + 1
+        if from == fresh then
+            table.remove(fresh, index)
+        end
+    end
+
+    return sent
+end
+
+local function payDueGifts(player)
+    local due = player:getCharVar(VAR_GIFTS)
+    if due > 0 then
+        local sent = sendGifts(player, due)
+        player:setCharVar(VAR_GIFTS, due - sent)
+        if sent > 0 then
+            tell(player, string.format('%d hardcore reward%s waiting in your delivery box.', sent, sent == 1 and ' is' or 's are'))
+        end
+    end
+end
+
+local function applyReset(player)
+    local waiting = player:getCharVar(VAR_RESET)
+    if waiting < 100 or player:isDead() then
+        return false
+    end
+
+    local job = waiting - 100
+    if player:getMainJob() ~= job then
+        -- (changed job at a Moogle before getting up: that job goes back to 1 the next time it is the main job)
+        return false
+    end
+
+    if type(HardcoreResetJob) == 'function' and HardcoreResetJob(player:getID()) then
+        player:setCharVar(VAR_RESET, 0)
+        player:setCharVar(VAR_RESETS, player:getCharVar(VAR_RESETS) + 1)
+        tell(player, string.format('Steel: your %s is back to level 1. Everything you completed stays with you.', jobName(job)))
+        return true
+    end
+
+    print('[hardcore] HardcoreResetJob is missing: rebuild the map server (modules/custom/cpp/hardcore.cpp)')
+    return false
+end
+
+local function watchReset(player, tries)
+    player:timer(2000, function(entity)
+        if entity:getCharVar(VAR_RESET) < 100 then
+            return
+        end
+
+        if not applyReset(entity) and tries < 900 then
+            watchReset(entity, tries + 1)
+        end
+    end)
+end
+
+m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
+    local result = super(player, firstLogin, zoning)
+    if isBot(player) then
+        return result
+    end
+
+    seen[player:getID()] = true
+    local mode = H.mode(player)
+    if mode == 0 and not zoning then
+        local wanted = pendingFor(player)
+        if wanted > 0 then
+            if eligible(player) then
+                becomeHardcore(player, wanted)
+                mode = wanted
+            else
+                tell(player, 'This character has already gained a level, so it cannot become hardcore. Start a new character from the HARDCORE menu.')
+            end
+        end
+    end
+
+    -- a world that only takes hardcore visitors
+    if mode == 0 and H.hardcoreOnly and xi.coop and xi.coop.isGuest and xi.coop.isGuest(player) then
+        tell(player, 'This world only takes hardcore visitors (Iron, Steel and Silver characters). Taking you home...')
+        player:timer(8000, function(entity)
+            entity:leaveGame()
+        end)
+        return result
+    end
+
+    if mode == 0 then
+        return result
+    end
+
+    online[player:getID()] = mode
+
+    if lockedOut(player) then
+        return result
+    end
+
+    if not zoning then
+        tell(player, string.format('%s hardcore. Deaths: %d. Hardcore for %s.', H.modeName(mode), player:getCharVar(VAR_DEATHS), H.survivalText(survived(player))))
+        player:timer(5000, function(entity)
+            payDueGifts(entity)
+        end)
+    end
+
+    if player:getCharVar(VAR_RESET) >= 100 then
+        watchReset(player, 0)
+    end
+
+    player:timer(4000, function(entity)
+        pcall(H.tellIcons, entity)
+    end)
+
+    return result
+end)
+
+-----------------------------------
+-- deaths
+-----------------------------------
+m:addOverride('xi.player.onPlayerDeath', function(player)
+    super(player)
+
+    local mode = H.mode(player)
+    if mode == 0 or isBot(player) then
+        return
+    end
+
+    player:setCharVar(VAR_DEATHS, player:getCharVar(VAR_DEATHS) + 1)
+    local job = player:getMainJob()
+    local level = player:getJobLevel(job)
+
+    if mode == H.STEEL then
+        if level > 1 then
+            player:setCharVar(VAR_RESET, 100 + job)
+            tell(player, string.format('Steel: you were knocked out. Your %s goes back to level 1 when you get up.', jobName(job)))
+            announce(player, string.format('%s (Steel) fell on %s at level %d. Back to level 1.', player:getName(), jobName(job), level))
+            writeOut('delevel', player, mode, job, level, '')
+            watchReset(player, 0)
+        end
+    elseif mode == H.SILVER then
+        if player:getCharVar(VAR_DEAD) == 0 then
+            local lasted = H.survivalText(survived(player))
+            player:setCharVar(VAR_DEAD, os.time())
+            announce(player, string.format('%s (Silver) has fallen. %s %d, hardcore for %s. Rest well.', player:getName(), jobName(job), level, lasted))
+            writeOut('death', player, mode, job, level, lasted)
+            tell(player, 'Silver: your journey ends here. This character is locked and will be deleted in 7 days.')
+            print(string.format('[hardcore] %s (Silver) died: %s %d, %s', player:getName(), jobName(job), level, lasted))
+            player:timer(12000, function(entity)
+                entity:leaveGame()
+            end)
+        end
+    end
+end)
+
+-----------------------------------
+-- milestones: every 10 levels on a job, once per job
+-----------------------------------
+m:addOverride('xi.player.onPlayerLevelUp', function(player)
+    super(player)
+
+    local mode = H.mode(player)
+    if mode == 0 or isBot(player) then
+        return
+    end
+
+    local job = player:getMainJob()
+    local level = player:getJobLevel(job)
+    local reached = math.min(H.MILESTONE_TOP, math.floor(level / H.MILESTONE_STEP) * H.MILESTONE_STEP)
+    local paid = player:getCharVar(VAR_MS .. job)
+    if reached < H.MILESTONE_STEP or reached <= paid then
+        return
+    end
+
+    -- every milestone passed (a big jump pays each one it passed)
+    local count = 0
+    for at = paid + H.MILESTONE_STEP, reached, H.MILESTONE_STEP do
+        if at >= H.MILESTONE_STEP then
+            count = count + H.GIFTS[mode]
+        end
+    end
+
+    player:setCharVar(VAR_MS .. job, reached)
+    local sent = sendGifts(player, count)
+    if sent < count then
+        player:setCharVar(VAR_GIFTS, player:getCharVar(VAR_GIFTS) + count - sent)
+    end
+
+    tell(player, string.format('%s milestone: %s level %d! %d cosmetic reward%s sent to your delivery box.', H.modeName(mode), jobName(job), reached, count, count == 1 and '' or 's'))
+    announce(player, string.format('%s (%s) reached level %d on %s.', player:getName(), H.modeName(mode), reached, jobName(job)))
+    writeOut('milestone', player, mode, job, reached, '')
+end)
+
+-----------------------------------
+-- the cosmetic pool: only the good ones (Claude's pick, 2026-11-23; every one is in the golden casket list, so its
+-- model shows in game; see NOTE-casket-costume-models). Out of era is fine. Duplicates are avoided when possible.
+-----------------------------------
+local POOL =
+{
+    -- creature masques and suits
+    10250, 10429,                 -- Moogle Suit, Moogle Masque
+    23790, 23791,                 -- Adenium Masque, Adenium Suit
+    23862, 23863,                 -- Boudox's Masque, Boudox's Suit
+    23864, 23865,                 -- Magh Bihu's Masque, Magh Bihu's Suit
+    25639, 25715,                 -- Korrigan Masque, Korrigan Suit
+    25657, 25756,                 -- Wyrmking Masque, Wyrmking Suit
+    26798, 26954,                 -- Behemoth Masque, Behemoth Suit
+    26705, 27854,                 -- Mandragora Masque, Mandragora Suit
+    27715, 27866,                 -- Goblin Masque, Goblin Suit
+    27716, 27867,                 -- Green Moogle Masque, Green Moogle Suit
+    27765, 27911,                 -- Chocobo Masque, Chocobo Suit
+    25711,                        -- Botulus Suit
+    -- famous heads
+    23737, 24273, 26789,          -- Byakko Masque, Sobu Houou Kabuto, Shobuhouou Kabuto
+    10384, 25645, 25672, 26707,   -- Cumulus Masque, Kupo Masque, Snoll Masque, Flan Masque
+    26703, 25638, 26717, 26719,   -- Lycopodium Masque, Pachypodium Masque, Cait Sith Cap, Sheep Cap
+    26738, 26788, 27717, 27726,   -- Leafkin Cap, Rabbit Cap, Worm Masque, She-Slime Hat
+    27757, 25648, 25649, 25650,   -- Bomb Masque, Curmudgeon's Helmet, Gazer's Helmet, Retching Helmet
+    25652, 25670, 25675, 25677,   -- Crab Cap, Rarab Cap, White Rarab Cap, Arthros Cap
+    10447, 25586, 25604, 25632,   -- Pyracmon Cap, Kakai Cap, Buffalo Cap, Carbie Cap
+    26693, 11500, 23731, 25585,   -- Morbol Cap, Chocobo Beret, Royal Chocobo Beret, Black Chocobo Cap
+    23802, 23806, 15213, 13917,   -- Aucuba Crown, Vaquero Hat, Laurel Crown, Horror Head
+    16075, 16076, 15178,          -- Witch Hat, Coven Hat, Dream Hat
+    -- whole armour looks
+    23812, 23813, 23814, 23815, 23816, -- Sapphire
+    23817, 23818, 23819, 23820, 23821, -- Jadeite
+    23822, 23823, 23824, 23825, 23826, -- Diamond
+    23827, 23828, 23829, 23830, 23831, -- Emerald
+    23832, 23833, 23834, 23835, 23836, -- Ruby
+    23837, 23838, 23839, 23840, 23841, -- Apathy
+    23842, 23843, 23844, 23845,        -- Rage
+    23846, 23847, 23848, 23849, 23850, -- Cowardice
+    23851, 23852, 23853, 23854, 23855, -- Envy
+    23856, 23857, 23858, 23859, 23860, -- Arrogance
+    23807, 23808, 23809,               -- Esthete's set
+    25674, 26521, 25814, 25857, 25939, -- Ilm set
+    27714, 27923, 28063,               -- Councilor's set (Mirth Masquette)
+    26523, 25817,                      -- Delegate's set
+    -- clothes worth showing off
+    14519, 15752, 11355, 16378,        -- Dream Robe, Dream Boots, Dinner Jacket, Dinner Hose
+    26517, 25755, 27872, 27873, 27902, -- Shadow Lord Shirt, Crustacean Shirt, the three Spriggan coats
+}
+
+local poolChecked = nil
+
+H.cosmeticPool = function()
+    if poolChecked then
+        return poolChecked
+    end
+
+    -- keep only items this server knows (GetItemByID gives nil for an unknown id)
+    poolChecked = {}
+    for _, itemId in ipairs(POOL) do
+        local known = true
+        if type(GetItemByID) == 'function' then
+            local ok, item = pcall(GetItemByID, itemId)
+            known = ok and item ~= nil
+        end
+
+        if known then
+            poolChecked[#poolChecked + 1] = itemId
+        end
+    end
+
+    return poolChecked
+end
+
+-----------------------------------
+-- squad gear: "Squad gets all gear" and "keep the item" never apply while a hardcore player is in this world
+-- (a host's own switches; at home the hardcore profiles keep them off anyway)
+-----------------------------------
+local function hardcoreOnline()
+    for id, _ in pairs(online) do
+        if GetPlayerByID(id) ~= nil then
+            return true
+        end
+
+        online[id] = nil
+    end
+
+    return false
+end
+
+m:addOverride('xi.server.onServerStart', function(...)
+    local result = super(...)
+    -- (assigned through _G: inside an override, a plain global assignment lands in the override's own environment)
+    if type(_G.squadAllGear) == 'function' then
+        local allGear = _G.squadAllGear
+        _G.squadAllGear = function(...)
+            if hardcoreOnline() then
+                return false
+            end
+
+            return allGear(...)
+        end
+    end
+
+    if type(_G.squadKeepGear) == 'function' then
+        local keepGear = _G.squadKeepGear
+        _G.squadKeepGear = function(...)
+            if hardcoreOnline() then
+                return false
+            end
+
+            return keepGear(...)
+        end
+    end
+
+    -- bot players never join a Steel or Silver party (the core refuses it too; this saves the bots the try)
+    local function guard(fnName, playerArg)
+        local original = _G[fnName]
+        if type(original) ~= 'function' then
+            return
+        end
+
+        _G[fnName] = function(...)
+            local args = { ... }
+            local target = args[playerArg]
+            if type(target) == 'number' then
+                target = GetPlayerByID(target)
+            end
+
+            if target ~= nil and type(target) ~= 'number' and H.mode(target) >= H.STEEL then
+                return false
+            end
+
+            return original(...)
+        end
+    end
+
+    guard('BotJoinParty', 2)
+    guard('BotInvite', 2)
+
+    return result
+end)
+
+-----------------------------------
+-- the hub: other worlds' lines (the launcher writes hardcore_in.txt: "<seq>|<text>")
+-----------------------------------
+local lastSeq = 0
+local nextLook = 0
+
+local function showIncoming()
+    local handle = io.open(IN_FILE, 'r')
+    if not handle then
+        return
+    end
+
+    local lines = {}
+    for line in handle:lines() do
+        lines[#lines + 1] = line
+    end
+
+    handle:close()
+
+    local newest = lastSeq
+    for _, line in ipairs(lines) do
+        local seq, text = line:match('^(%d+)|(.+)$')
+        seq = tonumber(seq)
+        if seq and seq > lastSeq and text then
+            newest = math.max(newest, seq)
+            if lastSeq > 0 then -- (the first look only notes where the file is: no replay of old lines)
+                for id, _ in pairs(seen) do
+                    local p = GetPlayerByID(id)
+                    if p == nil then
+                        seen[id] = nil
+                    else
+                        pcall(function()
+                            p:printToArea(string.format('\129\154 %s \129\154', text), xi.msg.channel.SYSTEM_3, xi.msg.area.SYSTEM, '', false)
+                        end)
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    lastSeq = math.max(newest, lastSeq == 0 and 1 or lastSeq)
+end
+
+m:addOverride('xi.server.onTimeServerTick', function(...)
+    local result = super(...)
+    if H.isHub and os.time() >= nextLook then
+        nextLook = os.time() + 10
+        pcall(showIncoming)
+    end
+
+    return result
+end)
+
+-----------------------------------
+-- the hcicons add-on (badges over hardcore characters' heads): it sends !hcicons when it arrives in an area, and gets
+-- one hidden line back, "[HC-ICONS] !Name=1,Other=3" (the add-on hides every line with [HC-ICONS] in it). A hardcore
+-- character arriving later is told to the players there whose add-on asked: "[HC-ICONS] Name=2".
+-----------------------------------
+local ICON_MARK = '[HC-ICONS]'
+
+local function zonePlayers(player)
+    local ok, list = pcall(function()
+        return player:getZone():getPlayers()
+    end)
+    return ok and type(list) == 'table' and list or {}
+end
+
+local iconsCommand = {}
+iconsCommand.cmdprops = { permission = 0, parameters = '' }
+iconsCommand.onTrigger = function(player)
+    player:setLocalVar('HC_ICONS', 1)
+    local parts = {}
+    for _, other in pairs(zonePlayers(player)) do
+        local mode = H.mode(other)
+        if mode > 0 and other:getCharVar(VAR_DEAD) == 0 then
+            parts[#parts + 1] = other:getName() .. '=' .. mode
+        end
+    end
+
+    player:printToPlayer(ICON_MARK .. ' !' .. table.concat(parts, ','), xi.msg.channel.SYSTEM_3)
+end
+
+xi.module.registerCommand('hcicons', iconsCommand)
+
+H.tellIcons = function(player)
+    local mode = H.mode(player)
+    if mode == 0 then
+        return
+    end
+
+    for _, other in pairs(zonePlayers(player)) do
+        if other:getID() ~= player:getID() and other:getLocalVar('HC_ICONS') == 1 then
+            other:printToPlayer(string.format('%s %s=%d', ICON_MARK, player:getName(), mode), xi.msg.channel.SYSTEM_3)
+        end
+    end
+end
+
+-----------------------------------
+-- !hardcore: your mode, deaths, milestones. GM: !hardcore restore <name> (a Silver character that died to a bug)
+-----------------------------------
+local command = {}
+command.cmdprops = { permission = 0, parameters = 'ss' }
+command.onTrigger = function(player, action, name)
+    action = string.lower(action or '')
+
+    if action == 'restore' then
+        if player:getGMLevel() < 1 then
+            tell(player, 'Only a GM can restore a fallen Silver character (the launcher\'s HARDCORE menu on the dev PC can too).')
+            return
+        end
+
+        local target = name and GetPlayerByName(name) or nil
+        if target == nil then
+            tell(player, 'The character must be logged in to restore it here. Use the HARDCORE menu (dev PC) for one that is offline.')
+            return
+        end
+
+        target:setCharVar(VAR_DEAD, 0)
+        tell(player, target:getName() .. ' is restored.')
+        return
+    end
+
+    local mode = H.mode(player)
+    if mode == 0 then
+        tell(player, 'This is not a hardcore character. New hardcore characters start from the launcher\'s HARDCORE menu.')
+        return
+    end
+
+    local parts = {}
+    for job = 1, #JOB_NAMES do
+        local ms = player:getCharVar(VAR_MS .. job)
+        if ms > 0 then
+            parts[#parts + 1] = jobName(job) .. ' ' .. ms
+        end
+    end
+
+    tell(player, string.format('%s hardcore for %s. Deaths: %d.%s Milestones: %s.', H.modeName(mode), H.survivalText(survived(player)),
+        player:getCharVar(VAR_DEATHS), mode == H.STEEL and string.format(' Jobs back to 1: %d.', player:getCharVar(VAR_RESETS)) or '',
+        #parts > 0 and table.concat(parts, ', ') or 'none yet'))
+end
+
+xi.module.registerCommand('hardcore', command)
+
+return m
