@@ -208,8 +208,12 @@ void InsertNPCs(CZone* PZone, const xi::ZoneId zoneId, const xi::data::Npcs& npc
         // is 1 (the launcher's switch).
         const bool ephemeralMoogle = std::string_view(entry.Script).starts_with("Ephemeral_Moogle") &&
                                      settings::get<uint8>("main.EPHEMERAL_MOOGLES") == 1;
+        // (2026-11-23, Yenkei; the user: a switch, off by default) the Ancestry Moogles (race change, Seekers of Adoulin) the
+        // same way with main.ANCESTRY_MOOGLES; comforts.lua makes the service free.
+        const bool ancestryMoogle = std::string_view(entry.Script).starts_with("Ancestry_Moogle") &&
+                                    settings::get<uint8>("main.ANCESTRY_MOOGLES") == 1;
 
-        if (!ephemeralMoogle && !luautils::IsContentEnabled(entry.Content))
+        if (!ephemeralMoogle && !ancestryMoogle && !luautils::IsContentEnabled(entry.Content))
         {
             PNpc->loc.p.x = 0.f;
             PNpc->loc.p.y = 0.f;
