@@ -4100,6 +4100,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             say(player, string.format('squadpanel:opt|%d|%d|%d|%s|%d|%s', mate.slot, player:getCharVar('SQUAD_SIZE_' .. mate.id),
                 player:getCharVar('SQUAD_WSTP_' .. mate.id), chosen > 0 and wsName(chosen):gsub(' ', '_') or '-',
                 player:getCharVar('SQUAD_RANGE_' .. mate.id), wsList))
+            -- (2026-11-25) pos|<slot>|<0 normal, 1 behind, 2 ta>: the position chosen with !squad position; an older menu
+            -- ignores the line
+            say(player, string.format('squadpanel:pos|%d|%d', mate.slot, player:getCharVar('SQUAD_POS_' .. mate.id)))
         end
         -- The addon channel (packets/c2s/0x1f0_addon_channel.h): when this build handles it, say so, so a window may send its commands as that packet
         -- instead of as chat lines. A build without the packet has no xi.addonChannel and says nothing, so the window keeps typing.
@@ -4110,7 +4113,10 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         -- (UI milestone, SV-1) what this server can do beyond the first menus: cap|<words>. reapply1 = !squad reapply <slot>
         -- re-calls one mate. A menu uses that form only after it has read this line; an older menu ignores the line.
         -- (2026-11-25) campmove = !squad camp move keeps the puller, the picks and Start / Pause (servermenu 1.33)
-        say(player, 'squadpanel:cap|' .. (SquadDismissMate ~= nil and 'reapply1,campmove' or 'campmove'))
+        -- (2026-11-25) matepos = !squad position (normal / behind / ta) and the pos| lines (servermenu 1.35), only with a
+        -- map server that places mates by it (SquadPositionEngine, squad.cpp)
+        local capPos = rawget(_G, 'SquadPositionEngine') ~= nil and ',matepos' or ''
+        say(player, 'squadpanel:cap|' .. (SquadDismissMate ~= nil and 'reapply1,campmove' or 'campmove') .. capPos)
 
         -- (servermenu 1.8) what the puller goes for, and the kinds of monster around the camp
         if c then
@@ -5409,6 +5415,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         player:setCharVar('SQUAD_WSTP_' .. mate.id, 0)
         player:setCharVar('SQUAD_WS_' .. mate.id, 0)
         player:setCharVar('SQUAD_RANGE_' .. mate.id, 0)
+        player:setCharVar('SQUAD_POS_' .. mate.id, 0)
         player:setCharVar('SQUAD_DELAY_' .. mate.id, 0)
         squadBlueSetPut(player, mate.id, nil)
         chatSend('DELETE', mate.name)
@@ -5621,6 +5628,50 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         player:setCharVar('SQUAD_RANGE_' .. mate.id, choice)
         say(player, string.format('%s now fights %s. Dismiss and call them again to apply it.', mate.name,
             ({ [0] = 'at its job\'s usual distance', 'up close', 'from mid range (15 yalms)', 'from long range (20 yalms)' })[choice]))
+        return
+    elseif action == 'position' or action == 'pos' then
+        -- (2026-11-25) Where this mate stands in a fight: !squad position <slot> normal | behind | ta
+        --   behind: on the monster's back side (melee next to it, casters at their distance; several share an arc)
+        --   ta:     right behind the monster, turned towards you (at most 60 degrees from straight behind), so a Thief (you)
+        --           anywhere behind it has a party member in line for Trick Attack; one mate takes that spot, others with
+        --           "ta" stand behind
+        -- Stored as SQUAD_POS_<id> (0 normal, 1 behind, 2 ta) and given to the mate as its local var SQUAD_POSITION when it
+        -- is called; a mate that is out takes it at once. The trust controller places it (squad_position.h).
+        local choices = { normal = 0, behind = 1, back = 1, ta = 2, partner = 2 }
+        local words   = { [0] = 'normal', 'behind', 'ta' }
+        local said    = string.lower(arg2 or '')
+        local choice  = choices[said]
+        if choice == nil then
+            say(player, string.format('%s: position %s. !squad position <slot> normal | behind | ta', mate.name,
+                words[player:getCharVar('SQUAD_POS_' .. mate.id)] or 'normal'))
+            -- (2026-11-25) what a mate that is out does right now (local vars SQUAD_POS_STATE / SQUAD_POS_ARC, set by the
+            -- trust controller each fight tick; squad_position.h State)
+            local liveNow = summonedMate(player, mate.id)
+            if liveNow ~= nil and player:getCharVar('SQUAD_POS_' .. mate.id) ~= 0 then
+                local st = liveNow:isEngaged() and liveNow:getLocalVar('SQUAD_POS_STATE') or 0
+                local now = ({
+                    [1] = string.format('in the arc behind the monster (spot %d)', liveNow:getLocalVar('SQUAD_POS_ARC')),
+                    [2] = 'on the Trick Attack partner spot (right behind the monster, turned towards you)',
+                    [3] = 'at its usual place: the monster is attacking it',
+                    [4] = 'at its usual place: it is not fighting the monster your party fights here',
+                    [5] = 'at its usual place: from behind the monster the tank would be out of a heal\'s reach',
+                    [6] = 'placed by its Thief abilities right now (Sneak / Trick Attack)',
+                })[st] or 'not placed right now (not in a fight, or its job does not move in fights)'
+                say(player, string.format('Now: %s.', now))
+            end
+            return
+        end
+
+        player:setCharVar('SQUAD_POS_' .. mate.id, choice)
+        local live = summonedMate(player, mate.id)
+        if live ~= nil then
+            live:setLocalVar('SQUAD_POSITION', choice)
+        end
+        say(player, string.format('%s %s.', mate.name, ({ [0] = 'stands where its job usually stands',
+            'stands behind the monster in a fight', 'stands right behind the monster, on your side of it, in a fight (your Trick Attack partner: stand behind the monster)' })[choice]))
+        if rawget(_G, 'SquadPositionEngine') == nil then
+            say(player, '(This map server does not place mates by it yet: the choice is kept for when it does.)')
+        end
         return
     elseif action == 'ws' then
         -- When this mate weapon skills, and which one: !squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]
@@ -6797,6 +6848,12 @@ end
 -- Runs when a squad mate spawns: the main job at the main level, then the sub job (if any) at the sub level.
 -- Returns true if we handled it, false to let the template script run.
 local function squadSpawn(mob)
+    -- (2026-11-25) the position the player chose for this mate (!squad position), for every job, also one without rules
+    local posMaster = mob:getMaster()
+    if posMaster ~= nil and mob:getLocalVar('SQUAD_ID') ~= 0 then
+        mob:setLocalVar('SQUAD_POSITION', posMaster:getCharVar('SQUAD_POS_' .. mob:getLocalVar('SQUAD_ID')))
+    end
+
     local main = jobs[mob:getMainJob()]
     if main == nil then
         -- SQUAD_SEAM v1 (spawn_norules): a job Squads has no rules for (SCH, DNC, RUN, GEO ...) is still marked owned when an add-on owns the mate

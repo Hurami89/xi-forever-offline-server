@@ -2122,6 +2122,9 @@ class SquadModule : public CPPModule
     // (2026-11-25, community feedback milestone) marker: this xi_map has ENEMY_FAMILY, PARTY_COUNT, ENEMY_COUNT, the out of combat
     // support rules and SquadPartyFoes (squad_rulesets.lua R.engine3Ready)
     ::lua.set_function("SquadFeedbackEngine", []() -> int32 { return 1; });
+    // (2026-11-25) marker: this xi_map places a mate by its local var SQUAD_POSITION (trust_controller.cpp PositionTick,
+    // squad_position.h); squad.lua offers !squad position to the menu (cap matepos) only then
+    ::lua.set_function("SquadPositionEngine", []() -> int32 { return 1; });
         ::lua.set_function("DeleteSquadMate", deleteSquadMate);
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);

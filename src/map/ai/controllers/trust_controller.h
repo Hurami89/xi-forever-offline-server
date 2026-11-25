@@ -96,6 +96,12 @@ private:
     auto OrderedTarget() -> CBattleEntity*;                       // FFXI Offline squad: !squad attack (the player's SQUAD_ATTACK_* local vars)
     void Declump(const CCharEntity* PMaster, const CBattleEntity* PTarget) const;
     void PathOutToDistance(const CBattleEntity* PTarget, float amount);
+    // FFXI Offline squad: the position the player chose for this mate (local var SQUAD_POSITION, squad_position.h).
+    // Heads for its spot behind the enemy (or the TA partner spot) when that is due; true while it is on its way there,
+    // so the usual distance keeping waits. `melee`: a melee mate; `radius`: its distance from the enemy.
+    auto PositionTick(CCharEntity* PMaster, CBattleEntity* PTarget, bool melee, float radius) -> bool;
+    auto UsesPosition() const -> bool; // a position other than Normal is chosen
+    bool m_PositionPlaced = false;     // this tick the mate has a spot of its own (no sidestepping then)
 
     // FFXI Offline squad (B5): walk toward goal, stopping `want` short; far away a throttled navmesh path, no path: the wall-safe step
     // nearBand: closer than this, exactly the old behaviour (a path every tick, else the step); step: walk the far path this tick

@@ -25,6 +25,7 @@
 #include "common/earth_time.h"
 #include "ai/helpers/gambits_container.h"
 #include "ai/helpers/squad_follow.h"
+#include "ai/helpers/squad_position.h"
 #include "ai/helpers/squad_threat.h"
 #include "ai/helpers/trust_cast_gate.h"
 #include "ai/helpers/trust_enmity_target.h"
@@ -501,7 +502,23 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
                 }
             }
 
-            switch (const int16 movementDistance = flanking ? static_cast<int16>(TRUST_MOVEMENT_TYPE::NON_COMBAT) : PTrust->getMobMod(xi::MobMod::TrustDistance))
+            // (squad_position.h) the position the player chose for this mate: behind the enemy, or the TA partner spot.
+            // Not while the thief logic above places it, and not for mates that stand still (NO_MOVE) or do not fight.
+            const int16 trustDistance = PTrust->getMobMod(xi::MobMod::TrustDistance);
+            bool        positioning   = false;
+            m_PositionPlaced          = false;
+            if (UsesPosition() && (flanking || PTrust->GetLocalVar("SQUAD_FLANK") != 0))
+            {
+                PTrust->SetLocalVar("SQUAD_POS_STATE", squad::position::StateThief); // (said by !squad position)
+            }
+            else if (UsesPosition() && trustDistance != TRUST_MOVEMENT_TYPE::NO_MOVE && trustDistance != TRUST_MOVEMENT_TYPE::NON_COMBAT)
+            {
+                const bool melee = trustDistance == TRUST_MOVEMENT_TYPE::MELEE;
+                positioning      = PositionTick(PMaster, PTarget, melee,
+                                                melee ? squad::position::MeleeRadius(PTrust->GetMeleeRange(PTarget)) : static_cast<float>(trustDistance));
+            }
+
+            switch (const int16 movementDistance = (flanking || positioning) ? static_cast<int16>(TRUST_MOVEMENT_TYPE::NON_COMBAT) : trustDistance)
             {
                 case TRUST_MOVEMENT_TYPE::NO_MOVE:
                 {
@@ -541,9 +558,10 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
                 }
             }
 
-            if (!PTrust->PAI->PathFind->IsFollowingPath() && PTrust->GetLocalVar("SQUAD_FLANK") == 0)
+            if (!PTrust->PAI->PathFind->IsFollowingPath() && PTrust->GetLocalVar("SQUAD_FLANK") == 0 && !m_PositionPlaced)
             {
-                Declump(PMaster, PTarget); // (not a thief holding its spot behind the target or behind the tank)
+                Declump(PMaster, PTarget); // (not a thief holding its spot behind the target or behind the tank, nor a mate
+                                           //  with a chosen position: those have a spot of their own)
             }
         }
 
@@ -1188,6 +1206,97 @@ auto CTrustController::DoCampPullTick(timer::time_point tick, const position_t& 
 
     PTrust->PAI->PathFind->FollowPath(tick);
     co_return;
+}
+
+auto CTrustController::UsesPosition() const -> bool
+{
+    const auto mode = POwner->GetLocalVar("SQUAD_POSITION");
+    return mode == squad::position::Behind || mode == squad::position::TaPartner;
+}
+
+// FFXI Offline squad: the position the player chose for this mate (!squad position, squad_position.h). Returns true
+// while the mate has a spot of its own this tick: then the usual distance keeping (melee closing in, a caster's random
+// spot at its distance) and the sidestepping wait, and the mate goes to that spot when it is clearly away from it.
+auto CTrustController::PositionTick(CCharEntity* PMaster, CBattleEntity* PTarget, bool melee, float radius) -> bool
+{
+    namespace sp = squad::position;
+    if (PMaster == nullptr || PTarget == nullptr || !UsesPosition())
+    {
+        return false;
+    }
+
+    const sp::Point enemy{ PTarget->loc.p.x, PTarget->loc.p.z };
+    const float     facing = rotationToRadian(PTarget->loc.p.rotation);
+    // (r3) the TA partner's spot: behind the enemy, turned towards the player (at most 60 degrees): always there in a fight
+    const sp::Point partnerSpot = sp::PartnerSpot(enemy, facing, { PMaster->loc.p.x, PMaster->loc.p.z }, sp::PartnerDistance);
+
+    // every mate of this master, in the master's order: who uses a position on this enemy, and of which kind
+    std::vector<sp::Peer> peers;
+    peers.reserve(PMaster->PTrusts.size());
+    for (auto* PMate : PMaster->PTrusts)
+    {
+        if (PMate == nullptr)
+        {
+            continue;
+        }
+        const int16 dist     = PMate->getMobMod(xi::MobMod::TrustDistance);
+        const bool  fighting = PMate->isAlive() && PMate->GetBattleTarget() == PTarget && dist != TRUST_MOVEMENT_TYPE::NO_MOVE &&
+                              dist != TRUST_MOVEMENT_TYPE::NON_COMBAT;
+        peers.push_back({
+            .self     = PMate == POwner,
+            .mode     = static_cast<int>(PMate->GetLocalVar("SQUAD_POSITION")),
+            .melee    = dist == TRUST_MOVEMENT_TYPE::MELEE,
+            .usable   = fighting && PTarget->GetBattleTarget() != PMate,
+            .fighting = fighting,
+        });
+    }
+
+    const auto place = sp::Place(peers, true);
+    if (!place.positioned)
+    {
+        // (its usual place: the enemy is on this mate, or it is not fighting this enemy) - said by !squad position
+        POwner->SetLocalVar("SQUAD_POS_STATE", PTarget->GetBattleTarget() == POwner ? sp::StateEnemyOnIt : sp::StateOtherFoe);
+        return false;
+    }
+
+    // the melee arc keeps off the TA partner's line while a TA partner fights the enemy, so only the partner is in line for
+    // the player's Trick Attack (the partner may be away for a moment, e.g. while the enemy is on it)
+    const std::optional<float> avoid = (melee && place.lineReserved) ? std::optional<float>(sp::OffsetOf(enemy, facing, partnerSpot)) : std::nullopt;
+    const sp::Point            spot  = place.partner ? partnerSpot : sp::BehindSpot(enemy, facing, radius, sp::ArcOffsetAvoiding(place.arcIndex, avoid));
+
+    // a caster or ranged mate keeps the enemy's target (usually the tank) within reach of a heal; else its usual place
+    if (!melee)
+    {
+        const CBattleEntity* PTank = PTarget->GetBattleTarget();
+        if (PTank != nullptr && sp::Distance(spot, { PTank->loc.p.x, PTank->loc.p.z }) > sp::TankReach)
+        {
+            POwner->SetLocalVar("SQUAD_POS_STATE", sp::StateTankTooFar);
+            return false;
+        }
+    }
+
+    m_PositionPlaced = true;
+    POwner->SetLocalVar("SQUAD_POS_STATE", place.partner ? sp::StatePartner : sp::StateArc);
+    POwner->SetLocalVar("SQUAD_POS_ARC", place.partner ? 0 : static_cast<uint32>(place.arcIndex + 1));
+
+    const auto   nowSec = static_cast<uint32>(std::chrono::duration_cast<std::chrono::seconds>(m_Tick.time_since_epoch()).count());
+    const uint32 last   = POwner->GetLocalVar("SQUAD_POS_AT");
+    const float  since  = last == 0 ? 1000.0f : static_cast<float>(nowSec - last);
+    const float  away   = sp::Distance({ POwner->loc.p.x, POwner->loc.p.z }, spot);
+    if (sp::ShouldMove(away, melee ? sp::MeleeSlack : sp::RangedSlack, since))
+    {
+        position_t goal = PTarget->loc.p; // (the enemy's height: the path finds the floor)
+        goal.x          = spot.x;
+        goal.z          = spot.z;
+        POwner->SetLocalVar("SQUAD_POS_AT", nowSec);
+        // (only the path here: the FollowPath at the end of the combat tick takes the step, as for the thief's flank)
+        if (!POwner->PAI->PathFind->PathTo(goal, PATHFLAG_RUN))
+        {
+            POwner->PAI->PathFind->StepToOnMesh(goal, true);
+        }
+    }
+
+    return true;
 }
 
 void CTrustController::Declump(const CCharEntity* PMaster, const CBattleEntity* PTarget) const
