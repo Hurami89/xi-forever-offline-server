@@ -259,6 +259,7 @@ local function usage(player)
     say(player, '!squad levels <slot>   - their job levels (mates level up by fighting with you)')
     say(player, '!squad look <slot> <race> <face 1-16>   races: humem humef elvm elvf tarum taruf mithra galka (once: the look is for good)')
     say(player, '!squad size <slot> small | medium | large   (once: the size is for good)')
+    say(player, '!squad random on | off   - Randomized characters: your mates roll their own looks and jobs (off by default)')
     say(player, '!squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]   - when and which weapon skill a mate uses')
     say(player, '!squad range <slot> melee | mid | far | auto   - how far a mate stands from the monster')
     say(player, '!squad give <item name or id>   - give an item to your squad once; every mate can then wear it')
@@ -2562,6 +2563,13 @@ local function callMate(player, mate)
         return
     end
 
+    -- (2026-11-24, Randomized round 4) the random squad switch: the mate's own rolled jobs and looks (hardcore.lua)
+    local fateLook = nil
+    if xi.hardcore ~= nil and type(xi.hardcore.randomSquadPrepare) == 'function' then
+        local okFate, look = pcall(xi.hardcore.randomSquadPrepare, player, mate)
+        fateLook = okFate and type(look) == 'table' and look or nil
+    end
+
     local cap = syncCap(player)
     local main, sub, subLevel = levelsFor(mate, cap, player)
     local synced = main < jobLevel(mate, mate.mjob)
@@ -2594,9 +2602,9 @@ local function callMate(player, mate)
         mlevel   = main,
         slevel   = subLevel,
         template = mate.template,
-        race     = mate.race > 0 and mate.race or 1,
-        face     = mate.face,
-        size     = player:getCharVar('SQUAD_SIZE_' .. mate.id), -- 0 = not chosen, 1-3 = small / medium / large
+        race     = fateLook and fateLook.race or (mate.race > 0 and mate.race or 1),
+        face     = fateLook and fateLook.face or mate.face,
+        size     = fateLook and fateLook.size or player:getCharVar('SQUAD_SIZE_' .. mate.id), -- 0 = not chosen, 1-3 = small / medium / large
         ws       = wsSettings and wsSettings.spawnWs(player, mate)  -- 0 = every weapon skill it can use, else only this one
                    or player:getCharVar('SQUAD_WS_' .. mate.id),
         scrolls  = squadScrollsOn(),                              -- spells 18+ only when the squad learned them
@@ -3487,6 +3495,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
     end
     local squad = GetSquad(charId)
     action = action and string.lower(action) or nil
+
+    -- (2026-11-24) !squad random on | off: a Randomized character's random squad (hardcore.lua)
+    if action == 'random' then
+        if xi.hardcore ~= nil and type(xi.hardcore.randomSquadCommand) == 'function' then
+            xi.hardcore.randomSquadCommand(player, arg1)
+        else
+            say(player, 'The random squad needs the hardcore module.')
+        end
+
+        return
+    end
 
     if action == nil or action == 'list' or action == 'call' then
         chatRoster(player, squad)
@@ -5024,6 +5043,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         elseif not jobUnlocked(player, job) and job ~= mate.mjob and job ~= mate.sjob then
             say(player, lockedMessage(player, job))
             return
+        elseif xi.hardcore ~= nil and xi.hardcore.randomSquadJobAllowed ~= nil and not xi.hardcore.randomSquadJobAllowed(player, mate, job) then
+            say(player, string.format('%s can only be the jobs fate gave them (random squad is on).', mate.name))
+            return
         end
 
         -- (role clarity) the Role is kept per mate across jobs: say so once, here, when the main job really changes
@@ -5050,6 +5072,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 return
             elseif not jobUnlocked(player, job) and job ~= mate.sjob then
                 say(player, lockedMessage(player, job))
+                return
+            elseif xi.hardcore ~= nil and xi.hardcore.randomSquadJobAllowed ~= nil and not xi.hardcore.randomSquadJobAllowed(player, mate, job) then
+                say(player, string.format('%s can only use the jobs fate gave them (random squad is on).', mate.name))
                 return
             end
 
@@ -6687,6 +6712,10 @@ grantSquadExp = function(master, mate, squadId, gain)
         end
         if type(SquadSyncLevelled) == 'function' then
             SquadSyncLevelled(master, name, outcome.level) -- a Level Sync to this mate follows its new level
+        end
+        -- (2026-11-24) the random squad: a new rolled job at 18 / 33 / 65 (hardcore.lua)
+        if xi.hardcore ~= nil and type(xi.hardcore.randomSquadLevel) == 'function' then
+            pcall(xi.hardcore.randomSquadLevel, master, squadId, outcome.level, name)
         end
         if not xi.squad.visitor(master) then
             chatSend('UPDATE', name, 'level', outcome.level)
