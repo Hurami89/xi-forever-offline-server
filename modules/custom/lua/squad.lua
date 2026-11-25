@@ -3769,6 +3769,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
     if action == 'panel' then
         -- For the in-game Squad panel addon, which reads these lines and hides them from the chat log:
         --   squadpanel:<slot>|<name>|<main job>|<main level>|<sub job or ->|<sub level>|<role>|<mode>|<1 if the mate is out now>|<switch mask>
+        local rsCache = {} -- (the Rule Set store, read once for this answer)
         for _, mate in ipairs(squad) do
             local main, sub, subLevel = levelsFor(mate, nil, player)
             local role, mode = decodeBehavior(player:getCharVar('SQUAD_AI_' .. mate.id))
@@ -3787,6 +3788,15 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 table.sort(levels)
                 say(player, string.format('squadpanel:jl|%d|%s', mate.slot, table.concat(levels, ',')))
             end
+            -- (2026-11-24) rs|...: the rules this mate really runs (a Rule Set or its job rules) and what is chosen for its
+            -- next call, for the menu's "Rules" line (squad_rulesets.lua R.panelLine; servermenu 1.26n). An older menu
+            -- ignores it; without squad_rulesets.lua nothing is said (the menu then shows no Rules line).
+            pcall(function()
+                local rsMod = require('modules/custom/lua/squad_rulesets')
+                rsCache.store = rsCache.store or rsMod.load()
+                say(player, 'squadpanel:' .. (rsMod.panelLine(player, mate, summonedMate(player, mate.id), rsCache.store,
+                    function(job) return jobNames[job] end)))
+            end)
         end
 
         -- the menu's Camp row (servermenu 1.6): camp|<on>|<puller slot, 0 = you>|<paused>|<pulls>
@@ -3867,6 +3877,12 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             say(player, 'squadpanel:chan|' .. tostring(xi.addonChannel.version))
         end
 
+        -- (UI milestone, SV-1) what this server can do beyond the first menus: cap|<words>. reapply1 = !squad reapply <slot>
+        -- re-calls one mate. A menu uses that form only after it has read this line; an older menu ignores the line.
+        if SquadDismissMate ~= nil then
+            say(player, 'squadpanel:cap|reapply1')
+        end
+
         -- (servermenu 1.8) what the puller goes for, and the kinds of monster around the camp
         if c then
             say(player, 'squadpanel:campwant|' .. (c.want or '-'))
@@ -3909,6 +3925,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         local live               = summonedMate(player, mate.id)
         local clean              = function(text) return tostring(text or '?'):gsub('|', '/') end
 
+        -- squadsheet:slot|<slot> first (UI milestone): the menu's Profile window can go to another mate while this
+        -- answer is on its way, and must know whose it is. A menu that does not know the line skips it.
+        say(player, string.format('squadsheet:slot|%d', tonumber(mate.slot) or 0))
         say(player, string.format('squadsheet:hdr|%s|%s|%d|%s|%d|%s|%s|%s|%d', clean(mate.name), jobNames[mate.mjob] or '???', main,
             sub ~= 0 and jobNames[sub] or ((mate.sjob ~= 0 and mate.sjob ~= mate.mjob) and jobNames[mate.sjob] or '-'), subLevel, role, mode, raceNames[mate.race] or '?', switchesOf(player, mate.id))) -- (a support job set but not active yet: level 0)
 
@@ -4370,6 +4389,53 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
     -- The Squad menu's "Apply now": the mates who are out come back with their new settings (no cooldown)
     if action == 'reapply' then
+        -- (UI milestone, SV-1) !squad reapply <slot>: only that mate leaves and is called again with its new settings (no
+        -- cooldown, like the squad-wide form below, which is unchanged). The others stay out: player:clearTrusts() is not
+        -- used here. A mate an add-on owns is never touched. A second request for the same mate while its re-call is
+        -- under way is refused, so two re-calls can never overlap.
+        if arg1 ~= nil and arg1 ~= '' and string.lower(tostring(arg1)) ~= 'all' then
+            local one = findMate(squad, tonumber(arg1) or 0)
+            if one == nil then
+                say(player, 'No squad mate in that slot. Use !squad to list them.')
+                return
+            end
+
+            local busyVar = 'SQUAD_REAPPLY_' .. one.id
+            if player:getLocalVar(busyVar) > os.time() then
+                say(player, string.format('%s is already being called again.', one.name))
+                return
+            end
+
+            local oneTrust = summonedMate(player, one.id)
+            if oneTrust == nil then
+                say(player, string.format('%s is not out: its settings apply when it is called.', one.name))
+                return
+            end
+
+            if type(rawget(_G, 'ADDON_OWNER')) == 'table' and type(ADDON_OWNER.owns) == 'function' then
+                local oneOk, oneOwned = pcall(ADDON_OWNER.owns, player, oneTrust)
+                if oneOk and oneOwned == true then
+                    say(player, string.format('An add-on owns %s: Squads reapply skipped', one.name))
+                    return
+                end
+            end
+
+            if SquadDismissMate == nil or not SquadDismissMate(oneTrust) then
+                say(player, string.format('%s could not be sent off: nothing was changed.', one.name))
+                return
+            end
+
+            player:setLocalVar(busyVar, os.time() + math.ceil(RECALL_WAIT_MS / 1000) + 2)
+            player:timer(RECALL_WAIT_MS, function(entity)
+                entity:setLocalVar(busyVar, 0)
+                if not isSummoned(entity, one.id) then
+                    callMate(entity, one)
+                end
+            end)
+
+            return
+        end
+
         local out = {}
         -- SQUAD_SEAM v1 (reapply gate): Apply now never dismisses, calls or applies a Rule Set to a mate an add-on owns
         local addonSkipped = {}
@@ -6583,6 +6649,14 @@ for _, name in ipairs(templates) do
             if squadSpawn(mob) then
                 return
             end
+
+            -- (2026-11-24) a job Squads has no rules for: the trust's own rules run, never a Rule Set (the menu's Rules line)
+            if master ~= nil then
+                pcall(function()
+                    require('modules/custom/lua/squad_rulesets').markLive(mob, master, mob:getLocalVar('SQUAD_ID'), mob:getMainJob(),
+                        nil, 4, 0)
+                end)
+            end
         end
 
         super(mob)
@@ -7141,5 +7215,9 @@ SQUAD_DEV_CMD = function(...) return commandObj.onTrigger(...) end
 
 -- SQUAD_SEAM v1 (handshake): set once, only after the whole file loaded; an add-on reads it to know its hooks survived
 SQUAD_SEAM_V1 = { version = 1 }
+
+-- (UI milestone, SV-1) this squad.lua has "!squad reapply <slot>"; gambits_squad.lua reports it to the Gambits editor
+-- (hello, capability reapply1) only when this is set and the map server has SquadDismissMate
+xi.squad.reapplySlot = true
 
 return m
