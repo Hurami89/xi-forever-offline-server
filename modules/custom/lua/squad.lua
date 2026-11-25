@@ -388,6 +388,26 @@ do
     local BLOOD_PACT_SECONDS = 60
     local TEND_SECONDS       = 90
 
+    -- (2026-11-24) the full Summoner: avatar choice, Ward pacts, Astral Flow, party chat orders (squad_summoner.lua)
+    local okSmn, smn = pcall(require, 'modules/custom/lua/squad_summoner')
+    if not okSmn or type(smn) ~= 'table' then
+        print('[squad] squad_summoner.lua could not be loaded, Summoners stay as before: ' .. tostring(smn))
+        smn = nil
+    end
+    xi.squad.summoner = smn
+
+    -- (spells from scrolls on) has(name): you have the pact with that avatar; nil = every avatar its level allows
+    xi.squad.avatarHas = function(master)
+        if master == nil or not squadScrollsOn(master) or not (xi.magic and type(xi.magic.spell) == 'table') then
+            return nil
+        end
+
+        return function(name)
+            local sid = xi.magic.spell[name]
+            return sid ~= nil and master:hasSpell(sid)
+        end
+    end
+
     local function squadPetId(mob)
         local job = mob:getMainJob()
         local fixed = petByJob[job]
@@ -404,7 +424,14 @@ do
                     -- (spells from scrolls on) a squad Summoner has the avatars you have pacts with: you win them in
                     -- the avatar fights, and the whole squad shares them. Off: every avatar for its level.
                     local master = mob:getMaster()
-                    if squadScrollsOn() and master and xi.magic and type(xi.magic.spell) == 'table' then
+                    if smn and master then
+                        local mine = smn.pickId(mob, master, lvl, xi.squad.avatarHas(master))
+                        if mine then
+                            return mine -- (your choice: !squad avatar / party chat)
+                        end
+                    end
+
+                    if squadScrollsOn(master) and master and xi.magic and type(xi.magic.spell) == 'table' then
                         return petsData.avatarFor(lvl, function(name)
                             local sid = xi.magic.spell[name]
                             return sid ~= nil and master:hasSpell(sid)
@@ -459,17 +486,27 @@ do
             if job == jobIds.SMN then
                 local cost = 8 + math.floor(lvl * 1.2)
                 local master = mob:getMaster()
-                local ward = petsData.wardFor(pet:getPetID())
-                if ward and master and master:isAlive() and master:getHPP() < 50 and mob:getMP() >= cost and now >= mob:getLocalVar('SQUAD_WARD_NEXT') then
+                local wardDone = false
+                if smn then
+                    -- avatar swaps, Astral Flow and every Ward pact (heals, debuffs, buffs): squad_summoner.lua
+                    local okT, used = pcall(smn.tick, mob, pet, master, target, lvl, now, xi.squad.avatarHas(master))
+                    wardDone = okT and used == true
+                    if not okT then
+                        print('[squad] summoner tick failed: ' .. tostring(used))
+                    end
+                end
+
+                local ward = (not smn) and petsData.wardFor(pet:getPetID()) or nil
+                if wardDone then
+                    -- (a pact went off this tick)
+                elseif ward and master and master:isAlive() and master:getHPP() < 50 and mob:getMP() >= cost and now >= mob:getLocalVar('SQUAD_WARD_NEXT') then
                     mob:setLocalVar('SQUAD_WARD_NEXT', now + BLOOD_PACT_SECONDS)
-                    mob:delMP(cost)
-                    pet:usePetAbility(ward, master)
+                    pet:usePetAbility(ward, master) -- (the pact script charges the mate its MP)
                 elseif target ~= nil and target:isAlive() and now >= mob:getLocalVar('SQUAD_BP_NEXT') then
                     local pact = petsData.rageFor(pet:getPetID(), lvl)
                     if pact and mob:getMP() >= cost then
                         mob:setLocalVar('SQUAD_BP_NEXT', now + BLOOD_PACT_SECONDS)
-                        mob:delMP(cost)
-                        pet:usePetAbility(pact, target)
+                        pet:usePetAbility(pact, target) -- (the pact script charges the mate its MP)
                     else
                         mob:setLocalVar('SQUAD_BP_NEXT', now + 10)
                     end
@@ -2607,7 +2644,7 @@ local function callMate(player, mate)
         size     = fateLook and fateLook.size or player:getCharVar('SQUAD_SIZE_' .. mate.id), -- 0 = not chosen, 1-3 = small / medium / large
         ws       = wsSettings and wsSettings.spawnWs(player, mate)  -- 0 = every weapon skill it can use, else only this one
                    or player:getCharVar('SQUAD_WS_' .. mate.id),
-        scrolls  = squadScrollsOn(),                              -- spells 18+ only when the squad learned them
+        scrolls  = squadScrollsOn(player),                              -- spells 18+ only when the squad learned them
         blueSet    = squadBlueSetGet(player, mate.id),            -- (a Blue Mage) your chosen set; empty = automatic
         bluePrefer = squadBluePrefer(),
         equip    = outfit,
@@ -2885,7 +2922,7 @@ function squadBlueState(player, mate)
             local st = {
                 slots = member:getLocalVar('SQUAD_BLU_SLOTS'), points = member:getLocalVar('SQUAD_BLU_POINTS'),
                 used = member:getLocalVar('SQUAD_BLU_USED'), auto = member:getLocalVar('SQUAD_BLU_AUTO') == 1,
-                known = SquadKnownBlue(member, squadScrollsOn()) or {}, set = {},
+                known = SquadKnownBlue(member, squadScrollsOn(player)) or {}, set = {},
             }
             for n = 1, member:getLocalVar('SQUAD_BLU_COUNT') do
                 st.set[#st.set + 1] = member:getLocalVar('SQUAD_BLU_' .. n)
@@ -2898,7 +2935,15 @@ function squadBlueState(player, mate)
     return nil
 end
 
-function squadScrollsOn()
+-- player (optional): a Randomized character's squad always learns its spells from scrolls, whatever the switch says
+function squadScrollsOn(player)
+    if player ~= nil and xi.hardcore ~= nil and type(xi.hardcore.mode) == 'function' then
+        local okM, mode = pcall(xi.hardcore.mode, player)
+        if okM and mode == 4 then
+            return true
+        end
+    end
+
     local ok, c = pcall(function()
         package.loaded['modules/custom/lua/squad_config'] = nil
         return require('modules/custom/lua/squad_config')
@@ -2914,7 +2959,7 @@ function squadLearnScroll(owner, tell, itemId, takeOne)
     end
 
     local name = prettySpellName and prettySpellName(sc.name) or sc.name
-    if not squadScrollsOn() then
+    if not squadScrollsOn(owner) then
         tell(string.format('Your squad learns %s by itself (spells come automatically on this world).', name))
         return true
     elseif sc.level < 18 then
@@ -3495,6 +3540,24 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
     end
     local squad = GetSquad(charId)
     action = action and string.lower(action) or nil
+
+    -- (2026-11-24) !squad avatar [mate] [avatar|auto]: which avatar a squad Summoner brings (squad_summoner.lua)
+    if action == 'avatar' then
+        if xi.squad.summoner == nil then
+            say(player, 'Avatar choice is not available (squad_summoner.lua did not load).')
+            return
+        end
+
+        local out = {}
+        for _, member in pairs(player:getPartyWithTrusts()) do
+            if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 then
+                out[member:getLocalVar('SQUAD_ID')] = member
+            end
+        end
+
+        xi.squad.summoner.command(player, squad, arg1, arg2, out, xi.squad.avatarHas(player))
+        return
+    end
 
     -- (2026-11-24) !squad random on | off: a Randomized character's random squad (hardcore.lua)
     if action == 'random' then
@@ -4504,7 +4567,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
     end
 
     if action == 'spells' then
-        if not squadScrollsOn() then
+        if not squadScrollsOn(player) then
             say(player, 'Squad mates know every spell their jobs learn at their level (the launcher option "learn spells from scrolls" is off).')
             return
         end
@@ -6750,7 +6813,7 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
         end
 
         player:addListener('DEFEATED_MOB', 'SQUAD_BLU_LEARN', function(mob)
-            if mob == nil or not squadScrollsOn() or not SquadBlueSpellsOf then
+            if mob == nil or not squadScrollsOn(player) or not SquadBlueSpellsOf then
                 return
             end
 
