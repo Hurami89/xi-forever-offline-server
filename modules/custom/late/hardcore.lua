@@ -866,6 +866,38 @@ local function rsVar(kind, mateId)
     return '[HC]RS' .. kind .. tostring(mateId)
 end
 
+-- (2026-11-24, the user) the first roll gives every mate a different race: a race no other mate has yet (Hume,
+-- Elvaan, Tarutaru, Mithra, Galka), then, once all five are taken, a race and gender no other mate has
+local RACE_OF = { 1, 1, 2, 2, 3, 3, 4, 5 } -- model 1-8 -> race (Hume M/F, Elvaan M/F, Tarutaru M/F, Mithra, Galka)
+
+H.rollMateRace = function(player, mate)
+    local takenRace, takenModel = {}, {}
+    local squad = type(GetSquad) == 'function' and GetSquad(player:getID()) or {}
+    for _, other in ipairs(squad) do
+        if other.id ~= mate.id then
+            local look = player:getCharVar(rsVar('Look', other.id))
+            local model = math.floor(look / 1000)
+            if model >= 1 and model <= 8 then
+                takenModel[model] = true
+                takenRace[RACE_OF[model]] = true
+            end
+        end
+    end
+
+    local fresh, unused = {}, {}
+    for model = 1, 8 do
+        if not takenRace[RACE_OF[model]] then
+            fresh[#fresh + 1] = model
+        end
+        if not takenModel[model] then
+            unused[#unused + 1] = model
+        end
+    end
+
+    local from = #fresh > 0 and fresh or (#unused > 0 and unused or nil)
+    return from and from[math.random(#from)] or math.random(1, 8)
+end
+
 local function mateRolled(player, mate)
     local mask = player:getCharVar(rsVar('Jobs', mate.id))
     if mask == 0 then
@@ -875,7 +907,7 @@ local function mateRolled(player, mate)
     end
 
     if player:getCharVar(rsVar('Look', mate.id)) == 0 then
-        player:setCharVar(rsVar('Look', mate.id), math.random(1, 8) * 1000 + math.random(0, 15) * 10 + math.random(1, 3))
+        player:setCharVar(rsVar('Look', mate.id), H.rollMateRace(player, mate) * 1000 + math.random(0, 15) * 10 + math.random(1, 3))
     end
 
     return mask

@@ -148,4 +148,22 @@ local kept = p:getCharVar('[HC]RSJobs501'); H.randomSquadCommand(p, 'on')
 check(p:getCharVar('[HC]RSJobs501') == kept, 'on again: the same rolls come back')
 local iron = newPlayer(12, 'Irony'); iron.vars['[HC]Mode'] = 1
 H.randomSquadCommand(iron, 'on'); check(iron:getCharVar('[HC]RSquad') == 0, 'only Randomized characters have a random squad')
+-- (2026-11-24) the first roll: every mate a different race (then a different race and gender)
+local RACE_OF = { 1, 1, 2, 2, 3, 3, 4, 5 }
+for trial = 1, 20 do
+    local rp = newPlayer(100 + trial, 'Racer' .. trial); rp.vars['[HC]Mode'] = 4
+    local six = {}
+    for i = 1, 6 do six[i] = { id = 600 + i, slot = i, name = 'M' .. i, mjob = 1, sjob = 0, race = 1, face = 0, jobs = {} } end
+    GetSquad = function() return six end
+    H.randomSquadCommand(rp, 'on')
+    local races, models = {}, {}
+    for i = 1, 6 do
+        local m = math.floor(rp:getCharVar('[HC]RSLook' .. (600 + i)) / 1000)
+        models[m] = (models[m] or 0) + 1
+        if i <= 5 then races[RACE_OF[m]] = (races[RACE_OF[m]] or 0) + 1 end
+    end
+    for _, c in pairs(races) do assert(c == 1, 'two of the first five mates share a race') end
+    for _, c in pairs(models) do assert(c == 1, 'two mates share a race and gender') end
+end
+check(true, 'first roll: the first five mates are five different races, a sixth a different race and gender (20 squads)')
 print('ROUND4 PASSED')
