@@ -280,6 +280,7 @@ local function usage(player)
     say(player, '!squad autoequip now [slot]   - put the best gear on once, right now, and keep choosing by hand')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad juice   - the juices each mate carries (trade juices to a mate: it drinks one when its MP runs low)')
+    say(player, '!squad meds    - the medicines each mate carries (trade Echo Drops, Antidotes, Eye Drops, Holy Water, Remedies: used when the healers cannot cure it in time)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
     say(player, '!squad blu <slot> [set | unset <spell>] | clear | auto | save | load <name> | builds   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
@@ -326,6 +327,13 @@ do -- (2026-11-23, Frost, Syfin) squad mates drink the juices you trade them (sq
     xi.squad.juice = okJuice and type(juiceModule) == 'table' and juiceModule or nil
     if not xi.squad.juice then
         print('[squad] could not load squad_juice.lua: ' .. tostring(juiceModule))
+    end
+
+    -- (2026-11-25, Rysan) and the medicines you trade them, when the healers cannot cure them in time (squad_meds.lua)
+    local okMeds, medsModule = pcall(require, 'modules/custom/lua/squad_meds')
+    xi.squad.meds = okMeds and type(medsModule) == 'table' and medsModule or nil
+    if not xi.squad.meds then
+        print('[squad] could not load squad_meds.lua: ' .. tostring(medsModule))
     end
 end
 
@@ -2967,6 +2975,9 @@ local function callMate(player, mate)
         if xi.squad.juice then
             pcall(xi.squad.juice.tick, mobArg) -- drinks a juice when its MP runs low (squad_juice.lua)
         end
+        if xi.squad.meds then
+            pcall(xi.squad.meds.tick, mobArg) -- uses a medicine the healers could not replace (squad_meds.lua)
+        end
         campTick(mobArg)
         if restTick ~= nil then
             restTick(mobArg)
@@ -3844,6 +3855,11 @@ xi.squad.onTrade = function(player, trust, items)
             xi.squad.juice.onTrade(player, owner, trust, offer, function(event, vars)
                 speak(player, who, event, vars)
             end)
+        elseif xi.squad.meds and xi.squad.meds.isMedicine(offer.itemId) then
+            -- (2026-11-25) medicines: this mate keeps them and uses one when the healers cannot cure it (squad_meds.lua)
+            xi.squad.meds.onTrade(player, owner, trust, offer, function(event, vars)
+                speak(player, who, event, vars)
+            end)
         elseif food.meals and food.meals.giveFood and food.meals.giveFood(player, owner, offer, food, function(event, vars)
             speak(player, who, event, vars)
         end) then
@@ -4067,6 +4083,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
     if action == 'setlevel' then
         squadGmSetLevel(player, squad, arg1, arg2, arg3)
+        return
+    end
+
+    -- (2026-11-25) !squad meds: the medicines each mate carries (squad_meds.lua)
+    if action == 'meds' or action == 'medicine' or action == 'medicines' then
+        if xi.squad.meds then
+            xi.squad.meds.command(player, GetSquad(player:getID()) or {})
+        else
+            say(player, 'Squad medicines are not available (squad_meds.lua did not load).')
+        end
+
         return
     end
 
