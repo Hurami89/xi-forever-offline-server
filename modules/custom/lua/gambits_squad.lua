@@ -73,7 +73,9 @@
 -- within 120 s is dropped; nothing is written before that.
 -- This file only registers the command; it defines no globals.
 -----------------------------------
-local VERSION      = 9     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
+local VERSION      = 10    -- 10 (UI milestone): hello carries capability words (G.caps), mates carries the live Rule
+                           --   Set state of each mate (fields 13-17). Older editors ignore both.
+                           -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
                            -- 5: weapon skill settings (wsg, wsl, wss, wsa), catm "j", PARTY_LOWEST_HPP, HAS_MP*
                            -- 6 (job expansion): MOD_LT ("m", argument MODIFIER.number), TRIGGER_SELF_ACTION_TARGET, more
                            --   families, abilities and spells of content this server has not enabled are left out
@@ -767,14 +769,34 @@ requests.ping = function(player, w)
     G.reply(player, w[2], 'pong', w[3] or '-', G.now())
 end
 
+-- (version 10) what this server can do beyond the protocol number, as words in one field of the hello answer:
+--   live      the mates answer carries what each mate really runs (squad_rulesets.lua R.liveStatus)
+--   reapply1  squad.lua has "!squad reapply <slot>" (one mate) and the map server can send one mate off
+-- A client uses a newer form only after it has read its word here. '-' = none.
+function G.caps()
+    local R = rulesets()
+    local words = {}
+    if R ~= nil and type(R.liveStatus) == 'function' then
+        words[#words + 1] = 'live'
+    end
+
+    if type(xi) == 'table' and type(rawget(xi, 'squad')) == 'table' and rawget(xi.squad, 'reapplySlot') == true
+        and rawget(_G, 'SquadDismissMate') ~= nil then
+        words[#words + 1] = 'reapply1'
+    end
+
+    return #words > 0 and table.concat(words, ',') or '-'
+end
+
 requests.hello = function(player, w)
     local R = rulesets()
-    G.reply(player, w[2], 'hello', VERSION, R and R.MAX_RULES or 32, MAX_LINE, MAX_CHUNKS)
+    G.reply(player, w[2], 'hello', VERSION, R and R.MAX_RULES or 32, MAX_LINE, MAX_CHUNKS, G.caps())
 end
 
 requests.mates = function(player, w)
     local R = rulesets()
     local count = 0
+    local liveStore = nil -- (the Rule Set store, read once for this answer)
     for _, mate in ipairs(squadOf(player)) do
         local level = mate.jobs and mate.jobs[mate.mjob] and mate.jobs[mate.mjob].level or 1
         local subName, subLevel = mate.sjob ~= 0 and jobName(mate.sjob) or '-', '-'
@@ -784,8 +806,25 @@ requests.mates = function(player, w)
         end
 
         local chosen = R and R.selectedNum(player, mate.id, mate.mjob) or 0
-        G.reply(player, w[2], 'mate', mate.slot, mate.id, mate.name, jobName(mate.mjob), level,
-            subName, chosen, mateOut(player, mate.id) and 1 or 0, subLevel)
+        local trust = mateOut(player, mate.id)
+        -- (version 10, capability "live") what this mate really runs, by the same rules as the Squads menu's Rules line:
+        -- state | why | number of the set running (0 = job rules) | fallback reason | rules left out. Fields 13-17; an
+        -- older editor reads fields by position up to 12 and ignores them.
+        local live = nil
+        if R ~= nil and type(R.liveStatus) == 'function' then
+            liveStore = liveStore or R.load()
+            local okLive, s = pcall(R.liveStatus, player, mate, trust, liveStore)
+            live = okLive and type(s) == 'table' and s or nil
+        end
+
+        if live then
+            G.reply(player, w[2], 'mate', mate.slot, mate.id, mate.name, jobName(mate.mjob), level,
+                subName, chosen, trust and 1 or 0, subLevel, live.state, live.why, live.live, live.fb, live.dropped)
+        else
+            G.reply(player, w[2], 'mate', mate.slot, mate.id, mate.name, jobName(mate.mjob), level,
+                subName, chosen, trust and 1 or 0, subLevel)
+        end
+
         count = count + 1
     end
 
