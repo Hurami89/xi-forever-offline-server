@@ -73,7 +73,10 @@
 -- within 120 s is dropped; nothing is written before that.
 -- This file only registers the command; it defines no globals.
 -----------------------------------
-local VERSION      = 10    -- 10 (UI milestone): hello carries capability words (G.caps), mates carries the live Rule
+local VERSION      = 11    -- 11 (community feedback milestone, 2026-11-25): ENEMY_FAMILY "FAMILY", PARTY_COUNT
+                           --   "CMP.n[.STATUS]", ENEMY_COUNT "CMP.n[.hp[.radius]]" (G.decodeCount); offered in catm "jmf"
+                           --   as kinds y, p, q; saving them needs the map server that has them (R.engine3Ready)
+                           -- 10 (UI milestone): hello carries capability words (G.caps), mates carries the live Rule
                            --   Set state of each mate (fields 13-17). Older editors ignore both.
                            -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
                            -- 5: weapon skill settings (wsg, wsl, wss, wsa), catm "j", PARTY_LOWEST_HPP, HAS_MP*
@@ -160,6 +163,100 @@ local unpackList = unpack or table.unpack -- (LuaJIT / Lua 5.4)
 local function rulesets()
     local ok, R = pcall(require, 'modules/custom/lua/squad_rulesets')
     return ok and type(R) == 'table' and R or nil
+end
+
+-- (version 11, F1/F2) the wire form of the enemy family and count conditions' values:
+--   ENEMY_FAMILY  "GOBLIN"                     <-> { family = 'GOBLIN' }
+--   PARTY_COUNT   "AT_LEAST.2" / "AT_LEAST.2.ASLEEP"   <-> { cmp = 'AT_LEAST', count = 2, status = 'ASLEEP' }
+--   ENEMY_COUNT   "AT_LEAST.3" / "AT_LEAST.3.30" / "AT_LEAST.3.30.10"  <-> { cmp, count, hp_above = 30, radius = 10 }
+-- decodeCount returns nil for any other condition (the value is then left as it is), and the raw text for a value it
+-- cannot read (the Rule Set check then refuses it with a clear reason).
+function G.decodeCount(name, raw)
+    if type(raw) ~= 'string' and type(raw) ~= 'number' then
+        return nil
+    end
+
+    raw = tostring(raw)
+    if name == 'ENEMY_FAMILY' then
+        return string.match(raw, '^[A-Z][A-Z0-9_]*$') and { family = raw } or raw
+    elseif name == 'PARTY_COUNT' then
+        local cmp, n, status = string.match(raw, '^([A-Z_]+)%.(%d+)%.?([A-Z0-9_]*)$')
+        if cmp == nil then
+            return raw
+        end
+
+        return { cmp = cmp, count = tonumber(n), status = status ~= '' and status or nil }
+    elseif name == 'ENEMY_COUNT' then
+        local cmp, n, rest = string.match(raw, '^([A-Z_]+)%.(%d+)(.*)$')
+        if cmp == nil then
+            return raw
+        end
+
+        local hp, radius = string.match(rest, '^%.(%d+)%.(%d+)$')
+        if hp == nil then
+            hp = string.match(rest, '^%.(%d+)$')
+            if hp == nil and rest ~= '' then
+                return raw
+            end
+        end
+
+        return { cmp = cmp, count = tonumber(n), hp_above = hp and tonumber(hp) or nil, radius = radius and tonumber(radius) or nil }
+    end
+
+    return nil
+end
+
+-- the other way: a table value of those conditions -> its text, or nil when it holds anything else
+function G.encodeCount(v)
+    local function word(x)
+        return type(x) == 'string' and string.match(x, '^[A-Z][A-Z0-9_]*$') ~= nil
+    end
+
+    local function whole(x)
+        return type(x) == 'number' and x == math.floor(x) and x >= 0 and x < 1000
+    end
+
+    if v.family ~= nil then
+        for key in pairs(v) do
+            if key ~= 'family' then
+                return nil
+            end
+        end
+
+        return word(v.family) and v.family or nil
+    end
+
+    local allowed = { cmp = true, count = true, status = true, hp_above = true, radius = true }
+    for key in pairs(v) do
+        if not allowed[key] then
+            return nil
+        end
+    end
+
+    if not whole(v.count) or (v.cmp ~= nil and not word(v.cmp)) then
+        return nil
+    end
+
+    local head = string.format('%s.%d', v.cmp or 'AT_LEAST', v.count)
+    if v.status ~= nil then
+        if not word(v.status) or v.hp_above ~= nil or v.radius ~= nil then
+            return nil
+        end
+
+        return head .. '.' .. v.status
+    end
+
+    if v.radius ~= nil then
+        if not whole(v.radius) or (v.hp_above ~= nil and not whole(v.hp_above)) then
+            return nil
+        end
+
+        return string.format('%s.%d.%d', head, v.hp_above or 0, v.radius)
+    elseif v.hp_above ~= nil then
+        return whole(v.hp_above) and string.format('%s.%d', head, v.hp_above) or nil
+    end
+
+    return head
 end
 
 local function store()
@@ -393,6 +490,15 @@ function G.decodeRule(text, index)
 
     -- (version 6, job expansion) MOD_LT carries "MODIFIER.number" ({ mod = 'UTSUSEMI', below = 2 })
     -- (version 8, Bard song tiers) STATUS / NOT_STATUS carry "EFFECT.tier" ({ effect = 'MARCH', tier = 2 })
+    -- (version 11, F1/F2) ENEMY_FAMILY carries "FAMILY" ({ family = 'GOBLIN' }); PARTY_COUNT "CMP.n[.STATUS]"
+    -- ({ cmp, count, status }); ENEMY_COUNT "CMP.n[.hp[.radius]]" ({ cmp, count, hp_above, radius })
+    for _, c in ipairs({ rule.cond, rule.cond2 }) do
+        local decoded = c and G.decodeCount(c[1], c[2]) or nil
+        if decoded ~= nil then
+            c[2] = decoded
+        end
+    end
+
     for _, c in ipairs({ rule.cond, rule.cond2 }) do
         if c and c[1] == 'MOD_LT' and type(c[2]) == 'string' then
             local mod, below = string.match(c[2], '^([A-Z][A-Z0-9_]*)%.(%d+)$')
@@ -462,6 +568,8 @@ function G.encodeRule(rule, index)
             end
 
             return string.format('%s.%d', v.mod, v.below)
+        elseif type(v) == 'table' and (v.family ~= nil or v.cmp ~= nil or v.count ~= nil) then
+            return G.encodeCount(v) -- (version 11) ENEMY_FAMILY / PARTY_COUNT / ENEMY_COUNT; nil = not carried
         elseif type(v) == 'table' and word(v.effect) and whole(v.tier) and v.tier >= 1 then
             -- (version 8) { effect = 'MARCH', tier = 2 } -> "MARCH.2" (STATUS / NOT_STATUS); any other key: not carried
             for key in pairs(v) do
@@ -892,12 +1000,15 @@ end
 -- (catm "j", version 5). Names that need the batch's map server (R.ENGINE_NAMES) only when it is there.
 -- (version 6) withMod: the addon reads modifier arguments (catm "jm"); an older addon's check refuses a whole catalog
 -- with an entry kind it does not know, so MOD_LT is only sent when asked for
-local function baseLists(R, withJa, withMod)
+-- (version 11) withCount: the addon reads the enemy family (y) and count (p, q) arguments (catm "jmf")
+local function baseLists(R, withJa, withMod, withCount)
     local engineOk = R.engineReady == nil or R.engineReady()
     local engine2Ok = R.engine2Ready == nil or R.engine2Ready()
+    local engine3Ok = R.engine3Ready == nil or R.engine3Ready()
     local function offered(name)
         return (engineOk or not (R.ENGINE_NAMES and R.ENGINE_NAMES[name]))
             and (engine2Ok or not (R.ENGINE2_NAMES and R.ENGINE2_NAMES[name]))
+            and (engine3Ok or not (R.ENGINE3_NAMES and R.ENGINE3_NAMES[name]))
     end
 
     local lists = {}
@@ -926,6 +1037,11 @@ local function baseLists(R, withJa, withMod)
         elseif spec == 'mod' then
             if withMod then
                 lists.c[#lists.c + 1] = name .. ':m' -- (version 6: the addon knows the modifiers and their ranges, R.MODS)
+            end
+        elseif spec == 'family' or spec == 'pcount' or spec == 'ecount' then
+            if withCount then
+                -- (version 11, F1/F2) y = a monster family name (xi.mobFamily), p = a party count, q = an enemy count
+                lists.c[#lists.c + 1] = name .. ':' .. ({ family = 'y', pcount = 'p', ecount = 'q' })[spec]
             end
         elseif type(spec) == 'table' then
             lists.c[#lists.c + 1] = string.format('%s:r:%d:%d', name, spec[1], spec[2])
@@ -1185,9 +1301,9 @@ requests.catm = function(player, w)
         return
     end
 
-    -- "j" (version 5) / "jm" (version 6): which argument kinds the addon reads
+    -- "j" (version 5) / "jm" (version 6) / "jmf" (version 11): which argument kinds the addon reads
     local flags = w[4] or ''
-    local lists = baseLists(R, flags == 'j' or flags == 'jm', flags == 'jm')
+    local lists = baseLists(R, flags == 'j' or flags == 'jm' or flags == 'jmf', flags == 'jm' or flags == 'jmf', flags == 'jmf')
     lists.j = G.mateAbilities(player, mate.mjob, main, sub, subLevel)
     lists.s, lists.u = G.mateSpells(player, mate.mjob, main, sub, subLevel)
     replyCatalog(player, w[2], lists, CATM_KINDS)

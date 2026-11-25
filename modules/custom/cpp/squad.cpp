@@ -85,6 +85,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <tuple>
 
 namespace
 {
@@ -1795,6 +1796,30 @@ auto squadSpellKind(const uint16 spellId) -> std::string
     return squad::spellkind::Name(squad::spellkind::Classify(facts));
 }
 
+// Lua: SquadPartyFoes(player, x, y, z, radius) -> count, name of the nearest ("" when none), its targid (0 when none)
+// (B1, 2026-11-25) the monsters fighting the player's party within `radius` of the point: a link or a monster's pet still on the
+// party at camp keeps the next pull back (squad.lua campTick). The rule is CTrustController::PartyFoes / squad_threat.h.
+auto squadPartyFoes(CLuaBaseEntity* player, const float x, const float y, const float z, const float radius) -> std::tuple<int32, std::string, int32>
+{
+    auto* PChar = player != nullptr ? dynamic_cast<CCharEntity*>(player->GetBaseEntity()) : nullptr;
+    if (PChar == nullptr)
+    {
+        return { 0, "", 0 };
+    }
+
+    position_t anchor = PChar->loc.p;
+    anchor.x          = x;
+    anchor.y          = y;
+    anchor.z          = z;
+    const auto foes   = CTrustController::PartyFoes(PChar, anchor, radius > 0.0f ? radius : CTrustController::CampFightReach);
+    if (foes.empty())
+    {
+        return { 0, "", 0 };
+    }
+
+    return { static_cast<int32>(foes.size()), std::string(foes.front()->getName()), static_cast<int32>(foes.front()->targid) };
+}
+
 // Lua: SquadTryAbility(player, mate, abilityId) -> result name (cast, unknown, notready, notarget, busy)
 auto squadTryAbility(CLuaBaseEntity* player, CLuaBaseEntity* mate, const uint16 abilityId) -> std::string
 {
@@ -2075,6 +2100,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("SquadTwoHourAbilityId", squadTwoHourAbilityId);
         ::lua.set_function("SquadCastSpell", squadCastSpell);
         ::lua.set_function("SquadSpellKind", squadSpellKind);
+        ::lua.set_function("SquadPartyFoes", squadPartyFoes); // (B1) links and pets still on the party at camp
         ::lua.set_function("SquadTryAbilityRaw", squadTryAbility);
         ::lua.set_function("GetSquad", getSquad);
         ::lua.set_function("SaveSquadMate", saveSquadMate);
@@ -2093,6 +2119,9 @@ class SquadModule : public CPPModule
     // (Gambits 0.3.3, Bard role targeting) role targets read include / exclude role bits from the target argument's high
     // byte (gambits_container.cpp AddGambit): squad_rulesets.lua accepts a rule's include / exclude only then
     ::lua.set_function("SquadRoleFilterEngine", []() -> int32 { return 1; });
+    // (2026-11-25, community feedback milestone) marker: this xi_map has ENEMY_FAMILY, PARTY_COUNT, ENEMY_COUNT, the out of combat
+    // support rules and SquadPartyFoes (squad_rulesets.lua R.engine3Ready)
+    ::lua.set_function("SquadFeedbackEngine", []() -> int32 { return 1; });
         ::lua.set_function("DeleteSquadMate", deleteSquadMate);
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);

@@ -27,6 +27,10 @@
 #include "mob_controller.h"
 #include "trust_hold.h"
 
+#include "ai/helpers/squad_follow.h"
+
+#include <vector>
+
 class CCharEntity;
 class CTrustEntity;
 class CSpell;
@@ -64,6 +68,16 @@ public:
     auto GetTopEnmity() const -> CBattleEntity*;
     auto GetPartyPosition() const -> uint8;
 
+    // FFXI Offline squad (B1, F2): the monsters fighting PMaster's party within radius of anchor, nearest first (squad_threat.h)
+    static auto PartyFoes(CCharEntity* PMaster, const position_t& anchor, float radius) -> std::vector<CBattleEntity*>;
+    static constexpr float CampFightReach = { 20.0f }; // = CampFightRadius in trust_controller.cpp (squad.lua ATTACK_CAMP_REACH)
+
+    // FFXI Offline squad (B5): true while this mate cannot get closer to the one it follows (squad_follow.h)
+    auto IsStuck() const -> bool
+    {
+        return m_Follow.Stuck();
+    }
+
     // XI: Forever Offline: a script can hold the stock engage / weapon skill decisions (trust_hold.h). true while the hold for
     // this bit (trust_hold::HoldEngage, HoldWeaponSkill) is on and its script keeps renewing it.
     auto ScriptHolds(uint32 bit) -> bool;
@@ -82,6 +96,16 @@ private:
     auto OrderedTarget() -> CBattleEntity*;                       // FFXI Offline squad: !squad attack (the player's SQUAD_ATTACK_* local vars)
     void Declump(const CCharEntity* PMaster, const CBattleEntity* PTarget) const;
     void PathOutToDistance(const CBattleEntity* PTarget, float amount);
+
+    // FFXI Offline squad (B5): walk toward goal, stopping `want` short; far away a throttled navmesh path, no path: the wall-safe step
+    // nearBand: closer than this, exactly the old behaviour (a path every tick, else the step); step: walk the far path this tick
+    void CatchUp(const position_t& goal, float want, float nearBand, bool step);
+    // FFXI Offline squad (B5): the one this mate follows out of a fight, the player when the mate in front is lost or stuck
+    auto FollowAnchor(CCharEntity* PMaster, uint8 partyPos, bool gather) -> CBattleEntity*;
+    int64_t                 m_FollowRepathMs = 0; // (B5) when this mate last asked for a far path (squad_follow.h CatchUp)
+    squad::follow::Progress m_Follow;
+    // FFXI Offline squad (B1): a monster fighting the party at the camp (PartyFoes), or nullptr
+    auto CampThreat(const position_t& camp) -> CBattleEntity*;
 
     timer::time_point m_LastRepositionTime;
     uint8             m_failedRepositionAttempts;

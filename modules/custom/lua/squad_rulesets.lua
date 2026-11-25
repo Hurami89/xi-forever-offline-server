@@ -87,7 +87,77 @@ R.CONDITIONS =
     JA_ON_COOLDOWN = 'ja',
     -- (job expansion) a modifier of the target below a number: { mod = NAME, below = n }, NAME one of R.MODS
     MOD_LT = 'mod',
+    -- (F1, 2026-11-25) the enemy is of a monster family: { family = NAME } (xi.mobFamily: GOBLIN, ORC, QUADAV ...). The enemy is
+    -- the rule's target when that is a monster, else the mate's own enemy, so SELF / PARTY rules can ask: "Goblin -> Barfira".
+    ENEMY_FAMILY = 'family',
+    -- (F2, 2026-11-25) counts, { cmp = AT_LEAST | EXACTLY | AT_MOST | MORE_THAN | FEWER_THAN, count = n, ... }:
+    --   PARTY_COUNT { status = NAME or 'ASLEEP' (Sleep, Sleep II, Lullaby) or nil (everyone) }: living party members within
+    --               20 yalms of the mate, the mate included, e.g. { status = 'ASLEEP', cmp = 'AT_LEAST', count = 2 } -> Curaga
+    --   ENEMY_COUNT { hp_above = 0-99 (default 0), radius = 1-30 yalms around the mate's enemy (default 10) }: the monsters
+    --               fighting the party there (not the ones only standing near), e.g. { hp_above = 30, cmp = 'AT_LEAST', count = 3 }
+    PARTY_COUNT = 'pcount',
+    ENEMY_COUNT = 'ecount',
 }
+
+-- (F2) the comparisons of a count, as the engine numbers them (squad_threat.h CountMatches)
+R.COUNT_CMP = { AT_LEAST = 0, EXACTLY = 1, AT_MOST = 2, MORE_THAN = 3, FEWER_THAN = 4 }
+R.PARTY_COUNT_MAX = 18
+R.ENEMY_COUNT_MAX = 30
+R.ASLEEP_FILTER = 0xFFFE
+
+local function isWholeNumber(value, low, high)
+    return type(value) == 'number' and value == math.floor(value) and value >= low and value <= high
+end
+
+-- (F1/F2) true when xi_map has the community feedback milestone's engine (squad.cpp registers SquadFeedbackEngine)
+function R.engine3Ready()
+    return type(rawget(_G, 'SquadFeedbackEngine')) == 'function'
+end
+
+-- (F1) { family = 'GOBLIN' } -> the family id, or nil
+function R.familyArg(arg)
+    local families = type(xi) == 'table' and rawget(xi, 'mobFamily') or nil
+    if type(arg) ~= 'table' or type(families) ~= 'table' or type(arg.family) ~= 'string' then
+        return nil
+    end
+
+    local id = families[arg.family]
+    return type(id) == 'number' and id or nil
+end
+
+-- (F2) { status = 'ASLEEP', cmp = 'AT_LEAST', count = 2 } -> filter | count << 16 | cmp << 24, or nil
+function R.partyCountArg(arg)
+    if type(arg) ~= 'table' or R.COUNT_CMP[arg.cmp or 'AT_LEAST'] == nil or not isWholeNumber(arg.count, 0, R.PARTY_COUNT_MAX) then
+        return nil
+    end
+
+    local filter = 0
+    if arg.status == 'ASLEEP' then
+        filter = R.ASLEEP_FILTER
+    elseif arg.status ~= nil then
+        local effects = type(xi) == 'table' and rawget(xi, 'effect') or nil
+        filter = type(effects) == 'table' and effects[arg.status] or nil
+        if type(filter) ~= 'number' or filter <= 0 or filter >= R.ASLEEP_FILTER then
+            return nil
+        end
+    end
+
+    return filter + arg.count * 65536 + R.COUNT_CMP[arg.cmp or 'AT_LEAST'] * 16777216
+end
+
+-- (F2) { hp_above = 30, radius = 10, cmp = 'AT_LEAST', count = 3 } -> hp | radius << 8 | count << 16 | cmp << 24, or nil
+function R.enemyCountArg(arg)
+    if type(arg) ~= 'table' or R.COUNT_CMP[arg.cmp or 'AT_LEAST'] == nil or not isWholeNumber(arg.count, 0, R.ENEMY_COUNT_MAX) then
+        return nil
+    end
+
+    local hp, radius = arg.hp_above or 0, arg.radius or 10
+    if not isWholeNumber(hp, 0, 99) or not isWholeNumber(radius, 1, 30) then
+        return nil
+    end
+
+    return hp + radius * 256 + arg.count * 65536 + R.COUNT_CMP[arg.cmp or 'AT_LEAST'] * 16777216
+end
 
 -- (job expansion) the modifiers MOD_LT may name, with the numbers that make sense for "below": Utsusemi shadows and
 -- Blink images (battleutils.cpp IsAbsorbByShadow counts them down in these mods; the Copy Image effect's power does not
@@ -101,6 +171,8 @@ R.MODS = {
 R.ENGINE_NAMES = { HAS_MP = true, HAS_MP_MPP_LT = true, HAS_MP_MPP_GTE = true, JA_ON_COOLDOWN = true, PARTY_LOWEST_HPP = true }
 -- ... and the ones that need the job expansion's map server
 R.ENGINE2_NAMES = { MOD_LT = true }
+-- ... and the ones that need the community feedback milestone's map server (F1, F2)
+R.ENGINE3_NAMES = { ENEMY_FAMILY = true, PARTY_COUNT = true, ENEMY_COUNT = true }
 
 -- true when xi_map has that batch: its squad.cpp registers SquadApplyWeaponSkills (built from the same source)
 function R.engineReady()
@@ -213,6 +285,10 @@ local function conditionProblem(cond)
         return name .. ' needs the updated map server (xi_map, job expansion)'
     end
 
+    if R.ENGINE3_NAMES[name] and not R.engine3Ready() then
+        return name .. ' needs the updated map server (xi_map, enemy family and count conditions)'
+    end
+
     if ai ~= nil and ai.c ~= nil and ai.c[name] == nil then
         return 'unknown condition ' .. name
     end
@@ -311,6 +387,47 @@ local function conditionProblem(cond)
         end
 
         return rangeProblem(name .. ' below', arg.below, range)
+    elseif spec == 'family' then
+        if type(arg) ~= 'table' or not isName(arg.family) then
+            return name .. ' needs { family = NAME } like GOBLIN'
+        end
+
+        if known('mobFamily', arg.family) == false then
+            return 'unknown monster family ' .. arg.family
+        end
+    elseif spec == 'pcount' or spec == 'ecount' then
+        local fields = spec == 'pcount' and { status = true, cmp = true, count = true } or { hp_above = true, radius = true, cmp = true, count = true }
+        if type(arg) ~= 'table' then
+            return name .. ' needs { cmp = AT_LEAST|EXACTLY|AT_MOST|MORE_THAN|FEWER_THAN, count = n, ... }'
+        end
+
+        for key in pairs(arg) do
+            if not fields[key] then
+                return name .. ': unknown field ' .. tostring(key)
+            end
+        end
+
+        if arg.cmp ~= nil and R.COUNT_CMP[arg.cmp] == nil then
+            return name .. ': cmp must be AT_LEAST, EXACTLY, AT_MOST, MORE_THAN or FEWER_THAN'
+        end
+
+        if spec == 'pcount' then
+            if arg.status ~= nil and arg.status ~= 'ASLEEP' then
+                if not isName(arg.status) then
+                    return name .. ': status must be a status effect name like PETRIFICATION, or ASLEEP'
+                end
+
+                if known('effect', arg.status) == false then
+                    return 'unknown status effect ' .. arg.status
+                end
+            end
+
+            return rangeProblem(name .. ' count', arg.count, { 0, R.PARTY_COUNT_MAX })
+        end
+
+        return rangeProblem(name .. ' count', arg.count, { 0, R.ENEMY_COUNT_MAX })
+            or (arg.hp_above ~= nil and rangeProblem(name .. ' hp_above', arg.hp_above, { 0, 99 }))
+            or (arg.radius ~= nil and rangeProblem(name .. ' radius', arg.radius, { 1, 30 })) or nil
     end
 
     return nil

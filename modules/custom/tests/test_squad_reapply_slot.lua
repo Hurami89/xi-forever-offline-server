@@ -64,7 +64,8 @@ check(has(said, 'squadpanel:cap|reapply1') and has(said, 'squadpanel:end'), 'the
 local keepDismiss = SquadDismissMate
 SquadDismissMate = nil
 said = run(world({ 1 }), 'panel')
-check(not has(said, 'squadpanel:cap|'), 'a map server without SquadDismissMate: no capability line (the menu keeps the squad-wide Apply)')
+-- (2026-11-25) the line is there for campmove; what matters is that it does not say reapply1
+check(not has(said, 'reapply1'), 'a map server without SquadDismissMate: no reapply1 capability (the menu keeps the squad-wide Apply)')
 SquadDismissMate = keepDismiss
 
 section('!squad reapply <slot>: that mate only')

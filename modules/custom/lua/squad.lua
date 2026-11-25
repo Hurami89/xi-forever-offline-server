@@ -907,6 +907,177 @@ function squadCampWaitsFor(player, member)
     return not resting and hp < CAMP_READY_HP
 end
 
+-- (2026-11-25, community feedback milestone) camp helpers. Globals in one table: this file is at Lua's limit for locals.
+SQUAD_CAMPX = SQUAD_CAMPX or {}
+SQUAD_CAMPX.READY_MP = CAMP_READY_MP -- (for the !squad command: its function is at Lua's limit of 60 upvalues)
+
+-- B1: the monsters fighting the party within the camp's reach (links, a monster's pet, the one being fought). Returns count,
+-- name of the nearest, its targid. 0 when the engine function is missing (an older xi_map): the camp then works as before.
+function SQUAD_CAMPX.foes(player, c)
+    local f = rawget(_G, 'SquadPartyFoes')
+    if type(f) ~= 'function' or c == nil then
+        return 0, '', 0
+    end
+
+    local ok, n, name, targ = pcall(f, player, c.x, c.y, c.z, xi.squad.ATTACK_CAMP_REACH or 20)
+    if not ok or type(n) ~= 'number' then
+        return 0, '', 0
+    end
+
+    return n, name or '', targ or 0
+end
+
+-- F6: the healers of the squad for the camp's MP check. Mates with the Role Healer (!squad role / the Squads menu); with none
+-- set, the White Mages; with neither, nobody (the setting then changes nothing).
+function SQUAD_CAMPX.healers(player, trusts)
+    local byRole, byJob = {}, {}
+    for _, trust in ipairs(trusts) do
+        local role = decodeBehavior(player:getCharVar('SQUAD_AI_' .. trust:getLocalVar('SQUAD_ID')))
+        if role == 'healer' then
+            byRole[#byRole + 1] = trust
+        elseif trust:getMainJob() == xi.job.WHM then
+            byJob[#byJob + 1] = trust
+        end
+    end
+
+    return #byRole > 0 and byRole or byJob
+end
+
+-- F6: the MP (%) a mate needs before the next pull. Unset (0): CAMP_READY_MP for everyone, as before. Set: the healers need
+-- that much instead (higher or lower), everyone else keeps CAMP_READY_MP.
+function SQUAD_CAMPX.mpNeed(player, trust, healerSet)
+    local want = player:getCharVar('SQUAD_PULL_HEALER_MP')
+    if want > 0 and healerSet ~= nil and healerSet[trust:getID()] then
+        return math.min(100, want)
+    end
+
+    return CAMP_READY_MP
+end
+
+function SQUAD_CAMPX.healerSet(player, trusts)
+    if player:getCharVar('SQUAD_PULL_HEALER_MP') <= 0 then
+        return nil
+    end
+
+    local set = {}
+    for _, trust in ipairs(SQUAD_CAMPX.healers(player, trusts)) do
+        set[trust:getID()] = true
+    end
+
+    return set
+end
+
+-- everyone ready for a pull? nil when ready, else a reason (no side effects; the usual pull path says its own lines)
+function SQUAD_CAMPX.notReady(player, trusts)
+    for _, member in pairs(player:getPartyWithTrusts() or {}) do
+        if member:getObjType() == xi.objType.PC and squadCampWaitsFor(player, member) then
+            return member:getName() .. ' needs HP'
+        end
+    end
+
+    local healers = SQUAD_CAMPX.healerSet(player, trusts)
+    for _, trust in ipairs(trusts) do
+        local need = SQUAD_CAMPX.mpNeed(player, trust, healers)
+        if not trust:isAlive() or percentOf(trust, 'getHP', 'getMaxHP') < CAMP_READY_HP or
+            (trust:getMaxMP() > 0 and percentOf(trust, 'getMP', 'getMaxMP') < need) then
+            return string.format('%s HP %d%% MP %d%% (needs %d%% HP, %d%% MP)', trust:getPacketName(), percentOf(trust, 'getHP', 'getMaxHP'),
+                percentOf(trust, 'getMP', 'getMaxMP'), CAMP_READY_HP, need)
+        end
+    end
+
+    return nil
+end
+
+-- F7: the camp's state in one word for the menu: off | paused | pulling | fighting | idle
+function SQUAD_CAMPX.state(player)
+    local c = camps[player:getID()]
+    if c == nil then
+        return 'off'
+    elseif c.paused then
+        return 'paused'
+    end
+
+    return (c.state == 'pulling' or c.state == 'fighting') and c.state or 'idle'
+end
+
+-- F7: squadpanel:campst|<camp 1/0>|<paused 1/0>|<state>|<pulls>|<next pull at enemy HP %, 0 off>|<healer MP %, 0 default>
+function SQUAD_CAMPX.line(player)
+    local c = camps[player:getID()]
+    return string.format('squadpanel:campst|%d|%d|%s|%d|%d|%d', c and 1 or 0, c and c.paused and 1 or 0, SQUAD_CAMPX.state(player),
+        c and c.pulls or 0, player:getCharVar('SQUAD_PULL_AT_HP'), player:getCharVar('SQUAD_PULL_HEALER_MP'))
+end
+
+-- F7: tell the menu when the camp changed (state, pause, a setting), so its compact controls stay right without a refresh. Only
+-- for a player whose menu asked for the panel in the last half hour (squad.lua 'panel' sets SQUAD_PANEL_SEEN): a player without
+-- the menu never sees these lines. force: say it even when nothing changed (after a command).
+function SQUAD_CAMPX.push(player, force)
+    local ok = pcall(function()
+        local seen = player:getLocalVar('SQUAD_PANEL_SEEN')
+        if seen == 0 or os.time() - seen > 1800 then
+            return
+        end
+
+        local line = SQUAD_CAMPX.line(player)
+        SQUAD_CAMPX.last = SQUAD_CAMPX.last or {}
+        if force or SQUAD_CAMPX.last[player:getID()] ~= line then
+            SQUAD_CAMPX.last[player:getID()] = line
+            say(player, line)
+        end
+    end)
+
+    return ok
+end
+
+-- F5: the puller may fetch the next monster while the squad finishes this one, once it is at or under SQUAD_PULL_AT_HP (%).
+-- A handoff is valid only when: the setting is on, the camp is not paused; exactly one monster is on the party at camp (no link
+-- or pet left over: B1); it is not on the puller (somebody else holds it); and everyone is ready by the usual rules. Returns the
+-- monster that is being finished, or nil and why not.
+function SQUAD_CAMPX.earlyPullFoe(player, c, puller, trusts)
+    local at = player:getCharVar('SQUAD_PULL_AT_HP')
+    if at <= 0 or c.paused then
+        return nil, nil
+    end
+
+    local n, _, targ = SQUAD_CAMPX.foes(player, c)
+    if n ~= 1 then
+        return nil, n > 1 and string.format('next pull at %d%%: %d monsters are still on the party', at, n) or nil
+    end
+
+    local foe = nil
+    pcall(function()
+        for _, trust in ipairs(trusts) do
+            local t = trust:isEngaged() and trust:getTarget() or nil
+            if t ~= nil and t:getTargID() == targ then
+                foe = t
+            end
+        end
+    end)
+
+    if foe == nil or not foe:isAlive() then
+        return nil, nil
+    end
+
+    if foe:getHPP() > at then
+        return nil, string.format('next pull at %d%%: %s is at %d%%', at, foe:getName(), foe:getHPP())
+    end
+
+    local onPuller = false
+    pcall(function()
+        local t = foe:getTarget()
+        onPuller = t ~= nil and t:getID() == puller:getID()
+    end)
+    if onPuller then
+        return nil, string.format('next pull at %d%%: %s is on the puller', at, foe:getName())
+    end
+
+    local why = SQUAD_CAMPX.notReady(player, trusts)
+    if why ~= nil then
+        return nil, 'next pull at ' .. at .. '%: waiting, ' .. why
+    end
+
+    return foe, nil
+end
+
 -- What the puller may go for: c.want holds one or more monster names, comma separated.
 local function campWants(c)
     local list = {}
@@ -1306,10 +1477,12 @@ local function campTick(mob)
     end
 
     c.nextTick = now + 1
+    SQUAD_CAMPX.push(player) -- (F7) the menu's compact controls: what changed since the last tick
     if player:getZoneID() ~= c.zone then
         camps[player:getID()] = nil
         campApplyAll(player)
         say(player, 'Camp lifted: you left the area. Your squad follows you again.')
+        SQUAD_CAMPX.push(player, true)
         return
     end
 
@@ -1404,9 +1577,18 @@ local function campTick(mob)
             end)
             if far then
                 SQUAD_HOLD[player:getID()] = { puller = c.puller, untilT = now + 2 }
+                -- (F5/B1, 2026-11-25) only a mate that went out for the monster being pulled is called back; a mate still finishing
+                -- the last one (an early pull) or fighting a link at camp keeps at it
                 for _, trust in ipairs(trusts) do
                     if trust:getLocalVar('SQUAD_ID') ~= c.puller and trust:isEngaged() then
-                        pcall(function() trust:disengage() end)
+                        local onPulled = true
+                        pcall(function()
+                            local t = trust:getTarget()
+                            onPulled = foe == nil or t == nil or t:getID() == foe:getID()
+                        end)
+                        if onPulled then
+                            pcall(function() trust:disengage() end)
+                        end
                     end
                 end
             else
@@ -1492,17 +1674,36 @@ local function campTick(mob)
         end
     end
 
-    if busy then
-        c.state = 'fighting'
-        squadCampWhy(c, string.format('not pulling: %s is still engaged', tostring(busyWho)))
-        return
+    -- (B1, 2026-11-25) a link or a monster's pet still on the party at camp is a fight too, even with nobody engaged yet:
+    -- no new pull until it is dealt with (the mates take it on: CampThreat in trust_controller.cpp)
+    local foesN, foeName = SQUAD_CAMPX.foes(player, c)
+    if not busy and foesN > 0 then
+        busy, busyWho = true, nil
+        c.foeName = foeName
     end
 
-    if c.state == 'fighting' then
+    local early = nil
+    if busy then
+        -- (F5) the next pull may start while the squad finishes this monster (SQUAD_PULL_AT_HP)
+        local whyEarly
+        early, whyEarly = SQUAD_CAMPX.earlyPullFoe(player, c, puller, trusts)
+        if early == nil then
+            c.state = 'fighting'
+            if busyWho ~= nil then
+                squadCampWhy(c, whyEarly or string.format('not pulling: %s is still engaged', tostring(busyWho)))
+            else
+                squadCampWhy(c, string.format('not pulling: %s is still on the party at camp (%d left)', tostring(c.foeName), foesN))
+            end
+
+            return
+        end
+    end
+
+    if c.state == 'fighting' and early == nil then
         c.state, c.nextPull = 'idle', now + math.random(CAMP_PULL_GAP[1], CAMP_PULL_GAP[2])
     end
 
-    if now < (c.nextPull or 0) or c.paused then
+    if early == nil and now < (c.nextPull or 0) or c.paused then
         if c.paused then
             squadCampWhy(c, 'not pulling: the camp is paused')
         end
@@ -1535,16 +1736,19 @@ local function campTick(mob)
         end
     end
 
+    -- (F6, 2026-11-25) the healers' MP need is SQUAD_PULL_HEALER_MP when it is set (SQUAD_CAMPX.mpNeed); unset, CAMP_READY_MP for all
+    local healerSet = SQUAD_CAMPX.healerSet(player, trusts)
     for _, trust in ipairs(trusts) do
+        local needMp = SQUAD_CAMPX.mpNeed(player, trust, healerSet)
         if not trust:isAlive() or percentOf(trust, 'getHP', 'getMaxHP') < CAMP_READY_HP or
-            (trust:getMaxMP() > 0 and percentOf(trust, 'getMP', 'getMaxMP') < CAMP_READY_MP) then
+            (trust:getMaxMP() > 0 and percentOf(trust, 'getMP', 'getMaxMP') < needMp) then
             if not c.waitSaid then
                 c.waitSaid = true
                 campSay(player, puller, 'waiting a bit, need hp/mp')
             end
 
             squadCampWhy(c, string.format('waiting: %s HP %d%% MP %d%% (needs %d%% HP, %d%% MP)', trust:getPacketName(), percentOf(trust, 'getHP', 'getMaxHP'),
-                percentOf(trust, 'getMP', 'getMaxMP'), CAMP_READY_HP, CAMP_READY_MP))
+                percentOf(trust, 'getMP', 'getMaxMP'), CAMP_READY_HP, needMp))
             c.nextPull = now + 5
             return
         end
@@ -1604,6 +1808,17 @@ local function campTick(mob)
     if okM and castM then
         c.nextPull = now + 4
         return
+    end
+
+    if early ~= nil then
+        -- (F5) the puller leaves the fight it is not holding; the others finish it
+        if puller:isEngaged() then
+            pcall(function() puller:disengage() end)
+        end
+
+        pcall(function()
+            print(string.format('[squad] pull: early pull, %s is at %d%% (setting %d%%)', early:getName(), early:getHPP(), player:getCharVar('SQUAD_PULL_AT_HP')))
+        end)
     end
 
     puller:setLocalVar('SQUAD_PULL_TARGET', target:getTargID())
@@ -3820,6 +4035,12 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         end
 
         say(player, string.format('squadpanel:camp|%d|%d|%d|%d', c and 1 or 0, pullerSlot, c and c.paused and 1 or 0, c and c.pulls or 0))
+        -- (F5-F7, 2026-11-25) campst|...: the camp's state and the two pull settings, also said by itself when the camp changes
+        -- (SQUAD_CAMPX.push) so the compact controls follow commands and the server; an older menu ignores the line
+        player:setLocalVar('SQUAD_PANEL_SEEN', os.time())
+        say(player, SQUAD_CAMPX.line(player))
+        SQUAD_CAMPX.last = SQUAD_CAMPX.last or {}
+        SQUAD_CAMPX.last[player:getID()] = SQUAD_CAMPX.line(player)
 
         -- (servermenu 1.17) the bot players in your party, for the Puller list: campbots|<names, comma list or ->|<pulling bot or ->
         if BotIsBot then
@@ -3888,9 +4109,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
         -- (UI milestone, SV-1) what this server can do beyond the first menus: cap|<words>. reapply1 = !squad reapply <slot>
         -- re-calls one mate. A menu uses that form only after it has read this line; an older menu ignores the line.
-        if SquadDismissMate ~= nil then
-            say(player, 'squadpanel:cap|reapply1')
-        end
+        -- (2026-11-25) campmove = !squad camp move keeps the puller, the picks and Start / Pause (servermenu 1.33)
+        say(player, 'squadpanel:cap|' .. (SquadDismissMate ~= nil and 'reapply1,campmove' or 'campmove'))
 
         -- (servermenu 1.8) what the puller goes for, and the kinds of monster around the camp
         if c then
@@ -4227,6 +4447,56 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             else
                 say(player, campStatus(player))
             end
+        elseif what == 'pullat' then
+            -- (F5, 2026-11-25) the puller fetches the next monster while the squad finishes this one, once it is at or under
+            -- this much HP (char var SQUAD_PULL_AT_HP, 0 = off, the default: one monster at a time, as before)
+            local n = tonumber(arg2 or '')
+            if string.lower(arg2 or '') == 'off' then
+                n = 0
+            end
+
+            if n and n >= 0 and n <= 90 then
+                player:setCharVar('SQUAD_PULL_AT_HP', math.floor(n))
+            end
+
+            local at = player:getCharVar('SQUAD_PULL_AT_HP')
+            say(player, at > 0 and string.format('The puller goes for the next monster once this one is at %d%% HP or less, if nothing else is on the party and the puller is not the one it is hitting (!squad camp pullat off to stop).', at)
+                or 'The puller waits until the fight is over before the next pull (!squad camp pullat <10-90> to pull earlier).')
+        elseif what == 'healermp' then
+            -- (F6, 2026-11-25) the MP (%) the healers need before a pull (char var SQUAD_PULL_HEALER_MP, 0 = default: every
+            -- mate with MP needs SQUAD_CAMPX.READY_MP). Healers: mates with the Role Healer, else the White Mages.
+            local n = tonumber(arg2 or '')
+            if string.lower(arg2 or '') == 'off' or string.lower(arg2 or '') == 'default' then
+                n = 0
+            end
+
+            if n and n >= 0 and n <= 100 then
+                player:setCharVar('SQUAD_PULL_HEALER_MP', math.floor(n))
+            end
+
+            local want = player:getCharVar('SQUAD_PULL_HEALER_MP')
+            local names = {}
+            for _, trust in ipairs(SQUAD_CAMPX.healers(player, squadTrusts(player))) do
+                names[#names + 1] = trust:getPacketName()
+            end
+
+            if want > 0 then
+                say(player, string.format('Before a pull the healers need %d%% MP (the other mates %d%%). Healers now: %s. (!squad camp healermp default to go back)',
+                    want, SQUAD_CAMPX.READY_MP, #names > 0 and table.concat(names, ', ') or 'none out (no mate with the Role Healer and no White Mage): the setting does nothing'))
+            else
+                say(player, string.format('Before a pull every mate with MP needs %d%% MP. !squad camp healermp <0-100> sets the healers\' own need.', SQUAD_CAMPX.READY_MP))
+            end
+        elseif what == 'move' then -- (not 'here': "!squad camp here" sets a new camp, as it always did)
+            -- (F7, 2026-11-25) the camp moves to where you stand; the puller, the picks and Start / Pause stay as they were
+            local c = camps[charId]
+            if c == nil then
+                say(player, campStatus(player))
+            else
+                local pos = player:getPos()
+                c.zone, c.x, c.y, c.z = player:getZoneID(), pos.x, pos.y, pos.z
+                campApplyAll(player)
+                say(player, 'Camp moved here. Same puller and settings' .. (c.paused and ' (still paused).' or '.'))
+            end
         else
             local pos = player:getPos()
             local old = camps[charId]
@@ -4238,9 +4508,10 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             if type(xi.squad.pack) == 'table' then
                 pcall(xi.squad.pack.onCommand, player, 'hold')
             end
-            say(player, 'Who pulls: !squad pull <slot>  (a mate)  or  !squad pull <bot name>  or  !squad pull me  |  !squad camp off  |  !squad camp pause|resume|status|range <yalms>|want <Monster_Name or any>')
+            say(player, 'Who pulls: !squad pull <slot>  (a mate)  or  !squad pull <bot name>  or  !squad pull me  |  !squad camp off  |  !squad camp pause|resume|status|move|range <yalms>|want <Monster_Name or any>|pullat <HP %>|healermp <MP %>')
         end
 
+        SQUAD_CAMPX.push(player, true) -- (F7) the menu's compact controls follow the command
         return
     end
 
@@ -4317,6 +4588,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         c.puller, c.nextPull = mate.id, os.time() + 2
         say(player, string.format('%s pulls. Monsters %s within %d yalms of camp, one at a time when everyone is ready.',
             mate.name, squadCampWindowText(player), campRange(player)))
+        SQUAD_CAMPX.push(player, true)
         return
     end
 
@@ -6382,6 +6654,20 @@ local function ruleCondition(spec, isSub)
         return { id, packed }
     end
 
+    -- (F1/F2, 2026-11-25) ENEMY_FAMILY { family = 'GOBLIN' }, PARTY_COUNT / ENEMY_COUNT { cmp, count, ... } -> the engine's
+    -- packed argument (squad_rulesets.lua R.familyArg, R.partyCountArg, R.enemyCountArg)
+    if spec[1] == 'ENEMY_FAMILY' or spec[1] == 'PARTY_COUNT' or spec[1] == 'ENEMY_COUNT' then
+        local okR, R = pcall(require, 'modules/custom/lua/squad_rulesets')
+        local pack = okR and type(R) == 'table' and (spec[1] == 'ENEMY_FAMILY' and R.familyArg or (spec[1] == 'PARTY_COUNT' and R.partyCountArg or R.enemyCountArg)) or nil
+        local packed = pack and R.engine3Ready and R.engine3Ready() and pack(spec[2]) or nil
+        if packed == nil then
+            print(string.format('[squad] %s has a wrong value or needs the updated map server - rule skipped', spec[1]))
+            return nil
+        end
+
+        return { id, packed }
+    end
+
     -- (Bard song tiers) STATUS / NOT_STATUS { effect = 'MARCH', tier = 2 } -> effect id + tier * 65536 (R.effectArg)
     if (spec[1] == 'STATUS' or spec[1] == 'NOT_STATUS') and type(spec[2]) == 'table' then
         local okR, R = pcall(require, 'modules/custom/lua/squad_rulesets')
@@ -7205,6 +7491,7 @@ if rawget(_G, '__SQUAD_TEST') ~= nil then
         switchesOf = switchesOf, withBit = withBit, switchSummary = switchSummary, switchForAction = switchForAction,
         chatFight = chatFight, chatWorld = chatWorld, chatHookPlayer = chatHookPlayer,
         skillchainRoles = skillchainRoles, ruleCondition = ruleCondition, -- (Gambits WAR/PLD/RDM/WS batch tests)
+        campTick = campTick, camps = camps, -- (community feedback milestone tests: B1, F5-F7)
     }
 end
 

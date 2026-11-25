@@ -24,6 +24,9 @@
 #include "ability.h"
 #include "common/earth_time.h"
 #include "ai/helpers/gambits_container.h"
+#include "ai/helpers/squad_follow.h"
+#include "ai/helpers/squad_threat.h"
+#include "ai/helpers/trust_cast_gate.h"
 #include "ai/helpers/trust_enmity_target.h"
 #include "ai/states/magic_state.h"
 #include "ai/states/range_state.h"
@@ -91,6 +94,177 @@ auto campOf(const CBaseEntity* PTrust, position_t& camp) -> bool
 }
 
 } // namespace
+
+// FFXI Offline squad (B1, 2026-11-25): the monsters fighting PMaster's party (the player, his party, the mates) within `radius`
+// of `anchor`, nearest first. The rule is squad_threat.h; the monsters looked at are the ones the player can see (his spawn
+// lists), which covers a camp he stands at and every fight a rule can reach.
+auto CTrustController::PartyFoes(CCharEntity* PMaster, const position_t& anchor, const float radius) -> std::vector<CBattleEntity*>
+{
+    std::vector<CBattleEntity*> out;
+    if (PMaster == nullptr)
+    {
+        return out;
+    }
+
+    std::vector<uint32> members;
+    members.push_back(PMaster->id);
+    // clang-format off
+    PMaster->ForPartyWithTrusts([&](const CBattleEntity* PMember)
+    {
+        members.push_back(PMember->id);
+    });
+    // clang-format on
+    for (const auto* PTrust : PMaster->PTrusts)
+    {
+        if (PTrust != nullptr)
+        {
+            members.push_back(PTrust->id);
+        }
+    }
+
+    const auto isMember = [&](const uint32 id)
+    {
+        return std::find(members.begin(), members.end(), id) != members.end();
+    };
+
+    std::vector<std::pair<float, CBattleEntity*>> found;
+    const auto consider = [&](CBaseEntity* PBase)
+    {
+        auto* PMob = dynamic_cast<CMobEntity*>(PBase);
+        if (PMob == nullptr || PMob->PEnmityContainer == nullptr)
+        {
+            return;
+        }
+
+        squad::threat::Foe foe;
+        foe.alive     = !PMob->isDead() && PMob->status != xi::Status::Disappear;
+        foe.hostile   = PMob->allegiance == xi::Allegiance::Mob;
+        foe.distance  = distance(PMob->loc.p, anchor);
+        foe.heightGap = PMob->loc.p.y - anchor.y;
+        if (const auto* PTarget = PMob->GetBattleTarget(); PTarget != nullptr)
+        {
+            foe.targetsParty = isMember(PTarget->id);
+        }
+
+        if (!foe.targetsParty)
+        {
+            for (const auto& [id, entry] : *PMob->PEnmityContainer->GetEnmityList())
+            {
+                if (entry.active && (entry.CE + entry.VE) > 0 && isMember(id))
+                {
+                    foe.partyEnmity = true;
+                    break;
+                }
+            }
+        }
+
+        if (squad::threat::IsPartyFoe(foe, radius))
+        {
+            found.emplace_back(foe.distance, PMob);
+        }
+    };
+
+    for (const auto& [id, PEntity] : PMaster->SpawnMOBList)
+    {
+        consider(PEntity);
+    }
+
+    for (const auto& [id, PEntity] : PMaster->SpawnPETList) // (a monster's pet: allegiance Mob; the players' pets are not)
+    {
+        consider(PEntity);
+    }
+
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b)
+              {
+                  return a.first < b.first;
+              });
+    for (const auto& [d, PFoe] : found)
+    {
+        out.push_back(PFoe);
+    }
+
+    return out;
+}
+
+// FFXI Offline squad (B1): the nearest monster fighting the party at this camp. The one a mate is pulling in is left to the pull
+// (squad.lua holds the camp until it is close, so nobody runs out to meet it), as before.
+auto CTrustController::CampThreat(const position_t& camp) -> CBattleEntity*
+{
+    auto* PMaster = dynamic_cast<CCharEntity*>(POwner->PMaster);
+    if (PMaster == nullptr)
+    {
+        return nullptr;
+    }
+
+    std::vector<uint16> pulling;
+    for (const auto* PTrust : PMaster->PTrusts)
+    {
+        if (PTrust != nullptr && PTrust->GetLocalVar("SQUAD_PULL_PHASE") != 0 && PTrust->GetLocalVar("SQUAD_PULL_TARGET") != 0)
+        {
+            pulling.push_back(static_cast<uint16>(PTrust->GetLocalVar("SQUAD_PULL_TARGET")));
+        }
+    }
+
+    for (auto* PFoe : PartyFoes(PMaster, camp, CampFightRadius))
+    {
+        if (std::find(pulling.begin(), pulling.end(), PFoe->targid) == pulling.end())
+        {
+            return PFoe;
+        }
+    }
+
+    return nullptr;
+}
+
+// FFXI Offline squad (B5, 2026-11-25): walk toward `goal`, stopping `want` yalms short. Closer than `nearBand`, and for every
+// trust that is not a squad mate, exactly as before: a fresh path every tick, else the wall-safe straight step. A squad mate
+// further away keeps a path that still ends near the goal, asks for a new one at most once a second (squad_follow.h), and
+// only takes the straight step when the navmesh has no path at all. step: walk the path now (false when the caller's own
+// FollowPath right after does it, so the mate does not move twice in one tick).
+void CTrustController::CatchUp(const position_t& goal, const float want, const float nearBand, const bool step)
+{
+    squad::follow::CatchUp(*POwner->PAI->PathFind, POwner->loc.p, goal, want, nearBand, POwner->GetLocalVar("SQUAD_ID") != 0, step,
+                           POwner->GetSpeed() > 0, m_Tick, timer::count_milliseconds(m_Tick.time_since_epoch()), m_FollowRepathMs,
+                           static_cast<uint8_t>(PATHFLAG_RUN),
+                           [](const position_t& a, const position_t& b)
+                           {
+                               return distance(a, b);
+                           });
+}
+
+// FFXI Offline squad (B5): who this mate follows out of a fight. The first mate (and everyone while the squad gathers) follows the
+// player; the others the mate in front. A squad mate does not follow a mate in front that is down, that is further from the
+// player than itself (it went the wrong way, or is stuck behind), or that cannot get any closer to the one it follows: it
+// follows the player then, so one stuck mate does not hold the whole line. Ordinary trusts: the mate in front, as before.
+auto CTrustController::FollowAnchor(CCharEntity* PMaster, const uint8 partyPos, const bool gather) -> CBattleEntity*
+{
+    if (partyPos == 0 || gather || static_cast<size_t>(partyPos - 1) >= PMaster->PTrusts.size())
+    {
+        return PMaster;
+    }
+
+    auto* PLead = PMaster->PTrusts.at(partyPos - 1);
+    if (PLead == nullptr || PLead == POwner)
+    {
+        return PMaster;
+    }
+
+    if (POwner->GetLocalVar("SQUAD_ID") != 0)
+    {
+        bool leadStuck = PLead->isDead();
+        if (auto* PLeadController = dynamic_cast<CTrustController*>(PLead->PAI->GetController()); PLeadController != nullptr)
+        {
+            leadStuck = leadStuck || PLeadController->IsStuck();
+        }
+
+        if (squad::follow::LeadLost(distance(PLead->loc.p, PMaster->loc.p), distance(POwner->loc.p, PMaster->loc.p), leadStuck))
+        {
+            return PMaster;
+        }
+    }
+
+    return PLead;
+}
 
 CTrustController::CTrustController(CCharEntity* PChar, CTrustEntity* PTrust)
 : CMobController(PTrust)
@@ -351,15 +525,8 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
                     // inside RoamDistance of the mob, whatever CanAttack says.
                     if (PTrust->GetSpeed() > 0 && currentDistanceToTarget > RoamDistance)
                     {
-                        if (currentDistanceToTarget < RoamDistance * 3.0f &&
-                            PTrust->PAI->PathFind->PathAround(PTarget->loc.p, RoamDistance, PATHFLAG_RUN))
-                        {
-                            PTrust->PAI->PathFind->FollowPath(m_Tick);
-                        }
-                        else if (PTrust->GetSpeed() > 0)
-                        {
-                            PTrust->PAI->PathFind->StepToOnMesh(PTarget->loc.p, true);
-                        }
+                        // (B5) far from the monster (below a ledge): a throttled navmesh path for squad mates, see CatchUp
+                        CatchUp(PTarget->loc.p, RoamDistance, RoamDistance * 3.0f, false);
                     }
                     break;
                 }
@@ -420,14 +587,8 @@ auto CTrustController::DoNonCombatTick(const timer::time_point tick) -> Task<voi
     // - others follow the trust directly in front of them
     uint8 currentPartyPos = GetPartyPosition();
 
-    CBattleEntity* PFollowTarget = PMaster;
-    if (currentPartyPos > 0 && static_cast<size_t>(currentPartyPos - 1) < PMaster->PTrusts.size())
-    {
-        if (auto* PLeadTrust = PMaster->PTrusts.at(currentPartyPos - 1); PLeadTrust && PLeadTrust != PTrust)
-        {
-            PFollowTarget = PLeadTrust;
-        }
-    }
+    // (B5) a squad mate whose leader is lost or stuck follows the player instead (FollowAnchor)
+    CBattleEntity* PFollowTarget = FollowAnchor(PMaster, currentPartyPos, false);
 
     // First trust keeps a bit more space from master.
     constexpr float FirstTrustFollowDistance = 3.0f; // tune as needed
@@ -461,16 +622,11 @@ auto CTrustController::DoNonCombatTick(const timer::time_point tick) -> Task<voi
     }
     else if (currentDistance > desiredFollowDistance)
     {
-        if (currentDistance < desiredFollowDistance * 3.0f &&
-            PTrust->PAI->PathFind->PathAround(PFollowTarget->loc.p, desiredFollowDistance, PATHFLAG_RUN))
-        {
-            PTrust->PAI->PathFind->FollowPath(m_Tick);
-        }
-        else if (PTrust->GetSpeed() > 0)
-        {
-            PTrust->PAI->PathFind->StepToOnMesh(PFollowTarget->loc.p, true);
-        }
+        // (B5) far away: a throttled navmesh path for squad mates (the step is the FollowPath just below)
+        CatchUp(PFollowTarget->loc.p, desiredFollowDistance, desiredFollowDistance * 3.0f, false);
     }
+
+    m_Follow.Update(timer::count_milliseconds(m_Tick.time_since_epoch()), currentDistance, desiredFollowDistance * 2.0f, false);
 
     if (PTrust->PAI->PathFind->IsFollowingPath())
     {
@@ -545,6 +701,14 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
             }
         }
 
+        // (B1, 2026-11-25) a link or a monster's pet still on the party after the pulled one died, with your weapon away and
+        // nobody else on it: it is the camp's fight too. In follow mode this is not done: there the fight still starts from
+        // your target, your !squad attack order, or a mate's fight, as before.
+        if (PFight == nullptr)
+        {
+            PFight = CampThreat(camp);
+        }
+
         if (PFight != nullptr && EngageDelayPassed(PFight))
         {
             POwner->PAI->Internal_Engage(EntityId(PFight));
@@ -557,6 +721,13 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
             }
 
             CampHold(camp);
+
+            // (B3b, 2026-11-25) holding camp with nothing to fight and you not engaged: the support rules (Sleep -> Cure,
+            // Petrification -> Stona), once the mate stands on its spot
+            if (POwner->GetLocalVar("SQUAD_ID") != 0 && !PMaster->PAI->IsEngaged() && !POwner->PAI->PathFind->IsFollowingPath())
+            {
+                co_await m_GambitsContainer->Tick(tick, true);
+            }
         }
 
         co_return;
@@ -629,7 +800,8 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
     // var SQUAD_GATHER holds the time until which). Everyone then comes to the player himself, not to the mate in front,
     // each a little further out than the one before, and goes back to the usual line afterwards.
     const bool           gather          = POwner->GetLocalVar("SQUAD_ID") != 0 && PMaster->GetLocalVar("SQUAD_GATHER") > earth_time::timestamp();
-    const CBattleEntity* PFollowTarget   = (currentPartyPos > 0 && !gather) ? static_cast<CBattleEntity*>(PMaster->PTrusts.at(currentPartyPos - 1)) : POwner->PMaster;
+    // (B5) a squad mate whose leader is lost or stuck follows the player instead (FollowAnchor; ordinary trusts as before)
+    const CBattleEntity* PFollowTarget   = FollowAnchor(PMaster, currentPartyPos, gather);
     const float          currentDistance = distance(POwner->loc.p, PFollowTarget->loc.p);
 
     // Formation following thresholds (in yalms)
@@ -668,16 +840,18 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
         }
         else
         {
-            // Path or step closer to follow target
-            if (currentDistance < RoamDistance * 3.0f && POwner->PAI->PathFind->PathAround(PFollowTarget->loc.p, followTarget, PATHFLAG_RUN))
-            {
-                POwner->PAI->PathFind->FollowPath(m_Tick);
-            }
-            else if (POwner->GetSpeed() > 0)
-            {
-                POwner->PAI->PathFind->StepToOnMesh(PFollowTarget->loc.p, true);
-            }
+            // Path or step closer to follow target ((B5) far away: a throttled navmesh path for squad mates, see CatchUp)
+            CatchUp(PFollowTarget->loc.p, followTarget, RoamDistance * 3.0f, true);
         }
+    }
+
+    m_Follow.Update(timer::count_milliseconds(m_Tick.time_since_epoch()), currentDistance, followMax, false);
+
+    // (B3b, 2026-11-25) following you after a fight, you not engaged: the support rules (Sleep -> Cure, Petrification -> Stona),
+    // only while the mate stands still (a cast would stop it). Ordinary trusts: unchanged.
+    if (POwner->GetLocalVar("SQUAD_ID") != 0 && !PMaster->PAI->IsEngaged() && !POwner->PAI->PathFind->IsFollowingPath())
+    {
+        co_await m_GambitsContainer->Tick(tick, true);
     }
     else
     {
@@ -1225,7 +1399,15 @@ auto CTrustController::Cast(const EntityId target, SpellID spellid) -> bool
 
                 if (PSpell->isBuff())
                 {
-                    if (PSpellFamily == MSpellFamily && spellid <= MSpellID)
+                    // (B4, 2026-11-25) trust_cast_gate.h: family 0 is "this spell only", and two mates casting a self-only buff
+                    // each on herself (Blink, Aquaveil) no longer wait for each other
+                    const auto selfOnly = [](const CSpell* S)
+                    {
+                        return S->getValidTarget() == TARGET_SELF && S->getAOE() != SPELLAOE_RADIAL && S->getSpellGroup() != SPELLGROUP_SONG;
+                    };
+                    const trust::castgate::Buff want{ .id = static_cast<uint16>(spellid), .family = static_cast<uint16>(PSpellFamily), .selfOnly = selfOnly(PSpell) };
+                    const trust::castgate::Buff other{ .id = static_cast<uint16>(MSpellID), .family = static_cast<uint16>(MSpellFamily), .selfOnly = selfOnly(MSpell) };
+                    if (trust::castgate::BuffWaits(want, other, PTarget != nullptr && PTarget == MTarget))
                     {
                         canCast = false;
                     }
