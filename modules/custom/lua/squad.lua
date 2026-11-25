@@ -2580,6 +2580,15 @@ function squadTeamTick(mob)
 end
 
 local function callMate(player, mate)
+    -- (2026-11-25) Ventures: a mate out on a venture from the XIFO app can't be called (squad_ventures.lua)
+    if type(xi.squad.ventures) == 'table' then
+        local away = xi.squad.ventures.away(player, mate)
+        if away then
+            say(player, away)
+            return
+        end
+    end
+
     local present = summonedMate(player, mate.id)
     if present ~= nil and not present:isAlive() then
         -- (2026-11-23) its fallen body is still here, waiting for a Raise: take it away and call the mate fresh
@@ -6811,6 +6820,13 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
         if type(xi.squad.shell) == 'table' then
             pcall(xi.squad.shell.onGameIn, player, zoning) -- (mates on your linkshell: squad_shell.lua)
         end
+        -- (2026-11-25) Ventures: send-offs and homecomings while you play (squad_ventures.lua)
+        pcall(function()
+            if xi.squad.ventures == nil then
+                xi.squad.ventures = require('modules/custom/lua/squad_ventures')
+            end
+            xi.squad.ventures.onGameIn(player, GetSquad, SquadDismissMate, say)
+        end)
 
         player:addListener('DEFEATED_MOB', 'SQUAD_BLU_LEARN', function(mob)
             if mob == nil or not squadScrollsOn(player) or not SquadBlueSpellsOf then
