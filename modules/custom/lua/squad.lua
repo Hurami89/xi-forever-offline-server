@@ -281,7 +281,7 @@ local function usage(player)
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad juice   - the juices each mate carries (trade juices to a mate: it drinks one when its MP runs low)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
-    say(player, '!squad blu <slot> [set | unset <spell>] | auto   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
+    say(player, '!squad blu <slot> [set | unset <spell>] | clear | auto | save | load <name> | builds   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
     say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
     say(player, '!squad camp rest on | off   - mates sit and rest at camp while the pull is out')
@@ -2869,7 +2869,7 @@ local function callMate(player, mate)
         ws       = wsSettings and wsSettings.spawnWs(player, mate)  -- 0 = every weapon skill it can use, else only this one
                    or player:getCharVar('SQUAD_WS_' .. mate.id),
         scrolls  = squadScrollsOn(player),                              -- spells 18+ only when the squad learned them
-        blueSet    = squadBlueSetGet(player, mate.id),            -- (a Blue Mage) your chosen set; empty = automatic
+        blueSet    = squadBlueSetSpawn(player, mate.id),          -- (a Blue Mage) your chosen set; empty = automatic; { 0 } = your own empty set
         bluePrefer = squadBluePrefer(),
         equip    = outfit,
         lockstyle = looks,  -- (the look shown over the real gear, if any)
@@ -3111,8 +3111,16 @@ function squadBluePrefer()
     return out
 end
 
+-- (2026-11-25) SQUAD_BLUN_<mate id> = SQUAD_BLU_EMPTY: your own set, with nothing in it (!squad blu <slot> clear, or the
+-- last spell unset). 0 stays "automatic".
+SQUAD_BLU_EMPTY = 21
+
 function squadBlueSetGet(player, mateId)
     local out = {}
+    if player:getCharVar('SQUAD_BLUN_' .. mateId) == SQUAD_BLU_EMPTY then
+        return out
+    end
+
     for n = 1, math.min(20, player:getCharVar('SQUAD_BLUN_' .. mateId)) do
         local id = player:getCharVar('SQUAD_BLU_' .. mateId .. '_' .. n)
         if id > 0 then
@@ -3123,8 +3131,10 @@ function squadBlueSetGet(player, mateId)
     return out
 end
 
+-- list nil = automatic; an empty list = your own set with nothing in it (SQUAD_BLU_EMPTY)
 function squadBlueSetPut(player, mateId, list)
     local old = player:getCharVar('SQUAD_BLUN_' .. mateId)
+    old = old == SQUAD_BLU_EMPTY and 20 or old
     for n = 1, 20 do
         local id = list and list[n] or 0
         if id > 0 or n <= old then
@@ -3132,7 +3142,215 @@ function squadBlueSetPut(player, mateId, list)
         end
     end
 
-    player:setCharVar('SQUAD_BLUN_' .. mateId, list and math.min(#list, 20) or 0)
+    local count = list and math.min(#list, 20) or 0
+    player:setCharVar('SQUAD_BLUN_' .. mateId, (list ~= nil and count == 0) and SQUAD_BLU_EMPTY or count)
+end
+
+-- What the engine gets when the mate is called (squad.cpp blueSet): your set, or { 0 } for your own empty set (a list
+-- that is not empty, so trustutils.cpp does not pick one itself, with no spell in it), or {} = automatic
+function squadBlueSetSpawn(player, mateId)
+    if player:getCharVar('SQUAD_BLUN_' .. mateId) == SQUAD_BLU_EMPTY then
+        return { 0 }
+    end
+
+    return squadBlueSetGet(player, mateId)
+end
+
+-- (2026-11-25) Saved blue magic builds, per character (any of its Blue Mage mates can load one): !squad blu <slot>
+-- save | load | delete <name>, and builds (the list). Up to MAX_BUILDS, each a name (a-z, 0-9, up to MAX_NAME characters)
+-- and up to 20 spell ids. Kept in char vars (they go with the character):
+--   SQUAD_BLUB_<n>_A / _B   the name, 5 characters per number (base 37, 0 = no character)
+--   SQUAD_BLUB_<n>_C        how many spells (0 = a free place)
+--   SQUAD_BLUB_<n>_<k>      the spell ids
+-- Loading fits the build to the mate as it is now: spells it does not know (yet), or that do not fit its slots and set
+-- points, are left out and named. (A global table: squad.lua is near Lua's limits of locals and upvalues.)
+SQUAD_BLUX = SQUAD_BLUX or {}
+SQUAD_BLUX.MAX_BUILDS = 10
+SQUAD_BLUX.MAX_NAME   = 10
+SQUAD_BLUX.ALPHABET   = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+function SQUAD_BLUX.encode(name)
+    name = string.lower(tostring(name or ''))
+    if name == '' or #name > SQUAD_BLUX.MAX_NAME or name:find('[^a-z0-9]') then
+        return nil
+    end
+
+    local parts = { 0, 0 }
+    for i = 1, #name do
+        local digit = SQUAD_BLUX.ALPHABET:find(name:sub(i, i), 1, true) -- 1..36
+        local p = i <= 5 and 1 or 2
+        parts[p] = parts[p] * 37 + digit
+    end
+
+    -- left-aligned in each number, so "ab" and "ab0..." differ: pad the rest of the 5 places with 0
+    local firstLen, secondLen = math.min(#name, 5), math.max(#name - 5, 0)
+    parts[1] = parts[1] * 37 ^ (5 - firstLen)
+    parts[2] = parts[2] * 37 ^ (5 - secondLen)
+    return math.floor(parts[1]), math.floor(parts[2])
+end
+
+function SQUAD_BLUX.decode(a, b)
+    local out = {}
+    for _, value in ipairs({ a, b }) do
+        local digits = {}
+        value = math.floor(tonumber(value) or 0)
+        for _ = 1, 5 do
+            digits[#digits + 1] = value % 37
+            value = math.floor(value / 37)
+        end
+
+        for i = 5, 1, -1 do
+            if digits[i] > 0 then
+                out[#out + 1] = SQUAD_BLUX.ALPHABET:sub(digits[i], digits[i])
+            end
+        end
+    end
+
+    return table.concat(out)
+end
+
+-- every saved build: { { n = place, name = ..., ids = { ... } }, ... } in place order
+function SQUAD_BLUX.list(player)
+    local out = {}
+    for n = 1, SQUAD_BLUX.MAX_BUILDS do
+        local count = player:getCharVar('SQUAD_BLUB_' .. n .. '_C')
+        if count > 0 then
+            local ids = {}
+            for k = 1, math.min(count, 20) do
+                local id = player:getCharVar('SQUAD_BLUB_' .. n .. '_' .. k)
+                if id > 0 then
+                    ids[#ids + 1] = id
+                end
+            end
+
+            out[#out + 1] = { n = n, ids = ids,
+                name = SQUAD_BLUX.decode(player:getCharVar('SQUAD_BLUB_' .. n .. '_A'), player:getCharVar('SQUAD_BLUB_' .. n .. '_B')) }
+        end
+    end
+
+    return out
+end
+
+function SQUAD_BLUX.find(player, name)
+    name = string.lower(tostring(name or ''))
+    for _, b in ipairs(SQUAD_BLUX.list(player)) do
+        if b.name == name then
+            return b
+        end
+    end
+
+    return nil
+end
+
+-- save (or replace) a build; returns true, or false and why ('name' | 'empty' | 'full')
+function SQUAD_BLUX.save(player, name, ids)
+    local a, bPart = SQUAD_BLUX.encode(name)
+    if a == nil then
+        return false, 'name'
+    end
+
+    if #ids == 0 then
+        return false, 'empty'
+    end
+
+    local same = SQUAD_BLUX.find(player, name)
+    local place = same and same.n or nil
+    if place == nil then
+        for n = 1, SQUAD_BLUX.MAX_BUILDS do
+            if player:getCharVar('SQUAD_BLUB_' .. n .. '_C') == 0 then
+                place = n
+                break
+            end
+        end
+    end
+
+    if place == nil then
+        return false, 'full'
+    end
+
+    local old = player:getCharVar('SQUAD_BLUB_' .. place .. '_C')
+    for k = 1, 20 do
+        if ids[k] ~= nil or k <= old then
+            player:setCharVar('SQUAD_BLUB_' .. place .. '_' .. k, ids[k] or 0)
+        end
+    end
+
+    player:setCharVar('SQUAD_BLUB_' .. place .. '_A', a)
+    player:setCharVar('SQUAD_BLUB_' .. place .. '_B', bPart)
+    player:setCharVar('SQUAD_BLUB_' .. place .. '_C', math.min(#ids, 20))
+    return true
+end
+
+function SQUAD_BLUX.delete(player, name)
+    local b = SQUAD_BLUX.find(player, name)
+    if b == nil then
+        return false
+    end
+
+    for k = 1, 20 do
+        player:setCharVar('SQUAD_BLUB_' .. b.n .. '_' .. k, 0)
+    end
+
+    for _, suffix in ipairs({ 'A', 'B', 'C' }) do
+        player:setCharVar('SQUAD_BLUB_' .. b.n .. '_' .. suffix, 0)
+    end
+
+    return true
+end
+
+-- the set a change builds on: your own set as stored (also an empty one), or, while automatic is stored, what the mate
+-- has set now (st = squadBlueState)
+function SQUAD_BLUX.current(player, mate, st)
+    if player:getCharVar('SQUAD_BLUN_' .. mate.id) ~= 0 then
+        return squadBlueSetGet(player, mate.id)
+    end
+
+    local copy = {}
+    for _, id in ipairs(st.set) do
+        copy[#copy + 1] = id
+    end
+
+    return copy
+end
+
+-- a spell's name from xi.magic.spell ("SHEEP_SONG" -> "Sheep Song"), or "spell <id>"
+function SQUAD_BLUX.spellName(id)
+    local spells = xi.magic and type(xi.magic.spell) == 'table' and xi.magic.spell or {}
+    for name, sid in pairs(spells) do
+        if sid == id then
+            local words = {}
+            for word in string.lower(name):gmatch('[^_]+') do
+                words[#words + 1] = word:sub(1, 1):upper() .. word:sub(2)
+            end
+            return table.concat(words, ' ')
+        end
+    end
+
+    return 'spell ' .. tostring(id)
+end
+
+-- the build fitted to this mate now (st = squadBlueState): kept ids, and the names of what was left out, with why
+function SQUAD_BLUX.fit(st, ids)
+    local byId = {}
+    for _, k in ipairs(st.known) do
+        byId[k.spell] = k
+    end
+
+    local kept, skipped, used = {}, {}, 0
+    for _, id in ipairs(ids) do
+        local k = byId[id]
+        local spellName = k and k.name or SQUAD_BLUX.spellName(id)
+        if k == nil then
+            skipped[#skipped + 1] = spellName .. ' (not known)'
+        elseif #kept >= st.slots or used + k.points > st.points then
+            skipped[#skipped + 1] = spellName .. ' (no room)'
+        else
+            kept[#kept + 1] = id
+            used = used + k.points
+        end
+    end
+
+    return kept, skipped, used
 end
 
 -- the mate's blue magic now: { slots, points, used, auto, known = SquadKnownBlue list, set = { ids } } (nil if not out)
@@ -5537,9 +5755,62 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             return nil
         end
 
+        local buildName = string.lower(arg3 or '')
         if sub == 'auto' then
             squadBlueSetPut(player, mate.id, nil)
             say(player, string.format('%s picks their own blue magic again. Dismiss and call them again to apply it.', mate.name))
+        elseif sub == 'clear' then
+            -- (2026-11-25) your own set with nothing in it, to build one from a clean slate
+            squadBlueSetPut(player, mate.id, {})
+            say(player, string.format('%s\'s set is empty now (your own set). !squad blu %d set <spell> adds spells, or load <build>. Dismiss and call them again to apply it.',
+                mate.name, mate.slot))
+        elseif sub == 'save' then
+            -- (2026-11-25) save the set as a named build: your own set as you made it, or what the automatic set holds now
+            local ids = SQUAD_BLUX.current(player, mate, st)
+            local ok, why = SQUAD_BLUX.save(player, buildName, ids)
+            if ok then
+                say(player, string.format('Saved build "%s" (%d spells). !squad blu <slot> load %s puts it on a Blue Mage mate.', buildName, #ids, buildName))
+            elseif why == 'name' then
+                say(player, string.format('!squad blu %d save <name>: a name of 1-%d letters or digits (a-z, 0-9).', mate.slot, SQUAD_BLUX.MAX_NAME))
+            elseif why == 'empty' then
+                say(player, string.format('%s has nothing set to save.', mate.name))
+            else
+                say(player, string.format('You have %d builds saved already. !squad blu %d delete <name> makes room.', SQUAD_BLUX.MAX_BUILDS, mate.slot))
+            end
+        elseif sub == 'load' and buildName ~= '' then
+            -- (2026-11-25) a saved build as this mate's own set, fitted to what it knows and to its slots and points now
+            local b = SQUAD_BLUX.find(player, buildName)
+            if b == nil then
+                say(player, string.format('No build named "%s". !squad blu %d builds lists them.', buildName, mate.slot))
+            else
+                local kept, skipped, used = SQUAD_BLUX.fit(st, b.ids)
+                squadBlueSetPut(player, mate.id, kept)
+                say(player, string.format('%s loads "%s": %d spells, %d/%d slots, %d/%d points. Dismiss and call them again to apply it.',
+                    mate.name, buildName, #kept, #kept, st.slots, used, st.points))
+                if #skipped > 0 then
+                    say(player, 'Left out: ' .. table.concat(skipped, ', '))
+                end
+            end
+        elseif sub == 'delete' then
+            if SQUAD_BLUX.delete(player, buildName) then
+                say(player, string.format('Deleted build "%s".', buildName))
+            else
+                say(player, string.format('No build named "%s". !squad blu %d builds lists them.', buildName, mate.slot))
+            end
+        elseif sub == 'builds' or sub == 'load' then
+            local builds = SQUAD_BLUX.list(player)
+            if #builds == 0 then
+                say(player, string.format('No saved builds. !squad blu %d save <name> saves %s\'s set.', mate.slot, mate.name))
+            else
+                for _, b in ipairs(builds) do
+                    local names = {}
+                    for _, id in ipairs(b.ids) do
+                        names[#names + 1] = SQUAD_BLUX.spellName(id)
+                    end
+                    say(player, string.format('%s (%d): %s', b.name, #b.ids, table.concat(names, ', ')))
+                end
+                say(player, string.format('!squad blu %d load <name> | save <name> | delete <name>', mate.slot))
+            end
         elseif sub == 'set' or sub == 'unset' then
             local k = find(what)
             if k == nil then
@@ -5547,7 +5818,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 return
             end
 
-            local list = st.auto and st.set or squadBlueSetGet(player, mate.id) -- (from automatic: start from what is set now)
+            -- (from automatic: start from what is set now; 2026-11-25: "automatic" is what is STORED, not what the mate had at
+            -- its last call, so several set / unset / clear before a re-call build on one another)
+            local list = SQUAD_BLUX.current(player, mate, st)
             local copy, has = {}, false
             for _, id in ipairs(list) do
                 if id == k.spell then
@@ -5598,7 +5871,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
             say(player, string.format('%s (%s): %d/%d slots, %d/%d points. Set: %s', mate.name, st.auto and 'automatic' or 'your set',
                 #st.set, st.slots, st.used, st.points, #names > 0 and table.concat(names, ', ') or 'nothing'))
-            say(player, string.format('!squad blu %d set <spell> | unset <spell> | auto', mate.slot))
+            say(player, string.format('!squad blu %d set <spell> | unset <spell> | clear | auto | save <name> | load <name> | builds', mate.slot))
         end
 
         return
