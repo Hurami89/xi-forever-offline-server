@@ -155,6 +155,15 @@ local function loadRates()
 end
 
 H.rates = loadRates() -- read by the C++ side too (hardcoreutils::rate)
+-- (2026-11-25, the user) Only Steel and Silver carry their own rates everywhere. Iron and Randomized characters play at
+-- the rates of whatever world they're in (their own world's rules at home, the host's rules when visiting): with no
+-- row here, hardcoreutils::rate, H.withRates, H.noFastTravel and the squad's exp all fall back to the world's settings.
+H.OWN_RATES = { [2] = true, [3] = true }
+for mode in pairs(H.rates) do
+    if not H.OWN_RATES[mode] then
+        H.rates[mode] = nil
+    end
+end
 
 local world = readLuaFile(WORLD_CFG) or {}
 H.hardcoreOnly = world.hardcore_only == true -- this world only lets hardcore visitors in
