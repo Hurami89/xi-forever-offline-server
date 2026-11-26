@@ -81,6 +81,8 @@ xi_add_executable(xi_test testserver.rc
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/squad_position_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/squad_spell_kind_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/squad_threat_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/squad_wsset_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/avatar_perpetuation_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/transport_voyage_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/trust_cast_gate_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/trust_enmity_target_tests.cpp

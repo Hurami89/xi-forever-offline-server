@@ -1437,6 +1437,27 @@ auto CTrustController::Ability(const EntityId target, uint16 abilityid) -> bool
     return false;
 }
 
+// XI: Forever Offline (F12): the WS gear set is on from the start of the weapon skill until its damage is done
+// (CTrustEntity::OnWeaponSkillFinished), and the weapon skill state's Cleanup, Die and despawn take it off too. A refused
+// start (no target, out of sight: CWeaponSkillState::init) never enters the state, so it is taken off here.
+auto CTrustController::WeaponSkill(const EntityId target, const uint16 wsid) -> bool
+{
+    auto* PTrust = dynamic_cast<CTrustEntity*>(POwner);
+    if (PTrust == nullptr || !PTrust->isSquadMate())
+    {
+        return CMobController::WeaponSkill(target, wsid);
+    }
+
+    PTrust->ApplySquadWsSet();
+    const bool started = CMobController::WeaponSkill(target, wsid);
+    if (!started)
+    {
+        PTrust->RestoreSquadWsSet();
+    }
+
+    return started;
+}
+
 auto CTrustController::RangedAttack(const EntityId target) -> bool
 {
     TracyZoneScoped;
