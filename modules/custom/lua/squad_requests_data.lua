@@ -135,7 +135,7 @@ D.FAMILIES = {
     teleport_altep = { name = 'Teleport-Altep', spells = { 'TELEPORT_ALTEP' }, kind = 'party', roles = { 3, 5, 20 }, words = { 'teleport altep', 'tele altep', 'teleport-altep', 'altep' } },
     teleport_vahzl = { name = 'Teleport-Vahzl', spells = { 'TELEPORT_VAHZL' }, kind = 'party', roles = { 3, 5, 20 }, words = { 'teleport vahzl', 'tele vahzl', 'teleport-vahzl', 'vahzl' } },
     -- Warp takes only the caster, so it is asked as Warp II (it takes the party member it is cast on)
-    warp = { name = 'Warp', spells = { 'WARP_II' }, kind = 'target', scope = 'pc', roles = { 4, 5, 20 }, words = { 'warp', 'warp home', 'go home' } },
+    warp = { name = 'Warp', spells = { 'WARP_II' }, kind = 'target', scope = 'pc', roles = { 4, 5, 20 }, words = { 'warp', 'warp home', 'go home', 'd2', 'warp ii', 'warp 2', 'warp2' } },  -- (2026-11-25, JØ: "D2", players' name for Warp II)
     -- (B2, 2026-11-25, Frost: "Escape only takes the caster" for /p escape) Escape is cast on its caster and takes the party members
     -- around her out of the area, like the Teleports: a 'party' request (SquadSpellKind says "party" for it since the Protectra II
     -- fix). It was refused here as 'caster' before the cast was ever tried. Black Mages first.

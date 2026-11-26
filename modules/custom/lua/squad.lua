@@ -284,6 +284,7 @@ local function usage(player)
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
     say(player, '!squad blu <slot> [set | unset <spell>] | clear | auto | save | load <name> | builds   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
+    say(player, '!squad town on | off   - on (the default): mates wait outside towns and rejoin you when you leave, no call timer')
     say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
     say(player, '!squad camp rest on | off   - mates sit and rest at camp while the pull is out')
     say(player, '!squad camp wait on | off   - on: the puller waits while you rest or are low on MP (off, the default: it keeps pulling)')
@@ -1967,6 +1968,11 @@ local function syncCap(player)
 end
 
 local resyncSquad -- defined after callMate
+function squadInTown(player)               -- (global: 200-local limit) the zone is a town (zone_settings type CITY)
+    local ok, mask = pcall(function() return player:getZone():getTypeMask() end)
+    return ok and type(mask) == 'number' and mask % 2 == 1
+end
+
 local zoneOut = {} -- [player id] = { [squad id] = last seen out (os.time()), mh = true while in your Mog House }: called again after zoning
 local restTick    -- defined after callMate
 
@@ -4843,6 +4849,20 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         return
     end
 
+    if action == 'town' then
+        local word = arg1 and string.lower(arg1) or ''
+        if word == 'off' then
+            player:setCharVar('SQUAD_TOWN_FOLLOW', 1)
+        elseif word == 'on' then
+            player:setCharVar('SQUAD_TOWN_FOLLOW', 0)
+        end
+
+        say(player, player:getCharVar('SQUAD_TOWN_FOLLOW') == 0
+            and 'Town: your squad waits outside towns and rejoins you when you leave (!squad town off: they come in with you).'
+            or 'Town: your squad comes into towns with you (!squad town on: they wait outside).')
+        return
+    end
+
     if action == 'dismiss' and arg1 ~= nil and string.lower(arg1) ~= 'all' then
         -- one mate leaves, the others stay (needs the squad.cpp of v0.1.27: SquadDismissMate)
         local mate = findMate(squad, tonumber(arg1) or 0)
@@ -7636,6 +7656,30 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
 
     if player:inMogHouse() then
         seen.mh = true
+        return result
+    end
+
+    -- (2026-11-25, Neet; the user: "yes, with no penalty on the timer") Towns: the mates who were out wait outside, the
+    -- same way they wait through your Mog House, and come back by themselves in the next area that is not a town, with
+    -- no call timer. You can still call them in town by hand. !squad town off: they come into towns with you, as before.
+    if player:getCharVar('SQUAD_TOWN_FOLLOW') == 0 and squadInTown(player) then
+        local waiting = seen.mh == true
+        if not waiting then
+            local now = os.time()
+            for key, at in pairs(seen) do
+                if type(key) == 'number' and type(at) == 'number' and now - at <= 60 then
+                    waiting = true
+                end
+            end
+        end
+
+        if waiting and not seen.mh then
+            player:timer(ZONE_WAIT_MS, function(entity)
+                say(entity, 'Your squad waits outside town. They rejoin you when you leave (no call timer).')
+            end)
+        end
+
+        seen.mh = seen.mh or waiting
         return result
     end
 
