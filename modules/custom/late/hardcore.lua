@@ -58,6 +58,7 @@ local VAR_RESET   = '[HC]Reset'    -- Steel: a job waiting to go back to level 1
 local VAR_RESETS  = '[HC]Resets'   -- Steel: how many times a job went back to 1
 local VAR_GIFTS   = '[HC]GiftsDue' -- cosmetics earned but not sent yet (the delivery box refused)
 local VAR_MS      = '[HC]MS'       -- .. job: the highest milestone paid on that job
+local VAR_PERMA   = '[HC]Perma'    -- (2026-11-25) Randomized with permadeath: falls like Silver (1); 0 = normal deaths
 
 local OUT_FILE    = 'modules/custom/lua/hardcore_out.txt'
 local IN_FILE     = 'modules/custom/lua/hardcore_in.txt'
@@ -399,7 +400,7 @@ local function pendingFor(player)
         if type(entry) == 'table' and type(entry.name) == 'string' and string.lower(entry.name) == name then
             local mode = tonumber(entry.mode) or 0
             if mode >= 1 and mode <= 4 then
-                return mode
+                return mode, entry
             end
         end
     end
@@ -407,8 +408,21 @@ local function pendingFor(player)
     return 0
 end
 
-local function becomeHardcore(player, mode)
+-- (2026-11-25, the user) a character that falls for good: Silver, and a Randomized character made with permadeath
+H.permadeath = function(player)
+    local mode = H.mode(player)
+    return mode == H.SILVER or (mode == H.RANDOM and player:getCharVar(VAR_PERMA) == 1)
+end
+
+local function becomeHardcore(player, mode, entry)
+    entry = type(entry) == 'table' and entry or {}
+    local perma = mode == H.RANDOM and (entry.perma == true or entry.perma == 1)
     player:setCharVar(VAR_MODE, mode)
+    player:setCharVar(VAR_PERMA, perma and 1 or 0)
+    -- the launcher asks "randomize the squad too?" when it makes a Randomized character ([HC]RSquad, !squad random)
+    if mode == H.RANDOM and (entry.rsquad == true or entry.rsquad == 1) then
+        player:setCharVar('[HC]RSquad', 1)
+    end
     player:setCharVar(VAR_START, os.time())
     player:setCharVar(VAR_DEAD, 0)
     player:setCharVar(VAR_DEATHS, 0)
@@ -427,7 +441,13 @@ local function becomeHardcore(player, mode)
     }
     if mode == H.RANDOM then
         tell(player, 'You are now a Randomized character. ' .. rules[mode])
-        announce(player, string.format('%s has begun a Randomized journey.', player:getName()))
+        if perma then
+            tell(player, 'Permadeath: when you are knocked out, this character is gone. For good.')
+        end
+        if player:getCharVar('[HC]RSquad') == 1 then
+            tell(player, 'Your squad is randomized too: each mate rolls its own looks and jobs (!squad random off to stop).')
+        end
+        announce(player, string.format('%s has begun a Randomized journey%s.', player:getName(), perma and ' with permadeath' or ''))
     else
         tell(player, string.format('You are now a %s hardcore character. %s', H.modeName(mode), rules[mode]))
         announce(player, string.format('%s has begun a %s hardcore journey.', player:getName(), H.modeName(mode)))
@@ -454,12 +474,13 @@ local seen = {}   -- [char id] = true, every real player seen this session (to s
 
 local function lockedOut(player)
     local dead = player:getCharVar(VAR_DEAD)
-    if H.mode(player) ~= H.SILVER or dead == 0 then
+    if not H.permadeath(player) or dead == 0 then
         return false
     end
 
     local left = math.max(0, H.LOCK_DAYS * 86400 - (os.time() - dead))
-    tell(player, string.format('%s fell as a Silver hardcore character and rests on the memorial. %s', player:getName(),
+    tell(player, string.format('%s fell as a %s character and rests on the memorial. %s', player:getName(),
+         H.mode(player) == H.RANDOM and 'Randomized (permadeath)' or 'Silver hardcore',
          left > 0 and string.format('The character is deleted in %s.', H.survivalText(left)) or 'The character is being deleted.'))
     player:timer(6000, function(entity)
         entity:leaveGame()
@@ -567,10 +588,10 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     seen[player:getID()] = true
     local mode = H.mode(player)
     if mode == 0 and not zoning then
-        local wanted = pendingFor(player)
+        local wanted, entry = pendingFor(player)
         if wanted > 0 then
             if eligible(player) then
-                becomeHardcore(player, wanted)
+                becomeHardcore(player, wanted, entry)
                 mode = wanted
             else
                 tell(player, 'This character has already gained a level, so it cannot become hardcore. Start a new character from the HARDCORE menu.')
@@ -1569,12 +1590,13 @@ m:addOverride('xi.player.onPlayerDeath', function(player)
     end
 
     player:setCharVar(VAR_DEATHS, player:getCharVar(VAR_DEATHS) + 1)
-    if mode == H.RANDOM then
+    if mode == H.RANDOM and not H.permadeath(player) then
         return                                  -- not hardcore: a normal death
     end
 
     local job = player:getMainJob()
     local level = player:getJobLevel(job)
+    local label = mode == H.RANDOM and 'Randomized, permadeath' or 'Silver'
 
     if mode == H.STEEL then
         if level > 1 then
@@ -1584,14 +1606,14 @@ m:addOverride('xi.player.onPlayerDeath', function(player)
             writeOut('delevel', player, mode, job, level, '')
             watchReset(player, 0)
         end
-    elseif mode == H.SILVER then
+    elseif H.permadeath(player) then
         if player:getCharVar(VAR_DEAD) == 0 then
             local lasted = H.survivalText(survived(player))
             player:setCharVar(VAR_DEAD, os.time())
-            announce(player, string.format('%s (Silver) has fallen. %s %d, hardcore for %s. Rest well.', player:getName(), jobName(job), level, lasted))
+            announce(player, string.format('%s (' .. label .. ') has fallen. %s %d, hardcore for %s. Rest well.', player:getName(), jobName(job), level, lasted))
             writeOut('death', player, mode, job, level, lasted)
-            tell(player, 'Silver: your journey ends here. This character is locked and will be deleted in 7 days.')
-            print(string.format('[hardcore] %s (Silver) died: %s %d, %s', player:getName(), jobName(job), level, lasted))
+            tell(player, label .. ': your journey ends here. This character is locked and will be deleted in 7 days.')
+            print(string.format('[hardcore] %s (' .. label .. ') died: %s %d, %s', player:getName(), jobName(job), level, lasted))
             player:timer(12000, function(entity)
                 entity:leaveGame()
             end)
