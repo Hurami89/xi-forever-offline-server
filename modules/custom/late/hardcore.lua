@@ -168,6 +168,7 @@ end
 local world = readLuaFile(WORLD_CFG) or {}
 H.hardcoreOnly = world.hardcore_only == true -- this world only lets hardcore visitors in
 H.isHub = world.hub == true                   -- the hub shows other worlds' lines (hardcore_in.txt)
+H.visitorRates = world.visitor_rates == true -- (2026-11-25) The Hub: visitors play at the rates they bring from home
 H.shareOnline = world.share ~= false          -- write lines for the launcher to send online (hub, Stinkshell)
 H.worldName = type(world.world) == 'string' and world.world or ''
 
@@ -241,20 +242,68 @@ end
 -----------------------------------
 -- the rates the scripts read from xi.settings.main: swapped in while a hardcore player's own call runs
 -----------------------------------
-H.withRates = function(player, fn, ...)
+-- (2026-11-25, the user) On The Hub (hardcore_world.lua visitor_rates, only The Hub turns it on) a visitor plays at the rates of its home world. The visiting launcher sends them as
+-- char vars "[HR]<key>" = rate x 1000 + 1 (0 = not sent). Only these keys travel: nothing about combat or the world.
+-- The C++ side reads the same vars (src/map/utils/hardcoreutils.h rate); keep the two lists in step with the launcher's
+-- launcher_passport.HUB_RATE_KEYS.
+H.HUB_PREFIX = '[HR]'
+H.HUB_KEYS =
+{
+    'map.EXP_RATE', 'map.DROP_RATE_MULTIPLIER', 'map.MOB_GIL_MULTIPLIER', 'map.ALL_MOBS_GIL_BONUS',
+    'map.SKILLUP_CHANCE_MULTIPLIER', 'map.BLUE_LEARN_MULTIPLIER', 'map.CRAFT_CHANCE_MULTIPLIER',
+    'map.CRAFT_HQ_CHANCE_MULTIPLIER', 'map.FISHING_SKILL_MULTIPLIER',
+    'main.GIL_RATE', 'main.TABS_RATE', 'main.BOOK_EXP_RATE', 'main.CASKET_DROP_RATE', 'main.DIG_SKILL_RATE',
+    'main.TM_CARD_DROP_RATE', 'main.TM_CASKET_CARD_RATE', 'main.TM_GIL_RATE', 'main.TM_PRICE_RATE',
+}
+
+-- This character's own value for a rate key, or nil when the world's own setting applies. First match wins:
+-- Steel / Silver's profile, then (on the hub) the rates the visitor brought from home.
+H.rateFor = function(player, key)
     local mode = H.mode(player)
     local row = mode > 0 and H.rates[mode] or nil
-    if row == nil or xi.settings == nil or xi.settings.main == nil then
+    if row ~= nil and row[key] ~= nil then
+        return row[key]
+    end
+
+    if H.visitorRates and player ~= nil and player:getObjType() == xi.objType.PC then
+        local stored = player:getCharVar(H.HUB_PREFIX .. key)
+        if stored > 0 then
+            return (stored - 1) / 1000
+        end
+    end
+
+    return nil
+end
+
+H.withRates = function(player, fn, ...)
+    if xi.settings == nil or xi.settings.main == nil then
         return fn(...)
     end
 
+    local keys = {}
+    local mode = H.mode(player)
+    for key in pairs(mode > 0 and H.rates[mode] or {}) do
+        keys[key] = true
+    end
+
+    if H.visitorRates then
+        for _, key in ipairs(H.HUB_KEYS) do
+            keys[key] = true
+        end
+    end
+
     local saved = {}
-    for key, value in pairs(row) do
+    for key in pairs(keys) do
         local name = key:match('^main%.([%w_]+)$')
-        if name then
+        local value = name and H.rateFor(player, key) or nil
+        if value ~= nil then
             saved[name] = xi.settings.main[name]
             xi.settings.main[name] = value
         end
+    end
+
+    if next(saved) == nil then
+        return fn(...)
     end
 
     local results = { pcall(fn, ...) }

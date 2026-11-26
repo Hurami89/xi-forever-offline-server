@@ -7481,13 +7481,12 @@ local function awardSquadExp(calc, master, mate, mob, data, squadId)
 
     -- The exp rate from the Rates tab (map.EXP_RATE) is applied by the game's core when a player gains exp, so apply it here too
     local expRate = tonumber(xi.settings.map.EXP_RATE) or 1
-    -- (2026-11-25, Teutonic84) a Hardcore character's mates earn at that mode's own exp rate, like the character does
-    -- (late/hardcore.lua H.rates; the C++ side gives the character its rate, the squad's exp is counted here)
-    if xi.hardcore and xi.hardcore.mode and xi.hardcore.rates then
-        local okMode, mode = pcall(xi.hardcore.mode, master)
-        local row = okMode and mode and mode > 0 and xi.hardcore.rates[mode] or nil
-        if row and tonumber(row['map.EXP_RATE']) then
-            expRate = tonumber(row['map.EXP_RATE'])
+    -- (2026-11-25, Teutonic84; the hub, the user) the mates earn at their master's own rate: a Steel / Silver mode's,
+    -- or on the hub the rate the visitor brought from home (late/hardcore.lua H.rateFor)
+    if xi.hardcore and xi.hardcore.rateFor then
+        local okRate, own = pcall(xi.hardcore.rateFor, master, 'map.EXP_RATE')
+        if okRate and tonumber(own) then
+            expRate = tonumber(own)
         end
     end
     local gain    = math.max(math.floor(result.exp * expRate), 0)
