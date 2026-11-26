@@ -7294,6 +7294,12 @@ local function squadSpawn(mob)
         mob:setLocalVar('SQUAD_ENGAGE_DELAY', delayMaster:getCharVar('SQUAD_DELAY_' .. mob:getLocalVar('SQUAD_ID')) * 1000)
     end
 
+    -- (2026-11-25, Frost, Norrec: a Ranger set to mid or far range shot once and then never again) A squad mate is a
+    -- monster to the engine, and a monster's bow, gun or throwing weapon reaches 14 yalms (CMobEntity::
+    -- GetRangedAttackRange), so from the mid (15) and far (20) spots below it stood out of its own reach. A player's
+    -- reaches 25: squad mates get the same.
+    mob:setMobMod(xi.mobMod.RANGED_ATTACK_RANGE, 25)
+
     -- Combat distance the player chose for this mate (!squad range): 1 melee, 2 mid range, 3 long range; 0 = its job's own
     local rangeMaster = mob:getMaster()
     local rangeChoice = rangeMaster and rangeMaster:getCharVar('SQUAD_RANGE_' .. mob:getLocalVar('SQUAD_ID')) or 0
