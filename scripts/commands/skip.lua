@@ -1,31 +1,33 @@
 -----------------------------------
--- func: skip <what> [yes] (any player)
--- desc: (2026-11-25, XI: Forever Offline; the user: "commands so that players can skip missions on whatever character
---       they want ... skip all, skip promy ... max rank, fame") skips story missions on the character using it, for
---       players who have done them before and want to get on with it. Every skipped mission is marked done (it shows
---       in the mission log), and the key items those missions hand out are given (the same work as !skipmissions).
---         !skip                 what can be skipped
---         !skip nation yes      your nation's missions, and rank 10
---         !skip rank yes        rank 10 only
---         !skip fame yes        the highest fame in San d'Oria, Bastok, Windurst and Norg (Jeuno follows from them)
---         !skip zilart yes      Rise of the Zilart
---         !skip promy yes       Chains of Promathia up to and including the three Promyvions (next: An Invitation West)
---         !skip cop yes         all of Chains of Promathia
---         !skip toau yes        Treasures of Aht Urhgan
---         !skip wotg yes        Wings of the Goddess
---         !skip all yes         nation + rank + fame + Zilart + Promathia + Aht Urhgan
---       Without "yes" it only says what it would do. Final rewards (rings, gear) are not given.
---       Hardcore characters (Iron, Steel, Silver, Randomized) can't skip: they earn everything themselves
---       (main.lua XIFO_SKIP_HARDCORE = true allows it). A world can turn the command off for everyone
---       (main.lua XIFO_PLAYER_SKIP = false). It is off in The Hub unless its main.lua says XIFO_PLAYER_SKIP = true.
+-- func: skip <what> [character] [yes] (GM)
+-- desc: (2026-11-25, XI: Forever Offline) skips story missions on a character, for players who have done them before.
+--       The user: "make sure the !skip mission commands can only be used on a GM character but they can skip the
+--       missions for other characters (requiring the person log into a GM account)". So the GM character types it,
+--       naming the character to skip for; that character has to be logged in (a second window). Every skipped
+--       mission is marked done (it shows in the mission log), and the key items those missions hand out are given
+--       (the same work as !skipmissions).
+--         !skip                          what can be skipped
+--         !skip nation Hurami yes        that character's nation missions, and rank 10
+--         !skip rank Hurami yes          rank 10 only
+--         !skip fame Hurami yes          the highest fame in San d'Oria, Bastok, Windurst and Norg (Jeuno follows)
+--         !skip zilart Hurami yes        Rise of the Zilart
+--         !skip promy Hurami yes         Chains of Promathia up to and including the Promyvions (next: An Invitation West)
+--         !skip cop Hurami yes           all of Chains of Promathia
+--         !skip toau Hurami yes          Treasures of Aht Urhgan
+--         !skip wotg Hurami yes          Wings of the Goddess
+--         !skip all Hurami yes           nation + rank + fame + Zilart + Promathia + Aht Urhgan
+--       No name: the GM character itself. Without "yes" it only says what it would do. Final rewards (rings, gear)
+--       are not given. Hardcore characters (Iron, Steel, Silver, Randomized) can't be skipped: they earn everything
+--       themselves (main.lua XIFO_SKIP_HARDCORE = true allows it). Off in open worlds (The Hub) unless main.lua says
+--       XIFO_PLAYER_SKIP = true; XIFO_PLAYER_SKIP = false turns it off anywhere.
 -----------------------------------
 ---@type TCommand
 local commandObj = {}
 
 commandObj.cmdprops =
 {
-    permission = 0,
-    parameters = 'ss'
+    permission = 1,
+    parameters = 'sss'
 }
 
 local NONE = 65535
@@ -36,9 +38,9 @@ local function line(player, text)
 end
 
 local function help(player)
-    line(player, 'Skip story missions you have done before (marked done, key items given). Add "yes" to do it:')
-    line(player, '  !skip nation | rank | fame | zilart | promy | cop | toau | wotg | all')
-    line(player, '  e.g. !skip promy yes    (Promathia up to and including the Promyvions)')
+    line(player, 'Skip story missions on a character (marked done, key items given). The character must be logged in.')
+    line(player, '  !skip nation | rank | fame | zilart | promy | cop | toau | wotg | all  <name>  yes')
+    line(player, '  e.g. !skip promy Hurami yes    (Promathia up to and including the Promyvions; no name = you)')
 end
 
 local function setting(name, default)
@@ -88,7 +90,7 @@ end
 
 local ALL = { 'nation', 'fame', 'zilart', 'cop', 'toau' }
 
-commandObj.onTrigger = function(player, what, yes)
+commandObj.onTrigger = function(player, what, name, yes)
     -- on by default, but off in The Hub (the shared, official world: xi.hardcore.isHub) unless main.lua says true
     local onByDefault = not (xi.hardcore and xi.hardcore.isHub)
     if setting('XIFO_PLAYER_SKIP', onByDefault) == false then
@@ -102,13 +104,26 @@ commandObj.onTrigger = function(player, what, yes)
     end
 
     what = string.lower(what)
-    local mode = player:getCharVar('[HC]Mode')
+    if name ~= nil and string.lower(name) == 'yes' and yes == nil then  -- !skip promy yes: the GM character itself
+        name, yes = nil, name
+    end
+
+    local target = player
+    if name ~= nil and name ~= '' then
+        target = GetPlayerByName(name)
+        if target == nil then
+            line(player, string.format('%s isn\'t logged in. Log that character in (a second window), then try again.', name))
+            return
+        end
+    end
+
+    local mode = target:getCharVar('[HC]Mode')
     if mode > 0 and not setting('XIFO_SKIP_HARDCORE', false) then
-        line(player, 'Hardcore characters earn their story themselves: skipping is for regular characters.')
+        line(player, string.format('%s is a hardcore or Randomized character: they earn their story themselves.', target:getName()))
         return
     end
 
-    local steps = plan(player)
+    local steps = plan(target)
     local todo = {}
     if what == 'all' then
         for _, k in ipairs(ALL) do
@@ -123,25 +138,29 @@ commandObj.onTrigger = function(player, what, yes)
     end
 
     if string.lower(yes or '') ~= 'yes' then
-        line(player, string.format('!skip %s would give %s:', what, player:getName()))
+        line(player, string.format('!skip %s would give %s:', what, target:getName()))
         for _, k in ipairs(todo) do
             line(player, '  - ' .. steps[k][1])
         end
 
-        line(player, string.format('It can\'t be undone. Type !skip %s yes to do it.', what))
+        line(player, string.format('It can\'t be undone. Type !skip %s %s yes to do it.', what, target:getName()))
         return
     end
 
     for _, k in ipairs(todo) do
         local ok, err = pcall(steps[k][2])
         if ok then
-            line(player, 'Done: ' .. steps[k][1] .. '.')
+            line(player, string.format('Done for %s: %s.', target:getName(), steps[k][1]))
         else
             line(player, string.format('Could not skip %s (%s).', k, tostring(err)))
         end
     end
 
-    line(player, 'Zone (or log out and in) once so the mission log and key items show.')
+    if target ~= player then
+        line(target, string.format('A GM skipped story missions for you (%s). Zone or log out and in once so they show.', what))
+    end
+
+    line(player, string.format('%s should zone (or log out and in) once so the mission log and key items show.', target:getName()))
 end
 
 return commandObj
