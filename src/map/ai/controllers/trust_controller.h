@@ -56,6 +56,9 @@ public:
     auto Ability(EntityId target, uint16 abilityid) -> bool override;
     auto Cast(EntityId target, SpellID spellid) -> bool override;
     auto RangedAttack(EntityId target) -> bool override;
+    // XI: Forever Offline (F12): every squad weapon skill (TryTrustSkill and the SA/TA closer) starts here: a squad mate's
+    // WS gear set goes on first, and comes off again at once when the start is refused
+    auto WeaponSkill(EntityId target, uint16 wsid) -> bool override;
 
     // 1.5: melee trusts used to path around at 3.0 yalms from the mob's centre and
     // then stop there, which is outside real hit range on anything larger than a

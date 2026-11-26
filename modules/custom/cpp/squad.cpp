@@ -1282,6 +1282,67 @@ bool squadRefreshLook(CLuaBaseEntity* mate)
     return true;
 }
 
+// (F12, 2026-11-25) SquadSetWsSet(mate, { [slot] = itemId, ... }): the mate's weapon skill gear set (armor slots 4-15
+// only; anything else is ignored). squad_wsset.lua has already checked it (unlocks, job, level, slot, Rare, the
+// outfit); the map server checks level and job again each time the set goes on (Level Sync). An empty table clears it.
+// Returns the number of pieces kept (-1: not a squad mate). A set that is on right now is taken off first, so a change
+// never leaks modifiers.
+auto squadSetWsSet(CLuaBaseEntity* mate, const sol::table& set) -> int32
+{
+    auto* PTrust = toSquadMate(mate);
+    if (PTrust == nullptr)
+    {
+        return -1;
+    }
+
+    PTrust->RestoreSquadWsSet();
+
+    squad::wsset::Gear gear{};
+    int32              kept = 0;
+    for (const auto& kv : set)
+    {
+        if (!kv.first.is<int>() || !kv.second.is<int>())
+        {
+            continue;
+        }
+
+        const int slot   = kv.first.as<int>();
+        const int itemId = kv.second.as<int>();
+        if (squad::wsset::IsSetSlot(slot) && itemId > 0 && itemId <= 0xFFFF &&
+            xi::items::lookup<CItemEquipment>(static_cast<uint16>(itemId)) != nullptr)
+        {
+            gear[slot] = static_cast<uint16>(itemId);
+            ++kept;
+        }
+    }
+
+    PTrust->setSquadWsSet(gear);
+    return kept;
+}
+
+// (F12) SquadWsSetInfo(mate) -> { active = bool, [slot] = itemId ... }: what the map server holds for the mate
+auto squadWsSetInfo(CLuaBaseEntity* mate) -> sol::table
+{
+    auto  out    = ::lua.create_table();
+    auto* PTrust = toSquadMate(mate);
+    if (PTrust == nullptr)
+    {
+        return out;
+    }
+
+    out["active"]   = PTrust->squadWsSetActive();
+    const auto& set = PTrust->squadWsSet();
+    for (int slot = squad::wsset::FirstSlot; slot <= squad::wsset::LastSlot; ++slot)
+    {
+        if (set[slot] != 0)
+        {
+            out[slot] = set[slot];
+        }
+    }
+
+    return out;
+}
+
 // !squad sync <name> | off: the party menu's Level Sync, by name (a player, a bot or a squad mate in your party).
 // The same call the menu's packet makes, so the same rules apply (you lead the party, the target is 10+ and here).
 // Returns: 1 done (the server's own messages tell the result), 0 no party, -1 not the leader.
@@ -2147,6 +2208,13 @@ class SquadModule : public CPPModule
         ::lua.set_function("UnlockSquadItem", unlockSquadItem);
         ::lua.set_function("GetSquadUnlocks", getSquadUnlocks);
         ::lua.set_function("SquadOwnerMerit", squadOwnerMerit); // Gambits v2 U13
+        // (F12) the weapon skill gear set (squad_wsset.lua) and what the map server holds for it
+        ::lua.set_function("SquadSetWsSet", squadSetWsSet);
+        ::lua.set_function("SquadWsSetInfo", squadWsSetInfo);
+        // (F13) this map server charges a squad Summoner's avatar perpetuation, gives its avatar no monster TP moves and
+        // has the WS gear set: squad_summoner.lua / squad_wsset.lua check these markers (an older xi_map has none)
+        ::lua.set_function("SquadSmnEngine", []() -> int32 { return 1; });
+        ::lua.set_function("SquadWsSetEngine", []() -> int32 { return 1; });
     }
 };
 

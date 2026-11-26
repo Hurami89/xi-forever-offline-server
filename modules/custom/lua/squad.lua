@@ -459,8 +459,29 @@ do
         return chosen
     end
 
+    -- (F13, 2026-11-25) a squad Summoner out of combat: resting, release between pulls, support out of combat
+    xi.squad.summonerIdle = function(mob, owner)
+        if ENABLE_PETS and smn and type(smn.idleTick) == 'function' and mob:getMainJob() == jobIds.SMN then
+            local okI, errI = pcall(smn.idleTick, mob, owner, GetSystemTime(), xi.squad.avatarHas(owner), squadPetId)
+            if not okI then
+                print('[squad] summoner idle tick failed: ' .. tostring(errI))
+            end
+        end
+    end
+
     petTick = function(mob)
         if not ENABLE_PETS then
+            return
+        end
+
+        -- (F13) a squad Summoner: squad_summoner.lua decides everything (paid summons, switches, pacts, normal attacks)
+        if smn and type(smn.combatTick) == 'function' and mob:getMainJob() == jobIds.SMN then
+            local master = mob:getMaster()
+            local okC, errC = pcall(smn.combatTick, mob, master, mob:getTarget(), GetSystemTime(), xi.squad.avatarHas(master), squadPetId)
+            if not okC then
+                print('[squad] summoner tick failed: ' .. tostring(errC))
+            end
+
             return
         end
 
@@ -697,6 +718,8 @@ end
 
 -- (Gambits v2, 2026-11-20) read-only access for the Squad Rule Set editor (gambits_squad.lua): the same levels a call uses
 xi.squad.levelsFor = levelsFor
+-- (F12) the gear rules !squad equip uses, for squad_wsset.lua: gear must be given to the squad first (unless all gear)
+xi.squad.requireUnlock = REQUIRE_UNLOCK
 
 local function describe(mate, player)
     local main, sub, subLevel = levelsFor(mate, nil, player)
@@ -2912,6 +2935,16 @@ local function callMate(player, mate)
             print('[squad] weapon skill settings: ' .. tostring(applyErr))
         end
     end
+    do
+        -- (F12) the mate's WS gear set for this job (squad_wsset.lua), checked against this call's outfit and level
+        local okWx, wx = pcall(require, 'modules/custom/lua/squad_wsset')
+        if okWx and type(wx) == 'table' then
+            local okSet, setErr = pcall(wx.onSpawn, player, trust, mate, outfit, main)
+            if not okSet then
+                print('[squad] WS gear set: ' .. tostring(setErr))
+            end
+        end
+    end
     -- The party list was sent while the mate still had its template's name (the last one called kept showing "Shantotto"):
     -- send the party list again now, and once more a moment later, so it shows the new name.
     player:reloadParty()
@@ -2987,6 +3020,9 @@ local function callMate(player, mate)
         campTick(mobArg)
         if restTick ~= nil then
             restTick(mobArg)
+        end
+        if owner ~= nil and xi.squad.summonerIdle ~= nil then
+            xi.squad.summonerIdle(mobArg, owner) -- (F13: a Summoner between fights)
         end
         if resyncSquad ~= nil then
             resyncSquad(mobArg)
@@ -3594,6 +3630,11 @@ restTick = function(mob)
 
     local now = os.time()
     if not sitting then
+        -- (F13) as a player must, a Summoner releases its avatar before it sits down (and calls none while it rests)
+        if xi.squad.summoner and type(xi.squad.summoner.onRest) == 'function' and SquadHasPet(mob) then
+            pcall(xi.squad.summoner.onRest, mob)
+        end
+
         mob:setAnimation(xi.animation.HEALING)
         mob:setLocalVar('SQUAD_REST_AT', now + REST_FIRST_SEC)
         return
@@ -7699,6 +7740,19 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
                 callMate(entity, mate)
             end
         end)
+    end
+
+    return result
+end)
+
+-- (F13, 2026-11-25) a squad Summoner's Blood Pact went off (the player's own MP and recast code just ran on the
+-- primary target): squad_summoner.lua starts the recast only now, so a pact that never went costs neither MP nor time
+m:addOverride('xi.job_utils.summoner.onUseBloodPact', function(target, pet, petskill, summoner, action)
+    local result = super(target, pet, petskill, summoner, action)
+    if summoner ~= nil and summoner:getObjType() == xi.objType.TRUST and summoner:getLocalVar('SQUAD_ID') > 0
+        and target ~= nil and action ~= nil and target:getID() == action:getPrimaryTargetID()
+        and xi.squad.summoner and type(xi.squad.summoner.onPactDone) == 'function' then
+        pcall(xi.squad.summoner.onPactDone, summoner, petskill:getID())
     end
 
     return result
