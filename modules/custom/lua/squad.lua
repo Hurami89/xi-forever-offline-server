@@ -2841,6 +2841,14 @@ function squadTeamTick(mob)
 end
 
 local function callMate(player, mate)
+    -- (2026-11-26, ChocoKings: "calling the squad after being charmed: your squad shows up dead and 20-30 sec d/c after")
+    -- A charmed player fights for the monster for as long as the charm lasts, and a mate made for them then comes out
+    -- on the wrong side: it arrived dead and the server went down shortly after. No calls until the charm is over.
+    if player:hasStatusEffect(xi.effect.CHARM_I) or player:hasStatusEffect(xi.effect.CHARM_II) then
+        say(player, 'You cannot call your squad while you are charmed.')
+        return
+    end
+
     -- (2026-11-25) Ventures: a mate out on a venture from the XIFO app can't be called (squad_ventures.lua)
     if type(xi.squad.ventures) == 'table' then
         local away = xi.squad.ventures.away(player, mate)
