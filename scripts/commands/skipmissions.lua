@@ -87,11 +87,13 @@ commandObj.skip = function(targ, logId, missionId)
     table.sort(skipped)
 
     -- (2026-11-26, Garrett: "bad argument #1 to 'ipairs' (table expected, got userdata)") the list is a C++ list:
-    -- it has a length and numbered entries, but ipairs does not walk it
+    -- it has a length and numbered entries, but ipairs does not walk it. On Windows its paths use backslashes
+    -- (scripts\missions\...): the name is kept as it is for require and for opening the file, and only compared
+    -- with forward slashes.
     local containerFiles = GetContainerFilenamesList()
     for i = 1, #containerFiles do
         local filename = containerFiles[i]
-        if type(filename) == 'string' and filename:find('scripts/missions/', 1, true) then
+        if type(filename) == 'string' and (filename:gsub('\\', '/')):find('scripts/missions/', 1, true) then
             local ok, container = pcall(require, filename)
             if ok and type(container) == 'table' and container.areaId == logId and
                 type(container.missionId) == 'number' and container.missionId < missionId
