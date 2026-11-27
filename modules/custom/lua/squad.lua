@@ -23,7 +23,9 @@ if SQUAD_PRINT_RAW == nil then
 end
 -----------------------------------
 
-local MAX_SLOTS = 6         -- squad mates you can keep
+-- (2026-11-26, the user) 7 mates to keep, was 6. Only how many you can own: the party still holds 6 (MAX_ACTIVE below).
+-- The launcher's New mate uses the same number (MAX_SLOTS in launcher_squad.py): change both together.
+local MAX_SLOTS = 7         -- squad mates you can keep
 local MAX_ACTIVE = 5        -- a party holds 6 including you
 local MAX_LEVEL = 75        -- 75-era server
 local SUB_UNLOCK_LEVEL = 18 -- sub job unlocks at main level 18, like retail
