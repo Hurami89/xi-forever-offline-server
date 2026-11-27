@@ -2566,8 +2566,15 @@ function squadGearIsRare(itemId)
     return ok and type(flags) == 'number' and bit.band(flags, rare) ~= 0
 end
 
--- what may go in Sub beside this Main: nil = fine, else the reason (main/sub item infos from GetSquadItemInfo)
-function squadSubConflict(mainInfo, subInfo)
+-- (2026-11-26, Tetsu: mates held a second weapon without a Ninja support job) Dual Wield as the era has it: a Ninja of
+-- level 10 or more, as the main job or as the support job.
+function squadCanDualWield(mjob, mlvl, sjob, slvl)
+    return (mjob == 13 and (mlvl or 0) >= 10) or (sjob == 13 and (slvl or 0) >= 10)
+end
+
+-- what may go in Sub beside this Main: nil = fine, else the reason (main/sub item infos from GetSquadItemInfo).
+-- dual: false = this mate has no Dual Wield (a second weapon is refused); nil or true = not checked / it has.
+function squadSubConflict(mainInfo, subInfo, dual)
     if subInfo == nil or not subInfo.valid then
         return nil
     end
@@ -2580,13 +2587,15 @@ function squadSubConflict(mainInfo, subInfo)
         return 'hand-to-hand weapons take both hands'
     elseif grip then
         return 'a grip needs a two-handed weapon in Main'
+    elseif dual == false and (subInfo.shield or 0) == 0 and (subInfo.skill or 0) > 0 then
+        return 'a second weapon takes Dual Wield (a Ninja of level 10 or more, as the main or the support job)'
     end
 
     return nil
 end
 
 -- !squad equip check: worn = the mate's gear for the job {slot = itemId}. Returns nil (fine), or the reason it is refused
-function squadGearConflict(worn, slot, itemId, info)
+function squadGearConflict(worn, slot, itemId, info, dual)
     worn = worn or {}
     if squadGearIsRare(itemId) then
         for s = 0, 15 do
@@ -2598,14 +2607,14 @@ function squadGearConflict(worn, slot, itemId, info)
 
     if slot == 1 then
         local mainId = worn[0]
-        return squadSubConflict(mainId and GetSquadItemInfo(mainId) or nil, info)
+        return squadSubConflict(mainId and GetSquadItemInfo(mainId) or nil, info, dual)
     end
 
     return nil
 end
 
 -- callMate: leaves out pieces that cannot go together (saved before the check existed). Returns the outfit and a note.
-function squadOutfitFix(outfit)
+function squadOutfitFix(outfit, dual)
     local dropped = {}
     local seen = {}
     for s = 0, 15 do
@@ -2622,7 +2631,7 @@ function squadOutfitFix(outfit)
 
     if outfit[1] ~= nil and outfit[1] ~= 0 then
         local ok, why = pcall(function()
-            return squadSubConflict(outfit[0] and GetSquadItemInfo(outfit[0]) or nil, GetSquadItemInfo(outfit[1]))
+            return squadSubConflict(outfit[0] and GetSquadItemInfo(outfit[0]) or nil, GetSquadItemInfo(outfit[1]), dual)
         end)
         if ok and why then
             outfit[1] = nil
@@ -2884,9 +2893,9 @@ local function callMate(player, mate)
         mate.equip[mate.mjob], squadLockstyleGet(player, mate.id), main, synced,
         itemLevel, SQUAD_LS_SLOTS, STARTER_MARK)
 
-    local okFix, _, fixed = pcall(function() return squadOutfitFix(outfit) end)
+    local okFix, _, fixed = pcall(function() return squadOutfitFix(outfit, squadCanDualWield(mate.mjob, main, sub, subLevel)) end)
     if okFix and fixed then
-        say(player, string.format('%s: some saved gear cannot be worn together (a Rare item twice, or Sub not fitting Main) and was left off. Check !squad gear.', mate.name))
+        say(player, string.format('%s: some saved gear cannot be worn together (a Rare item twice, Sub not fitting Main, or a second weapon without Dual Wield) and was left off. Check !squad gear.', mate.name))
     end
 
     -- (Gambits weapon skill settings) per mate and main job; without a Gambits setting the !squad ws vars, as before
@@ -5583,7 +5592,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
         -- (2026-11-22) checked against the rest of the outfit: a Rare item once, Sub that fits Main
         local wornNow = mate.equip[mate.mjob] or {}
-        local okC, clash = pcall(squadGearConflict, wornNow, slotIndex, itemId, info)
+        local canDual = squadCanDualWield(mate.mjob, levelsFor(mate, nil, player)) -- (main level, support job, its level)
+        local okC, clash = pcall(squadGearConflict, wornNow, slotIndex, itemId, info, canDual)
         if okC and clash then
             say(player, string.format('%s cannot wear that: %s.', mate.name, clash))
             return
@@ -5593,7 +5603,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         say(player, string.format('%s now wears %s (%s) as %s. Dismiss and call them again to apply.', mate.name, info.name, equipSlotNames[slotIndex], jobNames[mate.mjob]))
         if slotIndex == 0 and wornNow[1] ~= nil and wornNow[1] ~= 0 then
             -- a new Main takes off a Sub that no longer fits, like the game does for you
-            local okS, why = pcall(function() return squadSubConflict(info, GetSquadItemInfo(wornNow[1])) end)
+            local okS, why = pcall(function() return squadSubConflict(info, GetSquadItemInfo(wornNow[1]), canDual) end)
             if okS and why then
                 SetSquadEquip(mate.id, mate.mjob, 1, 0)
                 say(player, string.format('%s took off the Sub piece (%s).', mate.name, why))

@@ -86,8 +86,12 @@ commandObj.skip = function(targ, logId, missionId)
 
     table.sort(skipped)
 
-    for _, filename in ipairs(GetContainerFilenamesList()) do
-        if filename:find('scripts/missions/', 1, true) then
+    -- (2026-11-26, Garrett: "bad argument #1 to 'ipairs' (table expected, got userdata)") the list is a C++ list:
+    -- it has a length and numbered entries, but ipairs does not walk it
+    local containerFiles = GetContainerFilenamesList()
+    for i = 1, #containerFiles do
+        local filename = containerFiles[i]
+        if type(filename) == 'string' and filename:find('scripts/missions/', 1, true) then
             local ok, container = pcall(require, filename)
             if ok and type(container) == 'table' and container.areaId == logId and
                 type(container.missionId) == 'number' and container.missionId < missionId

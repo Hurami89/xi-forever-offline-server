@@ -143,6 +143,8 @@ custom/lua/fov_no_buffs.lua
 # Casket changes
 custom/lua/casket_tweaks.lua
 custom/lua/extra_caskets.lua
+# Survival Guides carry their own name (the era name lists show a neighbour's: "Summoner"; Syfin, 2026-11-26)
+custom/lua/survival_guide_names.lua
 custom/lua/gambit_status.lua
 
 # Era experience tables

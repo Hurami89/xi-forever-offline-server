@@ -45,6 +45,37 @@ m:addOverride('xi.server.onServerStart', function()
                 end
             end
         end
+
+        -- (2026-11-26, Quaiton: "I guess it ain't hungry" for good, with short waits on) The era module also replaces
+        -- the feeding itself, and its check reads Timer as a Vana'diel day number. Our Timer is a real time, a far
+        -- bigger number, so the chocobo was never hungry again. The feeding below is the game's own, which reads Timer
+        -- as a real time. A Timer the era module wrote before (a day number) counts as over.
+        local chocobo = quest.sections[2][xi.zone.UPPER_JEUNO]['Chocobo']
+        if type(chocobo) == 'table' then
+            chocobo.onTrade = function(player, npc, trade)
+                if trade:getItemQty(xi.item.BUNCH_OF_GYSAHL_GREENS) > 0 then
+                    return quest:event(76)
+                end
+
+                if trade:getItemQty(xi.item.CLUMP_OF_GAUSEBIT_WILDGRASS) == 0 then
+                    return quest:noAction()
+                end
+
+                if quest:getVar(player, 'Timer') > GetSystemTime() then
+                    return quest:event(73)
+                end
+
+                local eventTable = { [1] = 57, [2] = 58, [3] = 99, [4] = 59, [5] = 60, [6] = 64 }
+                local questProgress = quest:getVar(player, 'Prog')
+                if questProgress <= 2 then
+                    return quest:progressEvent(eventTable[questProgress])
+                end
+
+                if npcUtil.tradeHasExactly(trade, xi.item.CLUMP_OF_GAUSEBIT_WILDGRASS) then
+                    return quest:progressEvent(eventTable[questProgress])
+                end
+            end
+        end
     end)
     if not okC then
         print('[quest_waits] Chocobo\'s Wounds not changed: ' .. tostring(errC))
