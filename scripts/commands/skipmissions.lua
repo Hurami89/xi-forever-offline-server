@@ -70,6 +70,8 @@ local function keyItemsIn(filename)
     return given, taken
 end
 
+commandObj.keyItemsIn = keyItemsIn -- (2026-11-26) also read by !resetmissions (scripts/commands/resetmissions.lua)
+
 -- (2026-11-25) the skip itself, also used by !skip (scripts/commands/skip.lua): every mission of the log before
 -- missionId is marked done, missionId becomes the current one (65535 = none: the whole story is done), and the key items
 -- those missions hand out are given, minus the ones a skipped mission takes back. Returns the count and the key items.
