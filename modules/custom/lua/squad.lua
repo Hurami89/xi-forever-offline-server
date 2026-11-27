@@ -7767,7 +7767,8 @@ end)
 m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
     -- (2026-11-21, delukard; Hurami: "the same as squad mates") below level 12 bot players in your party don't split
     -- your exp either: the share is worked out as if only the real players were there (party size and highest level).
-    if member:getObjType() == xi.objType.PC and member:getMainLvl() < 12 and BotIsBot and not BotIsBot(member:getID()) then
+    -- (2026-11-26, SprinklesAK) and the bot players themselves too: they fell behind you below level 12
+    if member:getObjType() == xi.objType.PC and member:getMainLvl() < 12 and BotIsBot then
         local real, highest, hasBot = 0, member:getMainLvl(), false
         for _, p in pairs(member:getParty()) do
             if p:getObjType() == xi.objType.PC and p:getZoneID() == mob:getZoneID() then
