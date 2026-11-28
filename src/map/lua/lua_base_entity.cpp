@@ -7268,6 +7268,17 @@ void CLuaBaseEntity::changeJob(uint8 newJob)
         PChar->jobs.unlocked |= (1 << newJob);
         PChar->SetMJob(newJob);
 
+        // (XI: Forever Offline, 2026-11-27, Mikoto: bot players invited as PLD 44 / PUP 45 arrived at level 1 and
+        // naked) The level went with the old job: a level 44 WAR that changed to its new PLD stayed "level 44" (and
+        // the search list said PLD 44) until it zoned, when the saved PLD level (1) was loaded and every piece of gear
+        // above level 1 came off. The new job's own levels now, as the game's job change does (0x100_myroom_job.cpp).
+        // Monstrosity keeps its own levels.
+        if (newJob != static_cast<uint8>(xi::Job::MON) && PChar->jobs.job[newJob] > 0)
+        {
+            PChar->SetMLevel(PChar->jobs.job[newJob]);
+            PChar->SetSLevel(PChar->jobs.job[static_cast<uint8>(PChar->GetSJob())]);
+        }
+
         monstrosity::HandleJobChange(PChar, static_cast<xi::Job>(newJob));
 
         charutils::ApplyAllEquipMods(PChar);

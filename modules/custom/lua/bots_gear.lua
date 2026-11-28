@@ -157,11 +157,96 @@ local function wear(bot, slot, id, two)
     end)
 end
 
+-- (2026-11-27, Yenkei and Mikoto: bots that never got past level 1-3 gear) A bot with a full bag could never buy
+-- anything, and nothing ever emptied it: its gear stopped where its bag filled up. Now it makes room the way a player
+-- does, at a shop: first gear it doesn't wear and has no use for (outgrown pieces, other jobs' gear it won't need),
+-- then the cheapest stack of ordinary loot. Never crystals, seals, orbs, linkpearls, gathering and fishing tools, or
+-- anything that can't go on the auction house (Rare/Ex: quest items and the like). It gets the shop's price.
+local NEVER_SELL = {
+    [513] = true, [514] = true, [515] = true,                                 -- linkshell, linkpearls
+    [605] = true, [1020] = true, [1021] = true, [17391] = true, [17396] = true, -- tools, rods
+    [1126] = true, [1127] = true, [2955] = true, [2956] = true, [2957] = true,  -- seals and crests
+    [1551] = true, [1552] = true, [1131] = true, [1177] = true, [1130] = true,  -- orbs
+    [1175] = true, [1178] = true, [1180] = true, [1553] = true,
+}
+
+local function sellToShop(bot, r)
+    local item = type(GetReadOnlyItem) == 'function' and GetReadOnlyItem(r.id) or nil
+    local price = 0
+    if item then
+        local ok, p = pcall(function()
+            return item:getBasePrice()
+        end)
+        price = (ok and tonumber(p)) or 0
+    end
+
+    local ok = pcall(function()
+        bot:delItem(r.id, r.qty)
+    end)
+    if ok and price > 0 then
+        pcall(function()
+            bot:addGil(price * r.qty)
+        end)
+    end
+
+    return ok
+end
+
+local function makeRoom(bot, keep)
+    if type(BotInventory) ~= 'function' then
+        return false
+    end
+
+    local worn = {}
+    for slot = 0, 15 do
+        worn[equipped(bot, slot)] = true
+    end
+
+    local gearPick, junkPick, junkValue = nil, nil, nil
+    for _, r in ipairs(BotInventory(bot:getID()) or {}) do
+        local id = r.id
+        if r.ah and not worn[id] and not keep[id] and not NEVER_SELL[id] and not (id >= 4096 and id <= 4111) then
+            local item = type(GetReadOnlyItem) == 'function' and GetReadOnlyItem(id) or nil
+            local isGear = false
+            local value = 0
+            if item then
+                pcall(function()
+                    isGear = item:isType(xi.itemType.ARMOR) or item:isType(xi.itemType.WEAPON)
+                    value = (tonumber(item:getBasePrice()) or 0) * (r.qty or 1)
+                end)
+            end
+
+            if isGear and not GR.useful(bot, id) then
+                gearPick = gearPick or r
+            elseif not isGear and (not junkValue or value < junkValue) then
+                junkPick, junkValue = r, value
+            end
+        end
+    end
+
+    local pick = gearPick or junkPick
+    if pick and sellToShop(bot, pick) then
+        note(string.format('%s sold %d x item %d to a shop to make room for gear', bot:getName(), pick.qty or 1, pick.id))
+        return bot:getFreeSlotsCount() > 0
+    end
+
+    return false
+end
+
 -- wears what the plan says, buying what it must (gil spent, the item bought "at the auction house")
 local function carryOut(bot, plan, quiet)
     local spent, bought, names = 0, 0, {}
     for _, p in ipairs(plan) do
         if p.buy then
+            if bot:getFreeSlotsCount() < 1 and bot:getGil() >= p.price + KEEP_GIL then
+                local keep = {}
+                for _, q in ipairs(plan) do
+                    keep[q.id] = true -- (never what this trip buys or puts on)
+                end
+
+                makeRoom(bot, keep)
+            end
+
             if bot:getFreeSlotsCount() < 1 or bot:getGil() < p.price + KEEP_GIL then
                 break
             end
