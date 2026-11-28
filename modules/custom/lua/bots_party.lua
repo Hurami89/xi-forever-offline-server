@@ -41,7 +41,139 @@ function P.stayBack(bot)
     return NO_MELEE[bot:getMainJob()] == true
 end
 
+-----------------------------------
+-- (2026-11-27, the user) A Rule Set for a bot player while it is in your party: the Squads menu's Bots tab, or
+-- !bots gambit <Name> <set number|off>. Any Rule Set of the bot's main job (the ones the Gambits editor makes for squad
+-- mates). It lasts while the bot is in the party of the player who chose it and keeps the same main job; then the bot
+-- is back on its job rules. Never saved: it is gone after a server restart too. The rules a bot cannot use at its level
+-- are left out (as for squad mates); conditions a bot cannot judge make that rule never fire (see one() above).
+-----------------------------------
+local temp = {} -- [bot id] = { owner = char id, num, job, key, list, name }
+
+local function rulesetsMod()
+    local ok, R = pcall(require, 'modules/custom/lua/squad_rulesets')
+    return (ok and type(R) == 'table') and R or nil
+end
+
+local function inPartyOf(bot, ownerId)
+    local ok, party = pcall(function()
+        return bot:getParty()
+    end)
+    if ok and type(party) == 'table' then
+        for _, m in pairs(party) do
+            if m:getID() == ownerId then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function buildFromSet(bot, set)
+    local R = rulesetsMod()
+    if not R or type(xi.squad) ~= 'table' or type(xi.squad.profileFromRules) ~= 'function' then
+        return nil
+    end
+
+    local m = { job = bot:getMainJob(), level = bot:getMainLvl(), subJob = bot:getSubJob() or 0, subLevel = bot:getSubLvl() or 0,
+                owner = bot }
+    local ok, usable = pcall(R.usableRules, set, m)
+    if not ok or type(usable) ~= 'table' or #usable == 0 then
+        return nil
+    end
+
+    local list = xi.squad.profileFromRules(bot:getMainLvl(), usable)
+    return #list > 0 and list or nil
+end
+
+-- the gambit list of the Rule Set chosen for this bot, or nil (none, or no longer valid: then it is dropped)
+local function tempProfile(bot)
+    local t = temp[bot:getID()]
+    if not t then
+        return nil
+    end
+
+    if bot:getMainJob() ~= t.job or not inPartyOf(bot, t.owner) then
+        temp[bot:getID()] = nil
+        return nil
+    end
+
+    local key = string.format('%d:%d:%d', bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl())
+    if t.key ~= key then
+        t.key, t.list = key, buildFromSet(bot, t.set)
+    end
+
+    return t.list
+end
+
+-- player chooses set number num (nil = off) for bot; returns ok, text
+function P.setTemp(player, bot, num)
+    if not inPartyOf(bot, player:getID()) then
+        return false, bot:getName() .. ' is not in your party.'
+    end
+
+    if num == nil then
+        temp[bot:getID()] = nil
+        return true, bot:getName() .. ' is back on its own job rules.'
+    end
+
+    local R = rulesetsMod()
+    if not R then
+        return false, 'Rule Sets are not available on this server.'
+    end
+
+    local set = R.load().byNum[num]
+    local jobName = R.jobName(bot:getMainJob())
+    if not set then
+        return false, 'There is no Rule Set ' .. num .. '.'
+    elseif set.job ~= jobName then
+        return false, string.format('Rule Set %d is for %s; %s is a %s.', num, tostring(set.job), bot:getName(), jobName)
+    end
+
+    temp[bot:getID()] = { owner = player:getID(), num = num, job = bot:getMainJob(), set = set, name = set.name }
+    if tempProfile(bot) == nil then
+        temp[bot:getID()] = nil
+        return false, string.format('%s can use none of the rules of Rule Set %d at level %d.', bot:getName(), num, bot:getMainLvl())
+    end
+
+    return true, string.format('%s uses Rule Set %d (%s) while it is in your party.', bot:getName(), num, tostring(set.name))
+end
+
+-- the set chosen for bot now: number, name (or nil)
+function P.tempOf(bot)
+    local t = temp[bot:getID()]
+    if t and tempProfile(bot) ~= nil then
+        return t.num, t.name
+    end
+
+    return nil
+end
+
+-- every Rule Set for a job name ('WHM'): { { num, name }, ... }
+function P.setsFor(jobName)
+    local R = rulesetsMod()
+    local out = {}
+    if R then
+        for _, set in ipairs(R.load().list) do
+            if set.job == jobName then
+                out[#out + 1] = { num = set.num, name = set.name }
+            end
+        end
+    end
+
+    table.sort(out, function(a, b)
+        return a.num < b.num
+    end)
+    return out
+end
+
 local function profileOf(bot)
+    local chosen = tempProfile(bot)
+    if chosen then
+        return chosen
+    end
+
     local key = string.format('%d:%d:%d:%d', bot:getMainJob(), bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl())
     if not profiles[key] then
         local ok, list = pcall(xi.squad.profileFor, bot:getMainJob(), bot:getMainLvl(), bot:getSubJob(), bot:getSubLvl())

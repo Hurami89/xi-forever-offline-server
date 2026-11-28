@@ -2986,9 +2986,30 @@ function squadAutoEquip(player, mate)
         end
     end
 
-    for _, slot in ipairs({ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }) do
+    -- (2026-11-27, R1PFake: a hat on a mate in a robe that covers the head) a piece that takes other slots away (rslot: a
+    -- robe the head, Track Pants the feet) leaves them empty, and is not chosen over something already in them. Body and
+    -- legs are chosen first, so a covered slot is known before it would be filled. (An xi_map without rslot: as before.)
+    local covered, filled = 0, 0
+    local function takes(info) return info and tonumber(info.rslot) or 0 end
+    for slot = 4, 15 do
+        if locked(slot) then
+            local id = mate.equip[job][slot]
+            if id and id ~= 0 then filled = bit.bor(filled, bit.lshift(1, slot)) end
+            covered = bit.bor(covered, takes(infoOf(id)))
+        end
+    end
+    for _, slot in ipairs({ 5, 7, 4, 6, 8, 9, 10, 11, 12, 13, 14, 15 }) do
         if not locked(slot) then
-            pick[slot] = best(slot)
+            if bit.band(covered, bit.lshift(1, slot)) ~= 0 then
+                pick[slot] = 0
+            else
+                local id, info = best(slot, function(i) return bit.band(takes(i), bit.bor(filled, covered)) == 0 end)
+                pick[slot] = id
+                if id and id ~= 0 then
+                    filled = bit.bor(filled, bit.lshift(1, slot))
+                    covered = bit.bor(covered, takes(info))
+                end
+            end
         end
     end
 
@@ -8564,6 +8585,30 @@ xi.squad.profileFor = function(mainJob, mainLvl, subJob, subLvl)
     activeBehavior, activeSwitches, profileLevel = savedBehavior, savedSwitches, savedLevel
     if not ok then
         print('[squad] profile for a bot failed: ' .. tostring(err))
+    end
+
+    return recorder.list
+end
+
+-- (2026-11-27, the user: "a small bots tab in the squads menu ... so they could use the gambits temporarily while in
+-- the party") A Rule Set's rules as a bot player's gambit list, the same way a squad mate's chosen set is applied
+-- (applyRules), recorded instead of put on a mate. The rules given are already checked for this bot (R.usableRules).
+xi.squad.profileFromRules = function(level, rules)
+    local recorder = { list = {} }
+    function recorder:addGambit(target, condition, action)
+        self.list[#self.list + 1] = { target = target, condition = condition, action = action }
+    end
+    setmetatable(recorder, { __index = function()
+        return function() return 0 end
+    end })
+
+    local savedBehavior, savedSwitches, savedLevel = activeBehavior, activeSwitches, profileLevel
+    activeBehavior, activeSwitches = nil, nil
+    profileLevel = level or 1
+    local ok, err = pcall(applyRules, recorder, rules or {}, false)
+    activeBehavior, activeSwitches, profileLevel = savedBehavior, savedSwitches, savedLevel
+    if not ok then
+        print('[squad] Rule Set for a bot failed: ' .. tostring(err))
     end
 
     return recorder.list

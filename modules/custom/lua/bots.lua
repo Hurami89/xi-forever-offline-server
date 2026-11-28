@@ -24,6 +24,8 @@
 --   !bots come <Name>             the bot comes to you (same area: it runs; other area: it teleports)
 --   !bots say <Name> <text>       the bot says something
 --   !bots invite <Name>           the bot sends YOU a party invite (answer with /join); it then makes you the leader
+--   !bots party                   the bot players in your party and the Rule Set each one uses
+--   !bots gambit <Name> <num|off> a Rule Set (Gambits) of the bot's job while it is in your party (the Squads menu's Bots tab)
 -- When you change area, a following bot comes after you about 5 seconds later.
 -- Party: invite a bot as you invite anyone (/pcmd add Name), or !bots invite Name. Trusts (your squad) and players
 -- cannot share a party: dismiss the squad first. It accepts, follows you, and attacks what you attack.
@@ -1179,7 +1181,7 @@ think = function(bot, token)
                 end
             elseif jobPlan == 'jobquest' and quests and math.random() < 0.25 then
                 local style = craft and craft.styleName(bot) or 'allround'
-                if quests.startSpecial(bot, st, 'a job quest', function(b) jobs.unlockAdvanced(b, style) end) == 'zoning' then
+                if quests.startSpecial(bot, st, 'a job quest', function(b) jobs.unlockAdvanced(b, style); if gear then pcall(gear.check, b, true) end end) == 'zoning' then
                     return
                 end
             end
@@ -2149,6 +2151,61 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
         end
 
         tell(player, string.format('%s: %d', action == 'login' and 'Logged in' or 'Logged out', done))
+    elseif (action == 'gambit' or action == 'party') and partyPlay and partyPlay.setTemp then
+        -- (2026-11-27) Rule Sets for the bot players in your party (bots_party.lua P.setTemp; the Squads menu's Bots tab)
+        --   !bots party [panel]              the bots in your party and the set each one uses (panel: lines for the menu)
+        --   !bots gambit <Name> <num|off>    a Rule Set of the bot's main job while it stays in your party
+        local jobName = function(id)
+            return (jobs and jobs.jobName and jobs.jobName(id)) or tostring(id)
+        end
+        if action == 'gambit' then
+            local id, bot = botByName(a1)
+            local choice = string.lower(a2 or '')
+            local num = tonumber(choice)
+            if not id or not bot or (choice ~= 'off' and not num) then
+                tell(player, 'Usage: !bots gambit <Name> <Rule Set number|off>  (a bot in your party)')
+                return
+            end
+
+            local _, text = partyPlay.setTemp(player, bot, choice ~= 'off' and num or nil)
+            tell(player, text)
+            if a3 ~= 'panel' then
+                return
+            end
+            a1 = 'panel'
+        end
+
+        local panel = a1 == 'panel'
+        local okParty, party = pcall(function()
+            return player:getParty()
+        end)
+        local count, jobsSeen = 0, {}
+        for _, m in pairs((okParty and type(party) == 'table') and party or {}) do
+            if BotIsBot and BotIsBot(m:getID()) then
+                count = count + 1
+                local num, name = partyPlay.tempOf(m)
+                local main, sub = jobName(m:getMainJob()), m:getSubJob() ~= 0 and jobName(m:getSubJob()) or '-'
+                jobsSeen[main] = true
+                if panel then
+                    player:printToPlayer(string.format('squadpanel:botp|%s|%s|%d|%s|%d|%d|%s', m:getName(), main, m:getMainLvl(), sub,
+                        m:getSubLvl(), num or 0, string.sub(tostring(name or ''), 1, 40)))
+                else
+                    tell(player, string.format('%s %s%d/%s%d: %s', m:getName(), main, m:getMainLvl(), sub, m:getSubLvl(),
+                        num and string.format('Rule Set %d (%s)', num, tostring(name)) or 'its own job rules'))
+                end
+            end
+        end
+
+        if panel then
+            for main in pairs(jobsSeen) do
+                for _, set in ipairs(partyPlay.setsFor(main)) do
+                    player:printToPlayer(string.format('squadpanel:bots|%s|%d|%s', main, set.num, string.sub(tostring(set.name), 1, 40)))
+                end
+            end
+            player:printToPlayer(string.format('squadpanel:botend|%d', count))
+        elseif count == 0 then
+            tell(player, 'No bot players in your party. Invite one (/tell <Name> join my party), then !bots party.')
+        end
     elseif action == 'come' then
         local id, bot = botByName(a1)
         if not id or not bot then
