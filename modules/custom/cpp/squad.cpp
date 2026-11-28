@@ -1052,7 +1052,9 @@ auto getSquadItemInfo(const uint32 itemId) -> sol::table
     info["skill"]  = 0; // weapon skill (item_weapon: 1 hand-to-hand, 4 great sword, ... 25 archery, 26 marksmanship, 27 throwing)
     info["shield"] = 0; // shield size (0 = not a shield)
 
-    const auto rset = db::preparedStmt("SELECT name, level, jobs, slot, shieldSize FROM item_equipment WHERE itemId = ?", itemId);
+    // (2026-11-27, R1PFake: auto-equip put a hat on a mate in a robe that covers the head) rslot: the slots this piece
+    // takes away (a robe's head, Track Pants' feet), as a slot mask like slot
+    const auto rset = db::preparedStmt("SELECT name, level, jobs, slot, rslot, shieldSize FROM item_equipment WHERE itemId = ?", itemId);
     FOR_DB_SINGLE_RESULT(rset)
     {
         info["valid"]  = true;
@@ -1060,6 +1062,7 @@ auto getSquadItemInfo(const uint32 itemId) -> sol::table
         info["level"]  = rset->get<uint8>("level");
         info["jobs"]   = rset->get<uint32>("jobs");
         info["slot"]   = rset->get<uint32>("slot");
+        info["rslot"]  = rset->get<uint32>("rslot");
         info["shield"] = rset->get<uint8>("shieldSize");
     }
 
@@ -1137,7 +1140,7 @@ auto getSquadGearPool(const uint32 job, const uint32 level) -> sol::table
     const uint32                 jobBit = 1u << (job - 1);
     std::map<uint32, sol::table> pieces;
 
-    const auto rset = db::preparedStmt("SELECT itemId, name, level, jobs, slot, shieldSize FROM item_equipment "
+    const auto rset = db::preparedStmt("SELECT itemId, name, level, jobs, slot, rslot, shieldSize FROM item_equipment "
                                        "WHERE (jobs & ?) <> 0 AND level <= ? AND ilevel = 0",
                                        jobBit, level);
     FOR_DB_MULTIPLE_RESULTS(rset)
@@ -1149,6 +1152,7 @@ auto getSquadGearPool(const uint32 job, const uint32 level) -> sol::table
         info["level"]     = rset->get<uint8>("level");
         info["jobs"]      = rset->get<uint32>("jobs");
         info["slot"]      = rset->get<uint32>("slot");
+        info["rslot"]     = rset->get<uint32>("rslot"); // (2026-11-27) the slots it takes away
         info["shield"]    = rset->get<uint8>("shieldSize");
         info["skill"]     = 0;
         info["dmg"]       = 0;
