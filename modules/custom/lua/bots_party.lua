@@ -37,8 +37,91 @@ function P.available()
     return xi.squad ~= nil and type(xi.squad.profileFor) == 'function' and ai ~= nil and ai.c ~= nil
 end
 
+-----------------------------------
+-- (2026-11-27, the user: "when they're in your party they're just like a squad mate ... when you recruit one you can
+-- customize it") Settings for a bot player while it is in your party, as a squad mate's card has them: its party role
+-- (tank / melee / mage / ranged, the same SQUAD_ROLE the squad mates' engine reads: J.inRole) and its fighting range
+-- (melee / mid 15 / far 20 yalms). Set from the Squads menu's Bots tab or !bots set. In memory only, like the Rule Set
+-- (below): gone when the bot leaves the party of the player who set it, or at a server restart; it then plays as before.
+-----------------------------------
+local opts = {}  -- [bot id] = { owner = char id, role = 0-4, range = 0-3 }
+P.ROLE_NAMES  = { [0] = 'auto', 'tank', 'melee', 'mage', 'ranged' }
+P.RANGE_NAMES = { [0] = 'job', 'melee', 'mid', 'far' }
+local STAND_OFF = { [2] = 15, [3] = 20 }
+
+local inPartyOf -- (defined below, with the Rule Sets)
+
+local function optsOf(bot)
+    local o = opts[bot:getID()]
+    if o and not inPartyOf(bot, o.owner) then
+        opts[bot:getID()] = nil
+        pcall(function()
+            bot:setLocalVar('SQUAD_ROLE', 0)
+        end)
+        return nil
+    end
+
+    return o
+end
+
 function P.stayBack(bot)
+    local o = optsOf(bot)
+    if o and o.range == 1 then
+        return false
+    elseif o and STAND_OFF[o.range] then
+        return true
+    end
+
     return NO_MELEE[bot:getMainJob()] == true
+end
+
+-- yalms from the monster a bot set to mid or far range keeps (nil: its job's way)
+function P.standOff(bot)
+    local o = optsOf(bot)
+    return o and STAND_OFF[o.range] or nil
+end
+
+-- key 'role' (0-4) or 'range' (0-3); returns ok, text
+function P.setOpt(player, bot, key, value)
+    if not inPartyOf(bot, player:getID()) then
+        return false, bot:getName() .. ' is not in your party.'
+    end
+
+    local names = key == 'role' and P.ROLE_NAMES or (key == 'range' and P.RANGE_NAMES) or nil
+    if not names or names[value] == nil then
+        return false, 'Usage: !bots set <Name> role auto|tank|melee|mage|ranged   or   !bots set <Name> range job|melee|mid|far'
+    end
+
+    local o = opts[bot:getID()]
+    if not o or o.owner ~= player:getID() then
+        o = { owner = player:getID(), role = 0, range = 0 }
+        opts[bot:getID()] = o
+    end
+
+    o[key] = value
+    if key == 'role' then
+        pcall(function()
+            bot:setLocalVar('SQUAD_ROLE', value)
+        end)
+    end
+
+    local what = key == 'role' and (value == 0 and 'its role by its job' or ('the ' .. names[value] .. ' role'))
+        or (value == 0 and 'the range its job likes' or (names[value] .. ' range'))
+    return true, string.format('%s takes %s while it is in your party.', bot:getName(), what)
+end
+
+-- role, range (0 = not set)
+function P.optOf(bot)
+    local o = optsOf(bot)
+    return o and o.role or 0, o and o.range or 0
+end
+
+-- what a party member counts as: an explicit role (bots and squad mates, SQUAD_ROLE), else its main job
+local function roleOf(m)
+    local ok, r = pcall(function()
+        return m:getLocalVar('SQUAD_ROLE')
+    end)
+    return (ok and tonumber(r)) or 0
 end
 
 -----------------------------------
@@ -55,7 +138,7 @@ local function rulesetsMod()
     return (ok and type(R) == 'table') and R or nil
 end
 
-local function inPartyOf(bot, ownerId)
+inPartyOf = function(bot, ownerId)
     local ok, party = pcall(function()
         return bot:getParty()
     end)
@@ -105,6 +188,15 @@ local function tempProfile(bot)
     end
 
     return t.list
+end
+
+-- (bots.lua, every think while it has no real player to follow) the Rule Set and the settings end with the party
+function P.dropIfLeft(bot)
+    optsOf(bot)
+    local t = temp[bot:getID()]
+    if t and not inPartyOf(bot, t.owner) then
+        temp[bot:getID()] = nil
+    end
 end
 
 -- player chooses set number num (nil = off) for bot; returns ok, text
@@ -355,7 +447,10 @@ local function candidates(bot, target, ctx)
     local out = {}
     for _, m in ipairs(ctx.members) do
         local job = m:getMainJob()
-        if target == T.PARTY or target == T.PARTY_MULTI or (target == T.MELEE and not CASTERS[job]) or (target == T.CASTER and CASTERS[job]) then
+        local role = roleOf(m) -- (a role you set decides; else the job, as before)
+        local melee = (role == 0 and not CASTERS[job]) or role == 1 or role == 2
+        local caster = (role == 0 and CASTERS[job]) or role == 3
+        if target == T.PARTY or target == T.PARTY_MULTI or (target == T.MELEE and melee) or (target == T.CASTER and caster) then
             out[#out + 1] = m
         end
     end
@@ -682,7 +777,9 @@ function P.act(bot, st, leader, mob)
     for _, m in pairs(party) do
         if m:getZoneID() == bot:getZoneID() and m:isAlive() and dist2(m, bot) <= RANGE * RANGE then
             ctx.members[#ctx.members + 1] = m
-            if not ctx.tank and TANKS[m:getMainJob()] then
+            if roleOf(m) == 1 then
+                ctx.tank = m -- (a tank you named comes first)
+            elseif not ctx.tank and roleOf(m) == 0 and TANKS[m:getMainJob()] then
                 ctx.tank = m
             end
         end

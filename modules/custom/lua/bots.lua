@@ -26,6 +26,7 @@
 --   !bots invite <Name>           the bot sends YOU a party invite (answer with /join); it then makes you the leader
 --   !bots party                   the bot players in your party and the Rule Set each one uses
 --   !bots gambit <Name> <num|off> a Rule Set (Gambits) of the bot's job while it is in your party (the Squads menu's Bots tab)
+--   !bots set <Name> role auto|tank|melee|mage|ranged   /   range job|melee|mid|far   (while it is in your party)
 -- When you change area, a following bot comes after you about 5 seconds later.
 -- Party: invite a bot as you invite anyone (/pcmd add Name), or !bots invite Name. Trusts (your squad) and players
 -- cannot share a party: dismiss the squad first. It accepts, follows you, and attacks what you attack.
@@ -782,6 +783,9 @@ think = function(bot, token)
         end
     end
     local leader = realLeader(bot)
+    if not leader and partyPlay and partyPlay.dropIfLeft then
+        pcall(partyPlay.dropIfLeft, bot) -- (the settings and Rule Set you gave it end with your party)
+    end
 
     -- you are a different character object once you zone, and a party entry can still name the old one for a
     -- moment. Look the name up in the live world every time: GetPlayerByName finds nothing between zones, so
@@ -919,7 +923,29 @@ think = function(bot, token)
                         BotMoveTo(id, spot.x, spot.y, spot.z)
                     end
                 else
-                    BotFollow(id, leader, 6)
+                    -- (2026-11-27) set to mid or far range (the Bots tab): it keeps that far from the monster
+                    local keep = partyPlay.standOff and partyPlay.standOff(bot)
+                    if keep then
+                        local dist = bot:checkDistance(target)
+                        if dist > keep + 2 then
+                            BotFollow(id, target, keep)
+                        elseif dist < keep - 4 then
+                            local tp, bp = target:getPos(), bot:getPos()
+                            local dx, dz = bp.x - tp.x, bp.z - tp.z
+                            local len = math.sqrt(dx * dx + dz * dz)
+                            if len < 0.1 then
+                                dx, dz, len = 1, 0, 1
+                            end
+                            BotMoveTo(id, tp.x + dx / len * keep, bp.y, tp.z + dz / len * keep)
+                        end
+                        if not BotIsMoving(id) then
+                            pcall(function()
+                                bot:lookAt(target:getPos())
+                            end)
+                        end
+                    else
+                        BotFollow(id, leader, 6)
+                    end
                 end
             else
                 -- (the attack is sent again until the server really has it engaged: a refused packet used to
@@ -1893,9 +1919,9 @@ end
 -- !bots
 -----------------------------------
 local cmd = {}
-cmd.cmdprops = { permission = 0, parameters = 'ssss' }
+cmd.cmdprops = { permission = 0, parameters = 'sssss' }
 
-cmd.onTrigger = function(player, action, a1, a2, a3)
+cmd.onTrigger = function(player, action, a1, a2, a3, a4)
     -- co-op: a visitor from a friend's world cannot use the owner's commands (modules/custom/late/coop.lua)
     if xi.coop and xi.coop.blockGuest and xi.coop.blockGuest(player, 'bots', action) then
         return
@@ -2151,6 +2177,27 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
         end
 
         tell(player, string.format('%s: %d', action == 'login' and 'Logged in' or 'Logged out', done))
+    elseif action == 'set' and partyPlay and partyPlay.setOpt then
+        -- (2026-11-27) !bots set <Name> role auto|tank|melee|mage|ranged  /  !bots set <Name> range job|melee|mid|far
+        local id, bot = botByName(a1)
+        local key = string.lower(a2 or '')
+        local names = key == 'role' and partyPlay.ROLE_NAMES or (key == 'range' and partyPlay.RANGE_NAMES) or {}
+        local value = nil
+        for n, word in pairs(names) do
+            if word == string.lower(a3 or '') or (word == 'mage' and string.lower(a3 or '') == 'caster') then
+                value = n
+            end
+        end
+        if not id or not bot or value == nil then
+            tell(player, 'Usage: !bots set <Name> role auto|tank|melee|mage|ranged   or   !bots set <Name> range job|melee|mid|far  (a bot in your party)')
+            return
+        end
+
+        local _, text = partyPlay.setOpt(player, bot, key, value)
+        tell(player, text)
+        if a4 == 'panel' then
+            cmd.onTrigger(player, 'party', 'panel')
+        end
     elseif (action == 'gambit' or action == 'party') and partyPlay and partyPlay.setTemp then
         -- (2026-11-27) Rule Sets for the bot players in your party (bots_party.lua P.setTemp; the Squads menu's Bots tab)
         --   !bots party [panel]              the bots in your party and the set each one uses (panel: lines for the menu)
@@ -2186,12 +2233,18 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
                 local num, name = partyPlay.tempOf(m)
                 local main, sub = jobName(m:getMainJob()), m:getSubJob() ~= 0 and jobName(m:getSubJob()) or '-'
                 jobsSeen[main] = true
+                local role, range = 0, 0
+                if partyPlay.optOf then
+                    role, range = partyPlay.optOf(m)
+                end
                 if panel then
+                    player:printToPlayer(string.format('squadpanel:botopt|%s|%d|%d', m:getName(), role, range))
                     player:printToPlayer(string.format('squadpanel:botp|%s|%s|%d|%s|%d|%d|%s', m:getName(), main, m:getMainLvl(), sub,
                         m:getSubLvl(), num or 0, string.sub(tostring(name or ''), 1, 40)))
                 else
-                    tell(player, string.format('%s %s%d/%s%d: %s', m:getName(), main, m:getMainLvl(), sub, m:getSubLvl(),
-                        num and string.format('Rule Set %d (%s)', num, tostring(name)) or 'its own job rules'))
+                    tell(player, string.format('%s %s%d/%s%d: %s, role %s, range %s', m:getName(), main, m:getMainLvl(), sub, m:getSubLvl(),
+                        num and string.format('Rule Set %d (%s)', num, tostring(name)) or 'its own job rules',
+                        partyPlay.ROLE_NAMES and partyPlay.ROLE_NAMES[role] or '?', partyPlay.RANGE_NAMES and partyPlay.RANGE_NAMES[range] or '?'))
                 end
             end
         end
