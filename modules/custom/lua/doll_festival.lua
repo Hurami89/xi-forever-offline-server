@@ -19,9 +19,9 @@
 --    cake, squad mates notice the blossoms, and the chat AIs are told the festival is on (festival_now.txt).
 --  * Music: retail kept each town's own music for this event, so this does too.
 --
--- Dates: February 23 to March 14 (the era festivals ran Feb 28-Mar 13 2005, Feb 28-Mar 14 2006, Feb 23-Mar 4 2007),
--- the PC's local date, unless the launcher's Seasonal events setting is Always on or Off (events_mode.lua), and never
--- while its own Doll Festival switch is off.
+-- Dates: February 28 to March 14, the moogle years' retail dates (2005: Feb 28-Mar 13, 2006: Feb 28-Mar 14; 2007 ran
+-- Feb 23-Mar 4), plus the one-off weekends in EXTRA below, the PC's local date, unless the launcher's Seasonal events
+-- setting is Always on or Off (events_mode.lua), and never while its own Doll Festival switch is off.
 --
 -- !dollpeek (GM): the hidden decoration sets of the town you stand in (doll_festival_spots.lua), one at a time:
 --   !dollpeek            list the sets here          !dollpeek <n>     show set n (and say where the nearest one is)
@@ -45,8 +45,14 @@ local D = xi.dollFestival
 local ZONE = xi.zone
 
 -- month * 100 + day, inclusive
-D.START  = 223
+D.START  = 228
 D.FINISH = 314
+
+-- one-off extra days, yyyymmdd inclusive
+D.EXTRA =
+{
+    { start = 20261127, finish = 20261130 }, -- the romance update weekend (squad mates and bot players can be dated)
+}
 
 D.CAKES =
 {
@@ -166,7 +172,18 @@ end
 D.inDates = function(t)
     local d = os.date('*t', t)
     local md = d.month * 100 + d.day
-    return md >= D.START and md <= D.FINISH
+    if md >= D.START and md <= D.FINISH then
+        return true
+    end
+
+    local ymd = d.year * 10000 + md
+    for _, e in ipairs(D.EXTRA) do
+        if ymd >= e.start and ymd <= e.finish then
+            return true
+        end
+    end
+
+    return false
 end
 
 D.isActive = function()

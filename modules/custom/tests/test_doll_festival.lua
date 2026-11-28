@@ -188,8 +188,13 @@ for _, t in ipairs({ 'xi.server.onServerStart', 'xi.server.onJSTMidnight', 'xi.s
 end
 
 -- 1. dates and switches
-setDay(2, 22); ok(not D.isActive(), 'Feb 22: off')
-setDay(2, 23); ok(D.isActive(), 'Feb 23: on')
+setDay(2, 27); ok(not D.isActive(), 'Feb 27: off')
+setDay(2, 28); ok(D.isActive(), 'Feb 28: on')
+now = realTime({ year = 2026, month = 11, day = 26, hour = 23 }); ok(not D.isActive(), 'Nov 26 2026: off')
+now = realTime({ year = 2026, month = 11, day = 27, hour = 23 }); ok(D.isActive(), 'romance weekend: Fri Nov 27 2026 on')
+now = realTime({ year = 2026, month = 11, day = 30, hour = 23 }); ok(D.isActive(), 'romance weekend: Mon Nov 30 2026 on')
+now = realTime({ year = 2026, month = 12, day = 1, hour = 1 }); ok(not D.isActive(), 'Tue Dec 1 2026: off')
+now = realTime({ year = 2027, month = 11, day = 28, hour = 12 }); ok(not D.isActive(), 'the weekend is a one-off: Nov 28 2027 off')
 setDay(3, 14); ok(D.isActive(), 'Mar 14: on')
 setDay(3, 15); ok(not D.isActive(), 'Mar 15: off')
 setDay(7, 4); eventsCfg.mode = 'on'; ok(D.isActive(), 'Always on: on in July')
@@ -344,7 +349,7 @@ ok(#sent == 0, 'furnishings once a festival')
 local bot = newPlayer('Botty', { id = 16000001 }); bots[16000001] = true
 sent = {}; D.deliver(bot)
 ok(#sent == 0, 'bot players get no delivery')
-setDay(2, 25); now = now + 365 * 86400 -- next year
+now = realTime({ year = 2028, month = 3, day = 1, hour = 12 }) -- next year
 sent = {}; D.deliver(hero)
 ok(#sent == 3, 'next year: the cakes and the furnishings again')
 setDay(3, 1)
