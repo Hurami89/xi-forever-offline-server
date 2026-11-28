@@ -41,7 +41,10 @@ void GP_CLI_COMMAND_CHARREQ::process(MapSession* PSession, CCharEntity* PChar) c
         return;
     }
 
-    CBaseEntity* PEntity = PChar->GetEntity(this->ActIndex, TYPE_NPC | TYPE_PC | TYPE_SHIP);
+    // (XI: Forever Offline, 2026-11-27, Flynt kupo-42 and Zulix kupo-41: stuck after a battlefield win) a cutscene that
+    // shows the party asks for each member; squad mates are trusts, and a trust (or pet) was never answered, so the game
+    // waited for one forever (Kam'lanaut's victory scene with a squad). Trusts and pets are answered like monsters.
+    CBaseEntity* PEntity = PChar->GetEntity(this->ActIndex, TYPE_NPC | TYPE_PC | TYPE_SHIP | TYPE_TRUST | TYPE_PET);
     if (!PEntity)
     {
         const auto fullId = ((4096 + static_cast<uint16>(PChar->getZone())) << 12) + this->ActIndex;
@@ -69,7 +72,7 @@ void GP_CLI_COMMAND_CHARREQ::process(MapSession* PSession, CCharEntity* PChar) c
 
         PChar->updateEntityPacket(PCharEntity, ENTITY_SPAWN, UPDATE_ALL_CHAR);
     }
-    else // TYPE_NPC
+    else // TYPE_NPC (and TYPE_TRUST, TYPE_PET)
     {
         // Special case for onZoneIn cutscenes in Mog House
         // TODO: Verify this condition when Mog House sharing is implemented.
