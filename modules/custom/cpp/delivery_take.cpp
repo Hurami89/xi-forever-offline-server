@@ -82,9 +82,17 @@ class DeliveryTakeModule : public CPPModule
                                            w.subId    = rset->get<uint16>("itemsubid");
                                            w.quantity = rset->get<uint32>("quantity");
                                            w.sender   = rset->get<std::string>("sender");
-                                           uint8 blob[CItem::extra_size]{};
-                                           db::extractFromBlob(rset, "extra", blob);
-                                           w.extra.assign(blob, blob + CItem::extra_size);
+                                           // (2026-11-27, Quaiton: Track Pants taken with !deliverybox showed <0/1>) An entry the
+                                           // server made itself (a gift, an auction house purchase) has no item data at all (NULL).
+                                           // The new item then keeps its own, which holds its full charges, as it does when it is
+                                           // taken by hand (db::extractFromBlob leaves the item alone for a NULL). Copying an empty
+                                           // block over it left every charged item with no charges.
+                                           if (!rset->isNull("extra"))
+                                           {
+                                               uint8 blob[CItem::extra_size]{};
+                                               db::extractFromBlob(rset, "extra", blob);
+                                               w.extra.assign(blob, blob + CItem::extra_size);
+                                           }
                                            waiting.push_back(std::move(w));
                                        }
                                    }

@@ -77,7 +77,7 @@ quest.sections =
                     if quest:complete(player) then
                         player:confirmTrade()
                         player:addFame(xi.fameArea.NORG, 30)
-                        player:addGil(200) -- "Obtained X gil." Text is baked into the CS, so gil needs to be given outside of the quest rewards.
+                        player:addGil(200 * xi.settings.main.GIL_RATE) -- "Obtained X gil." Text is baked into the CS, so gil needs to be given outside of the quest rewards.
                     end
                 end,
             },
@@ -122,7 +122,7 @@ quest.sections =
                         player:confirmTrade()
                         quest:setMustZone(player)
                         player:addFame(xi.fameArea.NORG, 15)
-                        player:addGil(200) -- "Obtained X gil." Text is baked into the CS, so gil needs to be given outside of the quest rewards.
+                        player:addGil(200 * xi.settings.main.GIL_RATE) -- "Obtained X gil." Text is baked into the CS, so gil needs to be given outside of the quest rewards.
                     end
                 end,
             },

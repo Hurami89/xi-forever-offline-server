@@ -642,7 +642,17 @@ xi.squad.eatNow = eatIfNeeded
 -- only work for squad mates once your character has unlocked them (like the job unlock quests in the game).
 local STARTER_JOB_MAX = 6
 
-local function jobUnlocked(player, job)
+local function jobUnlocked(player, job, mate)
+    -- (2026-11-27, Noxaru, Hasuko) with the random squad on, the jobs fate gave a mate need no unlock by the player: the
+    -- player is Randomized too and may never have that job, so the mate could not take its own second job, go back to
+    -- its first one, or use either as support job. Asked only where the mate is passed (!squad job, !squad sub).
+    if
+        mate ~= nil and xi.hardcore ~= nil and xi.hardcore.randomSquadOn ~= nil and xi.hardcore.randomSquadJobAllowed ~= nil and
+        xi.hardcore.randomSquadOn(player) == true and xi.hardcore.randomSquadJobAllowed(player, mate, job) == true
+    then
+        return true
+    end
+
     -- (2026-11-23, Randomized mode) a Randomized character's job quests unlock the job for its squad only (hardcore.lua)
     return job <= STARTER_JOB_MAX or player:hasJob(job) or
         (xi.hardcore ~= nil and xi.hardcore.squadJob ~= nil and xi.hardcore.squadJob(player, job) == true)
@@ -3605,8 +3615,8 @@ xi.squad.attackOrder = function(player, stop)
     if stop then
         local had = player:getLocalVar('SQUAD_ATTACK_TARGET') ~= 0
         player:setLocalVar('SQUAD_ATTACK_TARGET', 0)
-        if xi.bots and xi.bots.partyOrder then
-            local okBots, n = pcall(xi.bots.partyOrder, player, 'stop')
+        if xi.bots and xi.bots.squadOrder then
+            local okBots, n = pcall(xi.bots.squadOrder, player, 'stop')
             had = had or (okBots and (n or 0) > 0)
         end
         if not player:isEngaged() then
@@ -3673,8 +3683,8 @@ xi.squad.attackOrder = function(player, stop)
         end
     end
 
-    if botCount > 0 and xi.bots and xi.bots.partyOrder then
-        pcall(xi.bots.partyOrder, player, 'attack', mob)
+    if botCount > 0 and xi.bots and xi.bots.squadOrder then
+        pcall(xi.bots.squadOrder, player, 'attack', mob)
     end
 
     say(player, 'Your squad attacks the ' .. name .. '. Stay out of it if you like: no need to draw your weapon. !squad stop calls them back.')
@@ -6046,7 +6056,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         if job == nil then
             say(player, 'Unknown job. Jobs: ' .. jobList)
             return
-        elseif not jobUnlocked(player, job) and job ~= mate.mjob and job ~= mate.sjob then
+        elseif not jobUnlocked(player, job, mate) and job ~= mate.mjob and job ~= mate.sjob then
             say(player, lockedMessage(player, job))
             return
         elseif xi.hardcore ~= nil and xi.hardcore.randomSquadJobAllowed ~= nil and not xi.hardcore.randomSquadJobAllowed(player, mate, job) then
@@ -6076,7 +6086,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             if job == nil or job == mate.mjob then
                 say(player, 'Pick a different job than the main job, or "none".')
                 return
-            elseif not jobUnlocked(player, job) and job ~= mate.sjob then
+            elseif not jobUnlocked(player, job, mate) and job ~= mate.sjob then
                 say(player, lockedMessage(player, job))
                 return
             elseif xi.hardcore ~= nil and xi.hardcore.randomSquadJobAllowed ~= nil and not xi.hardcore.randomSquadJobAllowed(player, mate, job) then

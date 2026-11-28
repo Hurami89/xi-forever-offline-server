@@ -21,6 +21,7 @@ xi.homepoint = { onTrigger = function(p) return xi.settings.main.HOMEPOINT_TELEP
 xi.survivalGuide = { onTrigger = function(p) return xi.settings.main.ENABLE_SURVIVAL_GUIDE end, onEventUpdate = function() end, onEventFinish = function() end }
 xi.player = { onGameIn = function() return 'base' end, onPlayerDeath = function() end, onPlayerLevelUp = function() end }
 xi.server = { onServerStart = function() end, onTimeServerTick = function() end }
+xi.job_utils = { ninja = { useMijinGakure = function(p) mijinUsed = (mijinUsed or 0) + 1; return 0 end } } -- (2026-11-26: Mijin Gakure does not count)
 -- C++ stand-ins
 sent = {}; resets = {}; kicked = {}; area = {}; timers = {}
 SendItemToDeliveryBox = function(name, id, q, from) table.insert(sent, { name, id, from }); return 0 end
@@ -50,6 +51,9 @@ function newPlayer(id, name)
   function p:setTitle(t) self.title = t end
   function p:getZoneID() return self.zone or 100 end
   function p:getBattlefield() return self.battlefield end
+  function p:isPC() return true end
+  function p:getLocalVar(k) return (self.locals or {})[k] or 0 end
+  function p:setLocalVar(k, v) self.locals = self.locals or {}; self.locals[k] = v end
   players[id] = p
   return p
 end

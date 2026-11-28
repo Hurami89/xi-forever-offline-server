@@ -470,8 +470,76 @@ end
 -----------------------------------
 -- you /tell a bot (bots.lua xi.bots.onTell): true when it answered about its offer
 -----------------------------------
-local ASK = { 'buy', 'sell', 'wts', 'wtb', 'price', 'much', 'still', 'bazaar', 'have', 'got', 'interest', 'want', 'take', 'sold',
-    'where', 'gil', 'cost', 'offer', 'deal', 'mine', '?' }
+-- (2026-11-27, SprinklesAK: a bot with something in its bazaar answered every tell with its sale line) A tell is about
+-- the offer when it names the item, uses a trade word as a word of its own, or follows up within a few minutes on
+-- talk about the offer ("where?", "still have it?", "ok"). The first list also took '?', have, got, want, take, where,
+-- mine, still and much anywhere in the text, even inside other words ("forgot", "together"), so ordinary chat and
+-- "want to party?" never reached the bot's own answers while it had an offer open.
+local TRADE_WORDS = { buy = true, buying = true, sell = true, selling = true, wts = true, wtb = true, price = true,
+    bazaar = true, cost = true, costs = true, sold = true, offer = true, gil = true, interested = true }
+local TRADE_PHRASES = { 'how much', 'how many', 'ill take', "i'll take", 'take it', 'still have', 'still got', 'still selling',
+    'still buying', 'where are you', 'where r u', 'where u at', 'i have one', 'got one' }
+local FOLLOW_UPS = { have = true, got = true, want = true, take = true, where = true, still = true, mine = true, much = true,
+    yes = true, yeah = true, ok = true, okay = true, sure = true, coming = true, omw = true, here = true }
+local FOLLOW_UP_SECONDS = 180
+
+-- is this tell from "from" about the offer o? Remembers who it talked with about it (o.talked), for the follow-ups.
+function M.aboutOffer(o, from, text, at)
+    at = at or os.time()
+    local lower = string.lower(text or '')
+    local name = string.lower(o.name or '')
+    local hit = name ~= '' and lower:find(name, 1, true) ~= nil
+    local words = {}
+    for word in lower:gmatch("[%a']+") do
+        words[#words + 1] = word
+    end
+
+    if not hit then
+        -- a word of the item's name on its own ("harness?"): five letters or more, so "ring" or "cape" alone is not enough
+        local nameWords = {}
+        for word in name:gmatch('%a+') do
+            if #word >= 5 then
+                nameWords[word] = true
+            end
+        end
+
+        for _, word in ipairs(words) do
+            if TRADE_WORDS[word] or nameWords[word] then
+                hit = true
+                break
+            end
+        end
+    end
+
+    if not hit then
+        for _, phrase in ipairs(TRADE_PHRASES) do
+            if lower:find(phrase, 1, true) then
+                hit = true
+                break
+            end
+        end
+    end
+
+    o.talked = o.talked or {}
+    if not hit and (o.talked[from] or 0) + FOLLOW_UP_SECONDS >= at then
+        if #words == 0 then
+            hit = lower:find('?', 1, true) ~= nil -- (just "?" after its answer)
+        else
+            for _, word in ipairs(words) do
+                if FOLLOW_UPS[word] then
+                    hit = true
+                    break
+                end
+            end
+        end
+    end
+
+    if hit then
+        o.talked[from] = at
+    end
+
+    return hit
+end
 
 local function zoneName(e)
     local ok, n = pcall(function()
@@ -486,18 +554,7 @@ function M.onTell(bot, from, text)
         return false
     end
 
-    local lower = string.lower(text or '')
-    local hit = lower:find(string.lower(o.name), 1, true) ~= nil
-    if not hit then
-        for _, w in ipairs(ASK) do
-            if lower:find(w, 1, true) then
-                hit = true
-                break
-            end
-        end
-    end
-
-    if not hit then
+    if not M.aboutOffer(o, from, text) then
         return false
     end
 

@@ -64,7 +64,7 @@ quest.sections =
                 [277] = function(player, csid, option, npc)
                     if quest:complete(player) then
                         player:confirmTrade()
-                        player:addGil(1500)
+                        player:addGil(1500 * xi.settings.main.GIL_RATE)
                         quest:setMustZone(player)
                     end
                 end,

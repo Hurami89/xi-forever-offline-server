@@ -100,7 +100,7 @@ quest.sections =
                     if quest:complete(player) then
                         player:tradeComplete()
                         -- Note: Message display for gil reward is handled by the event
-                        player:addGil(900)
+                        player:addGil(900 * xi.settings.main.GIL_RATE)
                         quest:setMustZone(player)
                     end
                 end,
@@ -195,7 +195,7 @@ quest.sections =
                 [355] = function(player, csid, option, npc)
                     if quest:complete(player) then
                         player:tradeComplete()
-                        player:addGil(900)
+                        player:addGil(900 * xi.settings.main.GIL_RATE)
                         quest:setMustZone(player)
                     end
                 end,

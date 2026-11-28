@@ -2498,7 +2498,11 @@ end
 
 -- (2026-11-23, Yenkei) !squad attack / !squad stop (squad.lua) order the bot players in your party too, as "attack" /
 -- "stop" in party chat do. Returns how many bots took the order.
-xi.bots.partyOrder = function(player, word, mob)
+-- (2026-11-27, SprinklesAK: "bots in my party never reply to party chat") This was a second xi.bots.partyOrder, and it
+-- replaced the one above: since 2026-11-23 your party chat reached this function instead, so bot players in your
+-- party did not talk back, did not take "follow" / "stay" / "release", and did not cast what you asked for. It has
+-- its own name now; party chat goes to the handler above again.
+xi.bots.squadOrder = function(player, word, mob)
     local n = 0
     for _, member in pairs(player:getParty() or {}) do
         local id = member:getID()

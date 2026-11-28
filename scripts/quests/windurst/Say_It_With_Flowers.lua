@@ -156,7 +156,7 @@ quest.sections =
                     if quest:complete(player) then
                         player:confirmTrade()
                         player:addFame(xi.fameArea.WINDURST, 10)
-                        player:addGil(100)
+                        player:addGil(100 * xi.settings.main.GIL_RATE)
                         quest:setMustZone(player)
                     end
                 end,
@@ -165,7 +165,7 @@ quest.sections =
                     if quest:complete(player) then
                         player:confirmTrade()
                         player:addFame(xi.fameArea.WINDURST, 10)
-                        player:addGil(400) -- Obtained gil text baked into the cs
+                        player:addGil(400 * xi.settings.main.GIL_RATE) -- Obtained gil text baked into the cs
                         quest:setMustZone(player)
                         quest:setVar(player, 'Stage', 1)
                     end

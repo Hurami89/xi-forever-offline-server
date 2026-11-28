@@ -18,7 +18,7 @@ quest.reward =
 
 local kenapaTradeEventFinish = function(player, csid, option, npc)
     player:confirmTrade()
-    player:addGil(120)
+    player:addGil(120 * xi.settings.main.GIL_RATE)
 
     if
         quest:getVar(player, 'kerutotoProg') == 2 and
@@ -34,7 +34,7 @@ end
 
 local ohbiruTradeEventFinish = function(player, csid, option, npc)
     player:confirmTrade()
-    player:addGil(440)
+    player:addGil(440 * xi.settings.main.GIL_RATE)
 
     if
         quest:getVar(player, 'kerutotoProg') == 2 and
@@ -271,7 +271,7 @@ quest.sections =
 
                 [332] = function(player, csid, option, npc)
                     player:confirmTrade()
-                    player:addGil(440)
+                    player:addGil(440 * xi.settings.main.GIL_RATE)
 
                     if
                         quest:getVar(player, 'kenapaProg') == 4 and

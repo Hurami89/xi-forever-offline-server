@@ -59,9 +59,12 @@ check(H.squadJob(r, 7) and not H.squadJob(iron or newPlayer(50, 'Nobody'), 7), '
 r.jobs[r.mjob] = 18; xi.player.onPlayerLevelUp(r)
 local count = 0; for j = 1, 18 do if bit.band(r:getCharVar('[HC]Jobs'), bit.lshift(1, j)) ~= 0 then count = count + 1 end end
 check(count == 2 and r:getCharVar('[HC]Grants') == 1, 'second job at 18')
+local function hints() local n = 0; for _, t in ipairs(r.msgs) do if t:find('!dropsub', 1, true) then n = n + 1 end end; return n end
+check(hints() == 1, 'with two jobs the character is told about !dropsub (they cannot trade places at the Moogle)')
 r.jobs[r.mjob] = 70; xi.player.onPlayerLevelUp(r)
 count = 0; for j = 1, 18 do if bit.band(r:getCharVar('[HC]Jobs'), bit.lshift(1, j)) ~= 0 then count = count + 1 end end
 check(count == 4 and r:getCharVar('[HC]Grants') == 3, 'four jobs in all after 33 and 65')
+check(hints() == 1, 'the third and fourth job bring no !dropsub line')
 xi.player.onPlayerLevelUp(r); check(r:getCharVar('[HC]Grants') == 3, 'no fifth job')
 check(#sent == 21 and sent[1][3] == 'Fate', 'Randomized milestones: 3 cosmetics each, from Fate (round 4): ' .. #sent)
 -- loot

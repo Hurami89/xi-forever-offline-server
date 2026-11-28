@@ -72,7 +72,7 @@ quest.sections =
             {
                 [440] = function(player, csid, option, npc)
                     player:confirmTrade()
-                    player:addGil(250) -- "Obtained X gil." Text is baked into the CS, so gil needs to be given outside of the quest rewards.
+                    player:addGil(250 * xi.settings.main.GIL_RATE) -- "Obtained X gil." Text is baked into the CS, so gil needs to be given outside of the quest rewards.
 
                     if quest:complete(player) then
                         xi.quest.setMustZone(player, xi.questLog.WINDURST, xi.quest.id.windurst.MAKING_THE_GRADE)

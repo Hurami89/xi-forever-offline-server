@@ -705,6 +705,17 @@ local function jobKit(player, job)
     end
 end
 
+local function jobCount(mask)
+    local count = 0
+    for job = 1, ERA_JOBS do
+        if hasBit(mask, job) then
+            count = count + 1
+        end
+    end
+
+    return count
+end
+
 local function rollJob(mask)
     local choices = {}
     for job = 1, ERA_JOBS do
@@ -914,6 +925,11 @@ H.randomGrants = function(player)
 
         giveJob(player, job, false)
         tell(player, string.format('Fate has a new path for you: %s! Change jobs at a Moogle to try it.', jobName(job)))
+        if jobCount(player:getCharVar(VAR_JOBS)) == 2 then
+            -- (2026-11-27, the user) with two jobs there is no third one to park the support job on: !dropsub
+            -- (late/drop_subjob.lua) takes it off, and then the two can trade places
+            tell(player, 'Two jobs cannot trade places at the Moogle while one is your support job: type !dropsub there first to take it off.')
+        end
         announce(player, string.format('%s (Randomized) was given %s at level %d.', player:getName(), jobName(job), GRANT_AT[grants]))
         writeOut('grant', player, H.RANDOM, job, GRANT_AT[grants], '')
     end

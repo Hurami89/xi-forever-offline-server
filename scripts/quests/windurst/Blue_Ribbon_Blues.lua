@@ -53,7 +53,7 @@ quest.sections =
 
                 [358] = function(player, csid, option, npc)
                     player:confirmTrade()
-                    player:addGil(3600)
+                    player:addGil(3600 * xi.settings.main.GIL_RATE)
                     quest:begin(player)
                     quest:setVar(player, 'Prog', 0)
                     quest:setVar(player, 'Timer', GetSystemTime() + 60)
