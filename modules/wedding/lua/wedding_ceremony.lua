@@ -358,7 +358,8 @@ local function vow(st, who, other, nextStep)
     if who == 'B' and st.bKind ~= 'pc' then
         -- the squad mate or bot answers for itself
         after(st, 3500, function(a, b)
-            a:printToArea('I do.', xi.msg.channel.SAY, xi.msg.area.SHOUT, st.b)
+            local words = (xi.romance and xi.romance.vow and st.romance) and xi.romance.vow(st.romance) or 'I do.'
+            a:printToArea(words, xi.msg.channel.SAY, xi.msg.area.SHOUT, st.b)
             nextStep()
         end)
         return
@@ -415,6 +416,12 @@ local function finish(st, a, b)
         end
 
         masterSays(st, 'Here is your marriage certificate. May the Crystals light your way, together.')
+        local happy = xi.romance.written and xi.romance.written('afterWedding')
+        if happy then
+            a:timer(4000, function(e)
+                xi.romance.say(e, st.romance, xi.romance.fill(happy, { name = e:getName() }))
+            end)
+        end
     end
     release(st)
     a:timer(MUSIC_BACK_S * 1000, function()

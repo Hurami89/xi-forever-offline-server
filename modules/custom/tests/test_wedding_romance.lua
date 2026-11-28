@@ -94,6 +94,8 @@ local function newEntity(name, opts)
     function e:delItemAt(id, n) return self:delItem(id, n) end
     function e:addItem(id) self.bag[id] = (self.bag[id] or 0) + 1 return true end
     function e:getFreeSlotsCount() return 10 end
+    function e:getMainLvl() return self.level or 10 end
+    function e:getHPP() return self.hpp or 100 end
     function e:messageSpecial() end
     return e
 end
@@ -124,7 +126,17 @@ AddSquadExp = function(id, job, gain) squadExp[#squadExp + 1] = { id, gain } ret
 local overrides = {}
 Module = { new = function() return { addOverride = function(_, path, fn) overrides[path] = overrides[path] or {} table.insert(overrides[path], fn) end } end }
 local realRequire = require
-require = function(p) if p:match('^modules/') or p:match('^scripts/') then return true end return realRequire(p) end
+local KIT = os.getenv('ROMANCE_TEST_KIT') or '/tmp/romance-kit/'
+require = function(p)
+    if p == 'modules/wedding/lua/wedding_romance_lines' then
+        return assert(loadstring(assert(io.open(server .. '/' .. p .. '.lua')):read('*a')))()
+    elseif p == 'modules/custom/lua/kit_paths' then
+        return { kit = KIT }
+    elseif p:match('^modules/') or p:match('^scripts/') then
+        return true
+    end
+    return realRequire(p)
+end
 
 -- base functions the overrides wrap
 local trades, gifts = {}, 0
@@ -239,7 +251,7 @@ ok(gifts == 2, 'an old-style gift (no items) still works')
 -- asking out
 A.vars['[Love]PM77'] = 100
 said = {}
-ok(not R.askOut(A, pMate) and has(said, 'know you well enough'), 'too soon: not yet')
+ok(not R.askOut(A, pMate) and has(said, 'Ask me again soon'), 'too soon: not yet (a quick one)')
 A.vars['[Love]PM77'] = 160 -- quick: 250 x 0.6 = 150
 said = {}
 ok(R.askOut(A, pMate) and R.stage(A, pMate) == R.STAGE.DATING, 'enough affection: they say yes')
@@ -255,7 +267,7 @@ ok(not R.date(A, pMate) and has(told, 'not much of a place'), 'not every place i
 A.zone = 248
 local p0 = R.points(A, pMate)
 ok(R.date(A, pMate) and R.points(A, pMate) == p0 + 40, 'a date in Selbina')
-ok(has(said, 'sea breeze'), 'they talk about the place')
+ok(has(said, 'sea breeze') or has(said, 'lighthouse') or has(said, 'harbor'), 'they talk about the place')
 ok(not R.date(A, pMate), 'not the same spot twice a day')
 advance(21 * 3600)
 ok(R.date(A, pMate), 'the same spot the next day')
@@ -319,6 +331,74 @@ local before2 = #trades
 onTrade(A, mate, { { itemId = 900, slot = 1 } })
 ok(#trades == before2 + 1, 'visiting: a trade is the squad\'s as before')
 xi.coop = nil
+
+-- the written lines are all there
+local L = require('modules/wedding/lua/wedding_romance_lines')
+local total = 0
+local function count(t) for _, v in pairs(t) do if type(v) == 'table' then count(v) else total = total + 1 end end end
+count(L)
+ok(total >= 400, 'over 400 written lines (' .. total .. ')')
+for _, spot in ipairs(R.SPOTS) do
+    ok(L.spots[spot.zone] and #L.spots[spot.zone].any >= 3 and #L.spots[spot.zone].night >= 2 and #L.spots[spot.zone].day >= 2,
+       'lines for every date spot: ' .. spot.zone)
+end
+for stage = 0, 5 do
+    ok(#L.chat[stage].common >= 8, 'chat lines for stage ' .. stage)
+end
+for _, kind in ipairs({ 'flowers', 'gems', 'crystals', 'cloth', 'feathers', 'sweets' }) do
+    ok(#L.gift.loved[kind] >= 4 and #L.gift.disliked[kind] >= 3, 'gift lines for ' .. kind)
+end
+
+-- the AI bridges
+-- (1) the bot AI's picture: romance_bots.txt
+local rows = io.open('modules/custom/lua/romance_bots.txt'):read('*a')
+ok(rows:find(MOST .. '\t', 1, true) and rows:find('\tHurami', 1, true), 'romance_bots.txt has the bot and the player')
+-- (2) squad mates: with the squad-chat folder there, moments go to the sidecar
+os.execute('mkdir -p ' .. KIT .. 'squad-chat')
+local inPath = KIT .. 'squad-chat/in.txt'
+io.open(inPath, 'w'):close()
+said = {}
+A.party = { A, mate }
+A.vars['[Love]GM77'] = 0
+R.chat(A, pMate)
+local sent = io.open(inPath):read('*a')
+ok(sent:find('LOVE\t' .. QUICK, 1, true) and sent:find('LOVEEV\t' .. QUICK, 1, true), 'LOVE and LOVEEV lines go to the sidecar')
+ok(not has(said, QUICK .. ':4:'), 'with the sidecar there, the written line waits')
+advance(9)
+ok(has(said, QUICK .. ':4:'), 'no sidecar reading the lines: the written line after 8 seconds')
+said = {}
+local st = io.open(KIT .. 'squad-chat/state.json', 'w'); st:write('{"in_offset": 99999999}'); st:close()
+A.locals['[Love]ChatM77'] = 0
+R.chat(A, pMate)
+advance(9)
+ok(not has(said, QUICK .. ':4:'), 'the sidecar read it: its own line, not the written one')
+A.vars.SQUAD_CHAT_OFF = 1
+said = {}
+R.chat(A, pMate)
+ok(has(said, QUICK .. ':4:'), 'squad chat switched off: the written line at once')
+A.vars.SQUAD_CHAT_OFF = 0
+
+-- married life (the mate is A's spouse; squad chat off so the written lines come at once)
+A.vars.SQUAD_CHAT_OFF = 1
+A.party = { A, mate }
+A.locals = {}
+A.level, A.hpp, A.engaged = 30, 100, false
+A.locals['[Love]IdleM77'] = os.time() -- (no idle line in the way)
+said = {}
+xi.romance.tick(A)
+ok(has(said, QUICK .. ':4:'), 'a hello from the spouse the first time this session')
+local n = #said
+xi.romance.tick(A)
+ok(#said == n, 'only once')
+A.engaged, A.hpp = true, 20
+xi.romance.tick(A)
+ok(#said == n + 1, 'the spouse worries when you are hurt in a fight')
+xi.romance.tick(A)
+ok(#said == n + 1, 'not every minute')
+A.engaged, A.hpp, A.level = false, 100, 31
+xi.romance.tick(A)
+ok(#said == n + 2, 'and cheers your level up')
+A.vars.SQUAD_CHAT_OFF = 0
 
 print(string.format('test_wedding_romance: %d checks, %d failed', checks, failed))
 os.exit(failed == 0 and 0 or 1)

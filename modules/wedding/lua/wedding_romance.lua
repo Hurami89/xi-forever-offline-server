@@ -115,6 +115,28 @@ R.LINES =
     married = { 'Good to have you back, my love.', 'I\'m right here, dear.' },
 }
 
+-- the written lines (wedding_romance_lines.lua; R.LINES above stays as a fallback)
+local okLines, WRITTEN = pcall(require, 'modules/wedding/lua/wedding_romance_lines')
+if not okLines or type(WRITTEN) ~= 'table' then
+    WRITTEN = {}
+end
+
+R.WRITTEN = WRITTEN
+
+-- the AI bridges: the squad-chat sidecar (kit squad-chat/in.txt; it answers for squad mates) and the bot chat AI
+-- (it reads romance_bots.txt for every tell it answers)
+local SQUAD_CHAT_DIR = (function()
+    local ok, paths = pcall(require, 'modules/custom/lua/kit_paths')
+    if ok and type(paths) == 'table' and type(paths.kit) == 'string' and paths.kit ~= '' then
+        return paths.kit .. 'squad-chat/'
+    end
+
+    return 'C:/FFXISOLO/squad-chat/'
+end)()
+local BOT_STATE_FILE = 'modules/custom/lua/romance_bots.txt'
+local AI_WAIT_MS = 8000      -- the sidecar must have read the line by then, or the written line is said
+R.squadChatDir = SQUAD_CHAT_DIR
+
 -----------------------------------
 -- small helpers
 -----------------------------------
@@ -125,6 +147,37 @@ end
 local function pick(list)
     return list[math.random(1, #list)]
 end
+
+-- a written line: WRITTEN first (the path, e.g. 'gift', 'loved', 'flowers'), else the built-in R.LINES fallback
+local function written(...)
+    local node = WRITTEN
+    for i = 1, select('#', ...) do
+        if type(node) ~= 'table' then
+            return nil
+        end
+
+        node = node[select(i, ...)]
+    end
+
+    if type(node) == 'table' and #node > 0 then
+        return node[math.random(1, #node)]
+    end
+
+    return nil
+end
+
+local function fill(text, vars)
+    if not text then
+        return nil
+    end
+
+    return (text:gsub('{(%w+)}', function(key)
+        return tostring((vars or {})[key] or '')
+    end))
+end
+
+R.written = written
+R.fill = fill
 
 local function hash(text)
     local h = 5381
@@ -266,6 +319,17 @@ R.kindOf = function(itemId)
     return nil
 end
 
+R.itemName = function(itemId)
+    R.kindOf(itemId) -- (builds the name table)
+    local name = itemNames[itemId]
+    if not name then
+        return 'a present'
+    end
+
+    name = name:lower():gsub('_', ' ')
+    return name
+end
+
 R.points = function(player, p)
     return var(player, 'P', p)
 end
@@ -298,6 +362,123 @@ end
 
 R.say = say
 
+local STAGE_WORDS = { [0] = 'someone they have only just met', 'a friend', 'a close friend', 'the one they are dating',
+                      'their fiance(e)', 'their spouse' }
+
+R.recent = R.recent or {}   -- key .. player -> the last few moments, for the AI ("took you on a date to Selbina")
+R.botRows = R.botRows or {} -- bot|player -> the line in romance_bots.txt
+
+local function moments(player, p)
+    return R.recent[p.key .. '@' .. player:getName()] or {}
+end
+
+local function lovedKnown(player, p)
+    local out = {}
+    for kind, taste in pairs(R.tastes(p)) do
+        if taste == 'loved' then
+            out[#out + 1] = KIND_NAMES[kind]
+        end
+    end
+
+    table.sort(out)
+    return table.concat(out, ',')
+end
+
+local function clean(text)
+    return (tostring(text or ''):gsub('[\t\r\n|]', ' '))
+end
+
+local function squadAI(player)
+    if player:getCharVar('SQUAD_CHAT_OFF') == 1 then
+        return nil
+    end
+
+    local handle = io.open(SQUAD_CHAT_DIR .. 'in.txt', 'a')
+    return handle
+end
+
+local function sidecarOffset()
+    local handle = io.open(SQUAD_CHAT_DIR .. 'state.json', 'r')
+    if not handle then
+        return -1
+    end
+
+    local text = handle:read('*a') or ''
+    handle:close()
+    return tonumber(text:match('"in_offset"%s*:%s*(%d+)')) or -1
+end
+
+-- what the AIs know about the two of you: a LOVE line to the squad sidecar, a row in romance_bots.txt for the bot AI
+R.pushState = function(player, p)
+    local stage = R.stage(player, p)
+    local fields = { p.name, stage, R.nature(p), lovedKnown(player, p), var(player, 'N', p),
+                     table.concat(moments(player, p), ' / '), player:getName() }
+    for i, v in ipairs(fields) do
+        fields[i] = clean(v)
+    end
+
+    if p.kind == 'mate' then
+        local handle = squadAI(player)
+        if handle then
+            handle:write('LOVE\t' .. table.concat(fields, '\t') .. '\n')
+            handle:close()
+        end
+
+        return
+    end
+
+    R.botRows[p.name .. '|' .. player:getName()] = table.concat(fields, '\t')
+    local handle = io.open(BOT_STATE_FILE, 'w')
+    if handle then
+        handle:write('# bot\tstage\tnature\tloves\tdates\tmoments\tplayer (written by modules/wedding/lua/wedding_romance.lua)\n')
+        for _, row in pairs(R.botRows) do
+            handle:write(row, '\n')
+        end
+
+        handle:close()
+    end
+end
+
+-- one moment: the written line, or (a squad mate, AI chat on) the AI's own line about it, with the written line as
+-- the fallback the sidecar says if its model has nothing. moment = a few words for the AI's memory.
+R.speak = function(player, p, line, moment, vars)
+    vars = vars or {}
+    vars.name = vars.name or player:getName()
+    line = fill(line, vars)
+    if moment then
+        local key = p.key .. '@' .. player:getName()
+        local list = R.recent[key] or {}
+        list[#list + 1] = moment
+        while #list > 5 do
+            table.remove(list, 1)
+        end
+
+        R.recent[key] = list
+    end
+
+    if p.kind == 'mate' and moment then
+        R.pushState(player, p)
+        local handle = squadAI(player)
+        if handle then
+            handle:write(string.format('LOVEEV\t%s\t%s\t%s\t%s\n', clean(p.name), clean(moment), clean(line), clean(STAGE_WORDS[R.stage(player, p)])))
+            local mark = handle:seek('end')
+            handle:close()
+            player:timer(AI_WAIT_MS, function(e)
+                if sidecarOffset() < mark then
+                    say(e, p, line) -- the sidecar is not running: the written line
+                end
+            end)
+            return
+        end
+    elseif moment then
+        R.pushState(player, p)
+    end
+
+    if line then
+        say(player, p, line)
+    end
+end
+
 local function addPoints(player, p, n)
     -- nobody likes being forgotten: after two weeks apart, a little fades (never below where the stage began)
     local last = var(player, 'T', p)
@@ -311,6 +492,13 @@ local function addPoints(player, p, n)
         end
 
         setVar(player, 'P', p, math.max(floor, R.points(player, p) - days * 3))
+        if stage >= R.STAGE.DATING and player:getLocalVar('[Love]Missed' .. p.key) == 0 then
+            player:setLocalVar('[Love]Missed' .. p.key, 1)
+            local line = written('missed')
+            if line and R.speak then
+                R.speak(player, p, line, string.format('%s came back after a long time away', player:getName()))
+            end
+        end
     end
 
     setVar(player, 'T', p, now)
@@ -339,7 +527,38 @@ R.tick = function(player)
     end
 
     local fighting = player:isEngaged()
+    local now = os.time()
+    local level = player:getMainLvl()
+    local levelled = player:getLocalVar('[Love]Lvl') ~= 0 and level > player:getLocalVar('[Love]Lvl')
+    player:setLocalVar('[Love]Lvl', level)
+    local hurt = fighting and player:getHPP() < 35
     for _, p in ipairs(partners) do
+        local stage = R.stage(player, p)
+        if stage == R.STAGE.MARRIED then
+            -- married life: a hello the first time they are with you this session, worry when you are hurt, cheers
+            if player:getLocalVar('[Love]Hi' .. p.key) == 0 then
+                player:setLocalVar('[Love]Hi' .. p.key, 1)
+                R.speak(player, p, written('married', 'greet'), string.format('%s is with you again', player:getName()))
+            elseif hurt and now - player:getLocalVar('[Love]Hurt' .. p.key) >= 300 then
+                player:setLocalVar('[Love]Hurt' .. p.key, now)
+                say(player, p, fill(written('married', 'hurt'), { name = player:getName() })) -- (no time to wait for the AI)
+            elseif levelled then
+                R.speak(player, p, written('married', 'levelup'), string.format('%s just grew stronger (a level up)', player:getName()))
+            end
+        end
+
+        -- now and then, something sweet by themselves (dating and after; at most every 20 minutes)
+        if stage >= R.STAGE.DATING and not fighting and now - player:getLocalVar('[Love]Idle' .. p.key) >= 1200 and
+            math.random(1, 100) <= 4 then
+            player:setLocalVar('[Love]Idle' .. p.key, now)
+            R.speak(player, p, written('idle', stage), string.format('you felt like saying something sweet to %s, unprompted', player:getName()))
+        end
+
+        if now - player:getLocalVar('[Love]Push' .. p.key) >= 300 then
+            player:setLocalVar('[Love]Push' .. p.key, now)
+            R.pushState(player, p) -- (the AIs' picture of the two of you, every few minutes)
+        end
+
         local day = today()
         local used = var(player, 'D', p)
         local count = (math.floor(used / 1000) == day) and used % 1000 or 0
@@ -385,15 +604,18 @@ R.gift = function(player, p, itemId)
     local given = var(player, 'G', p)
     local count = (math.floor(given / 10) == day) and given % 10 or 0
     if count >= GIFTS_PER_DAY then
-        say(player, p, pick(R.LINES.giftEnough))
+        R.speak(player, p, written('gift', 'enough') or pick(R.LINES.giftEnough))
         return true
     end
+
+    local itemName = R.itemName(itemId)
 
     setVar(player, 'G', p, day * 10 + count + 1)
     local taste = kind and R.tastes(p)[kind] or nil
     if taste == 'loved' then
         addPoints(player, p, GIFT_LOVED)
-        say(player, p, pick(R.LINES.giftLoved))
+        R.speak(player, p, written('gift', 'loved', kind) or pick(R.LINES.giftLoved),
+                string.format('%s gave you %s, and you love %s', player:getName(), itemName, KIND_NAMES[kind]), { item = itemName })
         -- they love these: now you know
         local idx = 0
         for i, k in ipairs(KINDS) do
@@ -406,10 +628,12 @@ R.gift = function(player, p, itemId)
         setVar(player, 'K', p, bit.bor(known, bit.lshift(1, idx)))
     elseif taste == 'disliked' then
         addPoints(player, p, GIFT_DISLIKED)
-        say(player, p, pick(R.LINES.giftDisliked))
+        R.speak(player, p, written('gift', 'disliked', kind) or pick(R.LINES.giftDisliked),
+                string.format('%s gave you %s, but you do not care for %s', player:getName(), itemName, KIND_NAMES[kind]), { item = itemName })
     else
         addPoints(player, p, GIFT_PLAIN)
-        say(player, p, pick(R.LINES.giftPlain))
+        R.speak(player, p, written('gift', 'plain') or pick(R.LINES.giftPlain),
+                string.format('%s gave you %s as a present', player:getName(), itemName), { item = itemName })
     end
 
     return true
@@ -435,7 +659,14 @@ R.chat = function(player, p)
     end
 
     local stage = R.stage(player, p)
-    say(player, p, pick(R.LINES.chat[stage] or R.LINES.chat[0]))
+    local nature = R.nature(p)
+    local line = nil
+    if nature ~= 'most' and math.random(1, 100) <= 40 then
+        line = written('chat', stage, nature)
+    end
+
+    line = line or written('chat', stage, 'common') or pick(R.LINES.chat[stage] or R.LINES.chat[0])
+    R.speak(player, p, line, string.format('%s stopped to chat with you', player:getName()))
 end
 
 R.askOut = function(player, p)
@@ -450,18 +681,22 @@ R.askOut = function(player, p)
         return false
     end
 
-    if R.nature(p) == 'never' and stage >= R.STAGE.CLOSE then
-        say(player, p, pick(R.LINES.never))
+    local nature = R.nature(p)
+    if nature == 'never' and stage >= R.STAGE.CLOSE then
+        R.speak(player, p, written('never') or pick(R.LINES.never),
+                string.format('%s asked you out. You only ever see them as a dear friend, and you said no kindly', player:getName()))
         return false
     end
 
-    if R.points(player, p) < ASK_AT * NATURE_PACE[R.nature(p)] or R.nature(p) == 'never' then
-        say(player, p, pick(R.LINES.notYet))
+    if R.points(player, p) < ASK_AT * NATURE_PACE[nature] or nature == 'never' then
+        R.speak(player, p, written('notYet', nature == 'never' and 'most' or nature) or pick(R.LINES.notYet),
+                string.format('%s asked you out, but it is too soon for you. You said not yet, kindly', player:getName()))
         return false
     end
 
     setVar(player, 'S', p, R.STAGE.DATING)
-    say(player, p, pick(R.LINES.yes))
+    R.speak(player, p, written('askYes', nature) or pick(R.LINES.yes),
+            string.format('%s asked you out and you said yes. You are dating now', player:getName()))
     tell(player, string.format('You and %s are now dating!', p.name))
     return true
 end
@@ -486,20 +721,34 @@ R.date = function(player, p)
     local index, spot = R.spotHere(player)
     if not index then
         tell(player, 'This is not much of a place for a date. Try Selbina\'s harbor, the Jeuno districts, Windurst Walls...')
+        local line = written('notPlace')
+        if line then
+            say(player, p, fill(line, { name = player:getName() }))
+        end
+
         return false
     end
 
     local key = 'Spot' .. index
     local last = var(player, key, p)
     if last > 0 and os.time() - last < DATE_GAP then
-        say(player, p, 'We were just here! Let\'s find somewhere new, or come back another day.')
+        say(player, p, fill(written('spotRepeat') or 'We were just here! Let\'s find somewhere new, or come back another day.', { name = player:getName() }))
         return false
     end
 
     setVar(player, key, p, os.time())
     setVar(player, 'N', p, var(player, 'N', p) + 1)
     addPoints(player, p, 40)
-    say(player, p, spot.line)
+    local hour = VanadielHour and VanadielHour() or 12
+    local night = hour >= 20 or hour < 6
+    local line = nil
+    if math.random(1, 100) <= 50 then
+        line = written('spots', spot.zone, night and 'night' or 'day')
+    end
+
+    line = line or written('spots', spot.zone, 'any') or spot.line
+    R.speak(player, p, line, string.format('%s took you on a date to %s%s', player:getName(), spot.name, night and ' at night' or ''),
+            { spot = spot.name })
     tell(player, string.format('A date with %s in %s.', p.name, spot.name))
     return true
 end
@@ -532,12 +781,13 @@ R.propose = function(player, p)
     end
 
     if p.kind == 'bot' and p.entity:getCharVar(SPOUSE_VAR) ~= 0 and p.entity:getCharVar(SPOUSE_VAR) ~= player:getID() then
-        say(player, p, 'I... I am already married. I\'m sorry.')
+        R.speak(player, p, 'I... I am already married. I\'m sorry.')
         return false
     end
 
     if R.points(player, p) < PROPOSE_AT * NATURE_PACE[R.nature(p)] or var(player, 'N', p) < DATES_TO_PROPOSE then
-        say(player, p, pick(R.LINES.proposeSoon))
+        R.speak(player, p, written('proposeSoon') or pick(R.LINES.proposeSoon),
+                string.format('%s proposed with a ring, but it is too soon for you. You gave the ring back gently', player:getName()))
         return false
     end
 
@@ -547,7 +797,8 @@ R.propose = function(player, p)
 
     setVar(player, 'S', p, R.STAGE.ENGAGED)
     setVar(player, 'R', p, ring) -- the ring they now wear
-    say(player, p, pick(R.LINES.proposeYes))
+    R.speak(player, p, written('proposeYes') or pick(R.LINES.proposeYes),
+            string.format('%s proposed with a ring and you said yes. You are engaged to be married', player:getName()))
     tell(player, string.format('You and %s are engaged! Hold your ceremony with a Wedding Master (wear your own ring too).', p.name))
     return true
 end
@@ -568,8 +819,16 @@ R.engagedPartner = function(player)
 end
 
 -- the ceremony is over (wedding_ceremony.lua)
+R.vow = function(p)
+    return written('vows') or 'I do.'
+end
+
 R.marry = function(player, p)
     setVar(player, 'S', p, R.STAGE.MARRIED)
+    local key = p.key .. '@' .. player:getName()
+    local list = R.recent[key] or {}
+    list[#list + 1] = string.format('you married %s', player:getName())
+    R.recent[key] = list
     if p.kind == 'mate' then
         player:setCharVar(SPOUSE_MATE_VAR, p.id)
         R.spouseMates[p.id] = true
