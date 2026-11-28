@@ -276,6 +276,23 @@ ok(R.date(A, pMate), 'another spot')
 ok(A.vars['[Love]NM77'] == 3, 'three dates')
 ok(not R.date(A, pBot), 'no dates with someone you are not dating')
 
+-- (2026-11-27) the Doll Festival's cherry blossoms are a date spot of their own
+A.zone = 100
+xi.dollFestival = { state = { active = true }, underBlossoms = function(p) return p.zone == 100 end }
+said, told = {}, {}
+local p1 = R.points(A, pMate)
+ok(R.date(A, pMate) and R.points(A, pMate) == p1 + 40, 'under the cherry blossoms: a date')
+ok(has(said, 'blossom') or has(said, 'petal') or has(said, 'pink') or has(said, 'rice cake'), 'they talk about the blossoms')
+ok(not R.date(A, pMate), 'the blossoms once a day too')
+ok(A.vars['[Love]SpotSakuraM77'] ~= nil, 'its own spot memory')
+xi.dollFestival.underBlossoms = function() return false end
+A.zone = 101
+told = {}
+ok(not R.date(A, pMate) and has(told, 'cherry blossoms in town during the Doll Festival'), 'during the festival the hint names the blossoms')
+xi.dollFestival = nil
+told = {}
+ok(not R.date(A, pMate) and has(told, 'not much of a place') and not has(told, 'cherry'), 'no festival: the old hint')
+
 -- proposing
 A.bag[15847] = nil; A.bag[15848] = nil
 told = {}

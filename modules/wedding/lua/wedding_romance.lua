@@ -701,7 +701,18 @@ R.askOut = function(player, p)
     return true
 end
 
+-- (2026-11-27) during the Doll Festival, under the cherry blossoms in the nation towns (doll_festival.lua)
+R.SAKURA = { zone = 'SAKURA', name = 'the cherry blossoms', line = 'The cherry blossoms are falling like snow. I\'m glad we came here together.' }
+
 R.spotHere = function(player)
+    local fest = xi.dollFestival
+    if fest and type(fest.underBlossoms) == 'function' then
+        local ok, under = pcall(fest.underBlossoms, player)
+        if ok and under then
+            return 'Sakura', R.SAKURA
+        end
+    end
+
     local zoneId = player:getZoneID()
     for i, spot in ipairs(R.SPOTS) do
         if xi.zone[spot.zone] == zoneId then
@@ -720,7 +731,9 @@ R.date = function(player, p)
 
     local index, spot = R.spotHere(player)
     if not index then
-        tell(player, 'This is not much of a place for a date. Try Selbina\'s harbor, the Jeuno districts, Windurst Walls...')
+        local fest = xi.dollFestival
+        local blossoms = fest and fest.state and fest.state.active and ', or the cherry blossoms in town during the Doll Festival' or ''
+        tell(player, 'This is not much of a place for a date. Try Selbina\'s harbor, the Jeuno districts, Windurst Walls' .. blossoms .. '...')
         local line = written('notPlace')
         if line then
             say(player, p, fill(line, { name = player:getName() }))

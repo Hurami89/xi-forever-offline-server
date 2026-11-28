@@ -439,6 +439,30 @@ local function realPlayers(zone)
     return zone:getPlayers()
 end
 
+local function festivalLine(zoneId)
+    local f = xi and xi.dollFestival
+    if f and type(f.chatLine) == 'function' then
+        local ok, line = pcall(f.chatLine, zoneId)
+        if ok and type(line) == 'string' then
+            return line
+        end
+    end
+
+    return nil
+end
+
+local function festivalPair(zoneId)
+    local f = xi and xi.dollFestival
+    if f and type(f.chatPair) == 'function' then
+        local ok, a, b = pcall(f.chatPair, zoneId)
+        if ok and type(a) == 'string' and type(b) == 'string' then
+            return a, b
+        end
+    end
+
+    return nil
+end
+
 local function sayLine(who, zoneId, outpost)
     if outpost then
         if useAi(ai.outpost, 0.5) then
@@ -447,6 +471,12 @@ local function sayLine(who, zoneId, outpost)
 
         local p = packLine('outpost', who, zoneId)
         return fill(p or pick(T.outpost), who, zoneId)
+    end
+
+    -- (2026-11-27) during a festival some of the town talk is about it (doll_festival.lua)
+    local fest = festivalLine(zoneId)
+    if fest then
+        return fill(fest, who, zoneId)
     end
 
     if useAi(ai.say, 0.5) then
@@ -461,6 +491,11 @@ chat.sayLine = sayLine
 
 local function pairLines(who, other, zoneId)
     local pr
+    local fa, fb = festivalPair(zoneId)
+    if fa then
+        return fill(fa, who, zoneId), fill(fb, other, zoneId)
+    end
+
     if useAi(ai.pairs, 0.5) then
         pr = pick(ai.pairs)
     elseif pack and math.random() < PACK_SHARE then

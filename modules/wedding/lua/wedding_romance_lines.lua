@@ -351,6 +351,13 @@ return {
                                       "Let's find a rainbow by the falls." },
                               night = { "The plateau under the stars... I could stay here forever.", "Listen. Just the waterfall and us." },
                               day = { "Look, a rainbow over the falls!", "It's such a beautiful day for this." } },
+        -- (2026-11-27) under the cherry trees in the nation towns, during the Doll Festival (doll_festival.lua)
+        SAKURA = { any = { "The cherry blossoms are falling like snow. I'm glad we came here together.",
+                           "They only bloom for a couple of weeks. Let's not waste a single day of it.",
+                           "Hold still... a petal landed in your hair. There. Perfect.",
+                           "Should we share a rice cake? If we both turn into little girls, at least we match." },
+                   night = { "The blossoms look like they glow under the lanterns.", "Pink petals and starlight... I'll remember tonight." },
+                   day = { "Look at all the pink! The whole town smells like spring.", "Let's sit under this tree and just watch the petals fall." } },
     },
     spotRepeat =
     {
