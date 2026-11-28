@@ -555,6 +555,10 @@ auto CStatusEffectContainer::AddStatusEffect(std::unique_ptr<CStatusEffect> PSta
                 PChar->UpdateHealth();
             }
         }
+        else if (m_POwner->objtype == TYPE_TRUST && PStatusEffect->GetIcon() != 0)
+        {
+            UpdateStatusIcons(); // (XI: Forever Offline) a squad mate's icons, for its master's party list
+        }
         m_POwner->updatemask |= UPDATE_HP;
 
         return true;
@@ -606,6 +610,10 @@ void CStatusEffectContainer::DeleteStatusEffects()
             PChar->PLatentEffectContainer->CheckLatentsFoodEffect();
             PChar->PLatentEffectContainer->CheckLatentsStatusEffect();
             PChar->PLatentEffectContainer->CheckLatentsRollSong();
+        }
+        else if (update_icons && m_POwner->objtype == TYPE_TRUST)
+        {
+            UpdateStatusIcons(); // (XI: Forever Offline) a squad mate's icons, for its master's party list
         }
         m_POwner->UpdateHealth();
     }
@@ -1283,7 +1291,13 @@ auto CStatusEffectContainer::StealStatusEffect(xi::StatusEffectFlag flag, Effect
 void CStatusEffectContainer::UpdateStatusIcons()
 {
     auto* PChar = dynamic_cast<CCharEntity*>(m_POwner);
-    if (!PChar)
+
+    // (XI: Forever Offline, 2026-11-27, TheGreatCacnea: "Squadmates buffs do not show in XIUI") A squad mate keeps its
+    // icons as well. They go to its master's party in the party's effect list (packet 0x076), which is what party
+    // windows show. The mate only notes that they changed: its master asks for that (CCharEntity::PostTick), so nothing
+    // here reaches from a mate to a master that may already be gone.
+    const bool isSquadMate = !PChar && m_POwner != nullptr && m_POwner->objtype == TYPE_TRUST;
+    if (!PChar && !isSquadMate)
     {
         return;
     }
@@ -1317,12 +1331,26 @@ void CStatusEffectContainer::UpdateStatusIcons()
             }
         }
     }
+
+    if (isSquadMate)
+    {
+        m_IconsChanged = true;
+        return;
+    }
+
     PChar->m_EffectsChanged = true;
 
     if (PChar->PParty)
     {
         PChar->PParty->EffectsChanged();
     }
+}
+
+auto CStatusEffectContainer::takeIconsChanged() -> bool
+{
+    const bool changed = m_IconsChanged;
+    m_IconsChanged     = false;
+    return changed;
 }
 
 auto CStatusEffectContainer::GetStatusEffectsInIDRange(xi::StatusEffect start, xi::StatusEffect end) -> std::vector<xi::StatusEffect>

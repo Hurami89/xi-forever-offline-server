@@ -24,7 +24,7 @@ section('what the file registers')
 check(#xi.module.registry == 0, 'no module without overrides (that is an error line at every server start)')
 check(#xi.module.commandRegistry == 1 and xi.module.commandRegistry[1].name == 'dropsub', 'one command, !dropsub')
 local command = xi.module.commandRegistry[1].command
-check(command.cmdprops.permission == 0 and command.cmdprops.parameters == 's', 'every player may use it (permission 0), with one word after it')
+check(command.cmdprops.permission == 0 and command.cmdprops.parameters == '', 'every player may use it (permission 0), nothing to type after it')
 check(xi.job.NONE == 0 and xi.slot.SUB == 1 and xi.zoneMisc.MOGMENU == 0x20 and xi.mogHouse.OWN == 1 and xi.trait.DUAL_WIELD == 18,
     'the enum values the file uses are the server\'s')
 
@@ -104,24 +104,26 @@ do
     check(#second.calls == 1 and #second.said == 2 and second.said[2]:find('no support job', 1, true) ~= nil, 'used twice: the second time only says there is none')
 end
 
-section('a Blue Mage as the main job is asked first')
+section('a Blue Mage is not asked anything')
 do
-    -- the game's call takes a Blue Mage main job's set blue magic off and saves that (blueutils::UnequipAllBlueSpells)
+    -- the game's call keeps a Blue Mage's set blue magic since the map server of 2026-11-27 (changesJob in
+    -- src/map/lua/lua_base_entity.cpp refreshes blue magic the way the Moogle's job change does), so there is no
+    -- "!dropsub yes" step any more
     local p = run({ main = xi.job.BLU })
-    check(p.sub == xi.job.MNK and #p.calls == 0, 'Blue Mage main, plain !dropsub: nothing is changed')
-    check(#p.said == 1 and p.said[1]:find('!dropsub yes', 1, true) ~= nil and p.said[1]:find('blue magic', 1, true) ~= nil, 'and it is told what goes and how to go on')
+    check(p.sub == 0 and did(p, 'changesJob 0'), 'Blue Mage main, plain !dropsub: the support job is off')
+    check(#p.said == 1 and p.said[1]:find('is off', 1, true) ~= nil and p.said[1]:find('yes', 1, true) == nil and p.said[1]:find('blue magic', 1, true) == nil,
+        'one line, the usual one: no question, no warning')
+
+    local r = run({ main = xi.job.WAR, sub = xi.job.BLU })
+    check(r.sub == 0 and #r.said == 1, 'Blue Mage as the support job: off as well')
 
     local q = newPlayer({ main = xi.job.BLU })
-    command.onTrigger(q, 'YES')
-    check(q.sub == 0 and did(q, 'changesJob 0'), '!dropsub yes: the support job is off')
-
-    local r = newPlayer({ main = xi.job.WAR, sub = xi.job.BLU })
-    command.onTrigger(r)
-    check(r.sub == 0, 'Blue Mage as the support job needs no "yes" (its set comes back with the job)')
+    command.onTrigger(q, 'yes')
+    check(q.sub == 0 and #q.calls >= 1, 'an old habit, "!dropsub yes", still just works')
 
     local outside = newPlayer({ main = xi.job.BLU, ownHouse = false, anyHouse = false })
     command.onTrigger(outside)
-    check(outside.said[1]:find('Mog House', 1, true) ~= nil, 'out in the field a Blue Mage is told where to go first, not asked for "yes"')
+    check(outside.sub == xi.job.MNK and outside.said[1]:find('Mog House', 1, true) ~= nil, 'out in the field a Blue Mage is told where to go, like everyone')
 end
 
 section('the second weapon')

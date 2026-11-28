@@ -7296,16 +7296,27 @@ void CLuaBaseEntity::changesJob(uint8 subJob)
 
     auto* PChar = static_cast<CCharEntity*>(m_PBaseEntity);
 
+    // (XI: Forever Offline, 2026-11-27) Blue magic is refreshed for the jobs that result, the way the game's own job
+    // change does it (packets/c2s/0x100_myroom_job.cpp). This used to take every set spell off whenever the new
+    // support job was not Blue Mage, also for a character whose MAIN job is Blue Mage: !changesjob, a bot's
+    // support job and !dropsub all emptied such a character's set blue magic and saved it empty.
+    const bool hadBlueMage = PChar->GetMJob() == xi::Job::BLU || PChar->GetSJob() == xi::Job::BLU;
+
     PChar->jobs.unlocked |= (1 << subJob);
     PChar->SetSJob(subJob);
     puppetutils::LoadAutomaton(PChar);
     charutils::UpdateSubJob(PChar);
 
-    if (subJob == static_cast<uint8>(xi::Job::BLU))
+    const bool hasBlueMage = PChar->GetMJob() == xi::Job::BLU || PChar->GetSJob() == xi::Job::BLU;
+    if (hasBlueMage && !hadBlueMage)
     {
         blueutils::LoadSetSpells(PChar);
     }
-    else
+    else if (hasBlueMage)
+    {
+        blueutils::ValidateBlueSpells(PChar);
+    }
+    else if (hadBlueMage)
     {
         blueutils::UnequipAllBlueSpells(PChar);
     }

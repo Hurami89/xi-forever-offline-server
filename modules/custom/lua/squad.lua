@@ -4572,6 +4572,16 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 table.sort(levels)
                 say(player, string.format('squadpanel:jl|%d|%s', mate.slot, table.concat(levels, ',')))
             end
+            -- (2026-11-27, Billy, Hasuko) fj|<slot>|<JOB>,...: a random squad mate's fated jobs (servermenu 1.38 offers only
+            -- these in the Job and Sub lists); "-" when the random squad is off. An older menu ignores the line.
+            if xi.hardcore ~= nil and type(xi.hardcore.randomSquadJobs) == 'function' then
+                local okFated, fated = pcall(xi.hardcore.randomSquadJobs, player, mate)
+                local names = {}
+                for _, job in ipairs(okFated and fated or {}) do
+                    names[#names + 1] = jobNames[job]
+                end
+                say(player, string.format('squadpanel:fj|%d|%s', mate.slot, #names > 0 and table.concat(names, ',') or '-'))
+            end
             -- (2026-11-24) rs|...: the rules this mate really runs (a Rule Set or its job rules) and what is chosen for its
             -- next call, for the menu's "Rules" line (squad_rulesets.lua R.panelLine; servermenu 1.26n). An older menu
             -- ignores it; without squad_rulesets.lua nothing is said (the menu then shows no Rules line).

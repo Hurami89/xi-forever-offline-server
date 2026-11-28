@@ -260,6 +260,22 @@ talk[5] =
     },
 }
 
+-- (2026-11-27, Hasuko) a part that is finished, and its Crystal Boy or Recollection is nowhere on the character: one
+-- that came from another server (character transfer: the quest log comes, the item does not), or one thrown away
+talk.lost =
+{
+    crystalboy =
+    {
+        'Hmm? Where is your Crystal Boy? Bluffnix fixed one for you, Bluffnix remembers the stew!',
+        'Lucky for you, Bluffnix found another one in the old tunnels. Same gears, same crystal heart. Take it, and do not lose this one!',
+    },
+    recollection =
+    {
+        'Your Recollection is gone? Crystals do not like to be forgotten... but Bluffnix keeps a copy of every memory he mends.',
+        'Here. The same tablet, polished again. Play it to the end and come and tell Bluffnix!',
+    },
+}
+
 local function speak(player, lines)
     local channel = xi.msg.channel.NS_SAY or xi.msg.channel.SAY or 0
     for i, line in ipairs(lines or {}) do
@@ -372,6 +388,12 @@ local function bluffnixPlan(player)
         end
     end
 
+    -- (2026-11-27, Hasuko) Part I is finished and its Crystal Boy is nowhere on the character (transferred from another
+    -- server, or thrown away): a new one, before anything else. (A lost Recollection: below, where he would ask for it.)
+    if statusOf(player, parts[1]) == xi.questStatus.QUEST_COMPLETED and not player:hasItem(CRYSTAL_BOY) then
+        return 1, 'lost'
+    end
+
     for k, p in ipairs(parts) do
         local prevDone = p.prev == nil or player:hasCompletedQuest(xi.questLog.JEUNO, questId(p.prev))
         if p.reward and statusOf(player, p) == xi.questStatus.QUEST_AVAILABLE and prevDone then
@@ -402,7 +424,13 @@ local function bluffnixPlan(player)
     end
 
     if pending then
-        return pending, player:hasItem(parts[pending].recollection, xi.inv.INVENTORY) and 'notYet' or 'noTablet'
+        local tablet = parts[pending].recollection
+        if player:hasItem(tablet, xi.inv.INVENTORY) then
+            return pending, 'notYet'
+        end
+
+        -- (2026-11-27) not in the bag, and not anywhere else either: a new one instead of "bring it"
+        return pending, player:hasItem(tablet) and 'noTablet' or 'lost'
     end
 
     if done then return done, 'thanks' end
@@ -476,6 +504,16 @@ local function buildSections(quest, p, partNo)
 
             onTrigger = function(player, npc)
                 speak(player, words.remind)
+                return quest:noAction()
+            end,
+        }),
+
+        onSection({ 'lost' }, {
+            onTrigger = function(player, npc)
+                if npcUtil.giveItem(player, p.reward) then
+                    speak(player, p.recollection and talk.lost.recollection or talk.lost.crystalboy)
+                end
+
                 return quest:noAction()
             end,
         }),

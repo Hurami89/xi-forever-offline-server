@@ -1204,6 +1204,23 @@ void CCharEntity::PostTick()
         charutils::ReloadParty(this);
     }
 
+    // (XI: Forever Offline, 2026-11-27) A squad mate's status icons changed: the party's effect list (packet 0x076) goes
+    // out again, so party windows such as XIUI's show the mates' buffs. Asked from the master's side: PTrusts only holds
+    // mates that are out, while a mate that is being sent away can outlive the way back to its master.
+    bool mateIconsChanged = false;
+    for (auto* PTrust : PTrusts)
+    {
+        if (PTrust->StatusEffectContainer->takeIconsChanged())
+        {
+            mateIconsChanged = true;
+        }
+    }
+
+    if (mateIconsChanged && PParty)
+    {
+        PParty->EffectsChanged();
+    }
+
     if (m_EffectsChanged)
     {
         TracyZoneNamed(effectsChangedZone, "CCharEntity::PostTick: effects changed");
@@ -1217,6 +1234,11 @@ void CCharEntity::PostTick()
             PParty->PushEffectsPacket();
         }
         m_EffectsChanged = false;
+    }
+
+    if (mateIconsChanged && PParty)
+    {
+        PParty->PushEffectsPacket(); // (sends nothing more when the block above already did)
     }
 
     timer::time_point now = timer::now();

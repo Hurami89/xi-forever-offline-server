@@ -143,11 +143,16 @@ public:
     [[nodiscard]] auto statusIcons() const -> const uint8*;
     [[nodiscard]] auto statusBits() const -> const uint64&;
 
+    // (XI: Forever Offline) True once after a squad mate's status icons changed. Its master asks (CCharEntity::PostTick)
+    // and then sends the party's effect list again.
+    auto takeIconsChanged() -> bool;
+
 private:
     CBattleEntity* m_POwner = nullptr;
 
     uint64 m_Flags{ 0 };        // Bits of overflow of bytes m_statusicons (two battles for each effect)
     uint8  m_StatusIcons[32]{}; // Icons status effects
+    bool   m_IconsChanged{ false }; // (XI: Forever Offline) a squad mate's icons changed since its master last asked
 
     auto AddStatusEffect(std::unique_ptr<CStatusEffect> StatusEffect, EffectNotice = EffectNotice::ShowMessage) -> bool;
 

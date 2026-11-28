@@ -24,7 +24,7 @@
 #include "entities/char_entity.h"
 #include "status_effect_container.h"
 
-GP_SERV_COMMAND_GROUP_EFFECTS::GP_SERV_COMMAND_GROUP_EFFECTS(const std::vector<CCharEntity*>& membersList)
+GP_SERV_COMMAND_GROUP_EFFECTS::GP_SERV_COMMAND_GROUP_EFFECTS(const std::vector<CBattleEntity*>& membersList)
 {
     auto& packet = this->data();
 
@@ -34,7 +34,7 @@ GP_SERV_COMMAND_GROUP_EFFECTS::GP_SERV_COMMAND_GROUP_EFFECTS(const std::vector<C
     // can cause the party size to be larger than the packet size.
     for (std::size_t idx = 0; idx < membersList.size() && idx < 5; ++idx)
     {
-        const CCharEntity* PMember = membersList[idx];
+        const CBattleEntity* PMember = membersList[idx];
 
         packet.Members[idx].UniqueNo = PMember->id;
         packet.Members[idx].ActIndex = PMember->targid;

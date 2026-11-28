@@ -1028,6 +1028,23 @@ H.randomSquadJobAllowed = function(player, mate, job)
     return hasBit(mateRolled(player, mate), job)
 end
 
+-- (2026-11-27, Billy, Hasuko) the jobs fate gave this mate, as job numbers in order; nil when the random squad is off.
+-- For the Squads menu (squad.lua's panel answer, line fj).
+H.randomSquadJobs = function(player, mate)
+    if not H.randomSquadOn(player) or mate == nil then
+        return nil
+    end
+
+    local mask, out = mateRolled(player, mate), {}
+    for job = 1, ERA_JOBS do
+        if hasBit(mask, job) then
+            out[#out + 1] = job
+        end
+    end
+
+    return out
+end
+
 -- new jobs for a mate whose rolled job reached 18, 33 or 65 (squad.lua calls it after a mate levels up, and at a call)
 H.randomSquadLevel = function(player, mateId, level, name)
     if not H.randomSquadOn(player) or mateId == nil or mateId == 0 then

@@ -23,7 +23,7 @@
 
 #include "base.h"
 
-class CCharEntity;
+class CBattleEntity;
 
 #pragma pack(push, 1)
 
@@ -48,5 +48,6 @@ public:
         partymemberbuffs_t Members[5]; // PS2: (New; did not exist.)
     };
 
-    explicit GP_SERV_COMMAND_GROUP_EFFECTS(const std::vector<CCharEntity*>& membersList);
+    // (XI: Forever Offline) players first, then squad mates: both have an id, an index and status icons
+    explicit GP_SERV_COMMAND_GROUP_EFFECTS(const std::vector<CBattleEntity*>& membersList);
 };

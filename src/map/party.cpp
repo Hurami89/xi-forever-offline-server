@@ -1397,12 +1397,19 @@ void CParty::PushEffectsPacket()
 {
     if (m_EffectsChanged)
     {
-        auto info = GetPartyInfo();
+        // (XI: Forever Offline) A player alone with a squad has no other player to look up, so the database is not
+        // asked. (The answer was an empty list before as well: every other member has to be in this process and zone.)
+        std::vector<partyInfo_t> info;
+        if (members.size() > 1)
+        {
+            info = GetPartyInfo();
+        }
 
         for (auto& PMember : members)
         {
-            auto*                     PMemberChar = static_cast<CCharEntity*>(PMember);
-            std::vector<CCharEntity*> sameZoneMembers;
+            auto*                       PMemberChar = static_cast<CCharEntity*>(PMember);
+            std::vector<CBattleEntity*> sameZoneMembers;
+            std::vector<CCharEntity*>   sameZonePlayers;
 
             for (auto& memberinfo : info)
             {
@@ -1412,7 +1419,24 @@ void CParty::PushEffectsPacket()
                     if (PPartyMember && PPartyMember->getZone() == PMemberChar->getZone())
                     {
                         sameZoneMembers.push_back(PPartyMember);
+                        sameZonePlayers.push_back(PPartyMember);
                     }
+                }
+            }
+
+            // (XI: Forever Offline, 2026-11-27, TheGreatCacnea: "Squadmates buffs do not show in XIUI") Squad mates come
+            // after the players: this member's own first, then the other players' mates. The packet holds five entries
+            // (its constructor stops there), so in a full party the players are the ones that are kept.
+            for (auto* PTrust : PMemberChar->PTrusts)
+            {
+                sameZoneMembers.push_back(PTrust);
+            }
+
+            for (auto* PPartyMember : sameZonePlayers)
+            {
+                for (auto* PTrust : PPartyMember->PTrusts)
+                {
+                    sameZoneMembers.push_back(PTrust);
                 }
             }
 

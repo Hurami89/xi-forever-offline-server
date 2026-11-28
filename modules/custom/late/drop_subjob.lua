@@ -12,9 +12,9 @@
 --     is unlocked already, so nothing is given away.)
 --   * Nothing is lost: the job, its level and the right to a support job stay. Only "which job is the support job" is
 --     cleared, until you pick one again. A second weapon that was held through the support job's Dual Wield comes off.
---   * One thing does go, for a Blue Mage as the MAIN job: the game's call below takes its set blue magic off and saves
---     that, so it has to be set again later. Such a character is told first and has to type "!dropsub yes".
---     (Blue Mage as the support job is fine: its set comes back when the job is picked again.)
+--   * A Blue Mage keeps its set blue magic. (The game's call below used to take a Blue Mage MAIN job's set off, so the
+--     first version asked such a character to type "!dropsub yes". The call is corrected in the map server since
+--     2026-11-27, src/map/lua/lua_base_entity.cpp changesJob; this file needs that map server.)
 -- A command and nothing else, so there is no Module:new here: a module that declares no overrides is an error line
 -- in the map log at every start.
 -----------------------------------
@@ -40,9 +40,9 @@ local function jobName(job)
 end
 
 local command = {}
-command.cmdprops = { permission = 0, parameters = 's' } -- every player, on their own character
+command.cmdprops = { permission = 0, parameters = '' } -- every player, on their own character
 
-command.onTrigger = function(player, answer)
+command.onTrigger = function(player)
     local hardcore = xi.hardcore
     if not (hardcore and type(hardcore.mode) == 'function' and hardcore.mode(player) == hardcore.RANDOM) then
         say(player, '!dropsub is for Randomized characters. At your Moogle, set another support job first, then change your main job.')
@@ -57,11 +57,6 @@ command.onTrigger = function(player, answer)
 
     if not (player:inMogHouse(xi.mogHouse.OWN) or player:canUseMisc(xi.zoneMisc.MOGMENU)) then
         say(player, 'Use !dropsub where you change jobs: in your own Mog House or next to a Nomad Moogle.')
-        return
-    end
-
-    if player:getMainJob() == xi.job.BLU and string.lower(tostring(answer or '')) ~= 'yes' then
-        say(player, 'You are a Blue Mage: taking the support job off this way also takes off the blue magic you have set, and you set it again afterwards. Type !dropsub yes to go on.')
         return
     end
 

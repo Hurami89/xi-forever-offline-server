@@ -352,6 +352,7 @@ xi.settings.main =
     PLAYER_DAMAGE_TAKEN_MULTIPLIER = 1.000, -- Multiplies the damage players and squad mates take (0.5 = half, 2 = double; 1 = the era). modules/custom/late/comforts.lua
     SEAL_DROP_MINUTES            = 5,     -- Minutes a party waits after a Beastmen's or Kindred's Seal (or another special drop) before the next can drop. 5 = the base's rule, 0 = no wait. src/map/entities/mob_entity.cpp
     LAND_KINGS_TIMED             = 0,     -- 0 = off: Fafnir, Adamantoise and Behemoth are called at their ??? with the item. 1 = the era: they appear by themselves every 21 to 24 hours and the ??? is gone. modules/custom/late/land_kings.lua
+    GUILD_ALL_CONTRACTS          = 0,     -- 1 = every guild's Union Representative takes its daily items, each guild with its own daily most (launcher RULES). 0 = the game's own rule: one guild contract. modules/custom/late/guild_all_contracts.lua
     NM_TIMER_MODE                = 1,     -- Timed NMs between play sessions: 0 = fresh timers at every server start (the game's own), 1 = paused while your server is off (default), 2 = real time (they keep running while it's off). modules/custom/late/nm_timers.lua
 
     -- SYSTEM

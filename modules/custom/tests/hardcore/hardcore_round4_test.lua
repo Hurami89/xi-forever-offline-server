@@ -140,10 +140,20 @@ check(n2 == 2, 'a second rolled job at 18')
 H.randomSquadLevel(p, 501, 70, 'Bob'); H.randomSquadLevel(p, 501, 75, 'Bob')
 local n4 = 0; for j = 1, 18 do if bit.band(p:getCharVar('[HC]RSJobs501'), bit.lshift(1, j)) ~= 0 then n4 = n4 + 1 end end
 check(n4 == 4, 'four rolled jobs in all, never more, never a repeat')
+-- (2026-11-27) the Squads menu's list: the rolled jobs in job order, and nothing while the random squad is off
+local listed = H.randomSquadJobs(p, mates[1])
+local inOrder, allRolled = #listed == 4, true
+for i, job in ipairs(listed) do
+    if bit.band(p:getCharVar('[HC]RSJobs501'), bit.lshift(1, job)) == 0 then allRolled = false end
+    if i > 1 and listed[i - 1] >= job then inOrder = false end
+end
+check(inOrder and allRolled, 'randomSquadJobs: the four rolled jobs, in job order')
+check(H.randomSquadJobs(p, nil) == nil, 'randomSquadJobs: no mate, nothing')
 check(p:getCharVar('[HC]RSJobs502') ~= 0 and p:getCharVar('[HC]RSJobs502') ~= nil, 'every mate rolls for itself')
 H.randomSquadCommand(p, 'off')
 check(p:getCharVar('[HC]RSquad') == 0 and mates[1].mjob == 1 and mates[1].sjob == 2, 'off: the mate is itself again (WAR / MNK)')
 check(H.randomSquadPrepare(p, mates[1]) == nil, 'off: its own looks')
+check(H.randomSquadJobs(p, mates[1]) == nil, 'off: no fated jobs for the menu')
 local kept = p:getCharVar('[HC]RSJobs501'); H.randomSquadCommand(p, 'on')
 check(p:getCharVar('[HC]RSJobs501') == kept, 'on again: the same rolls come back')
 local iron = newPlayer(12, 'Irony'); iron.vars['[HC]Mode'] = 1
