@@ -144,6 +144,7 @@ end
 -- and idle talk while the squad chat AI is quiet. (A field of xi.squad: this file is close to Lua's 200-local limit.)
 xi = xi or {}
 xi.squad = xi.squad or {}
+xi.squad.MAX_ACTIVE = MAX_ACTIVE -- (Call all reads it here: its function is at Lua's 60-upvalue limit)
 do
     local okPack, pack = pcall(require, 'modules/custom/lua/squad_pack')
     if okPack and type(pack) == 'table' then
@@ -5412,14 +5413,30 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
         if arg1 == nil or string.lower(arg1) == 'all' then
             -- One at a time, a moment apart. Several characters appearing in the very same instant can leave the last ones undressed.
-            for index, mate in ipairs(orderedSquad(player, squad)) do
-                if index == 1 then
-                    callWithCooldown(player, mate)
-                else
-                    player:timer((index - 1) * CALL_GAP_MS, function(entity)
-                        callWithCooldown(entity, mate)
-                    end)
+            -- (2026-11-27, seven mates to keep) only as many as the party has room for, in your order; the mates already
+            -- with you are skipped, and the ones left at home are named once (it used to say "Your party is full." for each).
+            local room = (xi.squad.MAX_ACTIVE or 5) + 1 - #player:getPartyWithTrusts() -- (a field, not MAX_ACTIVE: this function is at Lua's 60-upvalue limit)
+            local index, home = 0, {}
+            for _, mate in ipairs(orderedSquad(player, squad)) do
+                if not isSummoned(player, mate.id) then
+                    if index >= room then
+                        home[#home + 1] = mate.name
+                    else
+                        index = index + 1
+                        if index == 1 then
+                            callWithCooldown(player, mate)
+                        else
+                            player:timer((index - 1) * CALL_GAP_MS, function(entity)
+                                callWithCooldown(entity, mate)
+                            end)
+                        end
+                    end
                 end
+            end
+
+            if #home > 0 then
+                say(player, string.format('Your party has room for %d more, so %s stay%s home. (!squad order sets who comes first.)',
+                    math.max(0, room), table.concat(home, ', '), #home == 1 and 's' or ''))
             end
 
             return
