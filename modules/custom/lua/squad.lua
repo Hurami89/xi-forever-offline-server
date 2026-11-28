@@ -31,7 +31,7 @@ local MAX_LEVEL = 75        -- 75-era server
 local SUB_UNLOCK_LEVEL = 18 -- sub job unlocks at main level 18, like retail
 local REQUIRE_UNLOCK = true -- gear must be given to the squad once (!squad give) before any mate can wear it
 
--- Jobs available on this server (15 base jobs)
+-- Jobs available on this server (the 15 base jobs and the three Treasures of Aht Urhgan jobs)
 local jobIds =
 {
     WAR = 1, MNK = 2, WHM = 3, BLM = 4, RDM = 5, THF = 6, PLD = 7, DRK = 8,
@@ -50,6 +50,7 @@ local jobTitles =
     [1] = 'Warrior', [2] = 'Monk', [3] = 'White Mage', [4] = 'Black Mage', [5] = 'Red Mage',
     [6] = 'Thief', [7] = 'Paladin', [8] = 'Dark Knight', [9] = 'Beastmaster', [10] = 'Bard',
     [11] = 'Ranger', [12] = 'Samurai', [13] = 'Ninja', [14] = 'Dragoon', [15] = 'Summoner',
+    [16] = 'Blue Mage', [17] = 'Corsair', [18] = 'Puppetmaster',
 }
 
 local raceIds =
@@ -252,7 +253,7 @@ local function speakFromMob(mob, event, vars)
     end
 end
 
-local jobList = 'WAR MNK WHM BLM RDM THF PLD DRK BST BRD RNG SAM NIN DRG SMN'
+local jobList = 'WAR MNK WHM BLM RDM THF PLD DRK BST BRD RNG SAM NIN DRG SMN BLU COR PUP'
 
 local function usage(player)
     say(player, '!squad - list your squad mates')
@@ -2905,13 +2906,17 @@ function squadAutoEquip(player, mate)
     -- (2026-11-27) weapon type: Main only of the chosen kind (none of it to wear: Main stays as it is), Sub as chosen
     -- when that goes with Main
     local wantMain, wantSub = squadWeaponType(player, mate.id, job)
+    -- (2026-11-27) a locked Sub decides what Main may hold: beside a shield or a second weapon a one-handed weapon, beside a
+    -- grip a two-handed one (a Great Axe was put beside a locked shield). Nothing that fits: Main stays as it is.
+    local subLockInfo = locked(1) and infoOf(mate.equip[job][1]) or nil
+    local function mainFits(i) return subLockInfo == nil or squadSubConflict(i, subLockInfo, nil) == nil end
     local mainId, mainInfo
     if locked(0) then
         mainId = mate.equip[job][0]
         mainInfo = infoOf(mainId)
         mainId = mainInfo and mainId or nil
     elseif wantMain > 0 then
-        mainId, mainInfo = best(0, function(i) return (i.skill or 0) == wantMain end)
+        mainId, mainInfo = best(0, function(i) return (i.skill or 0) == wantMain and mainFits(i) end)
         pick[0] = mainId
         if mainId == nil then
             mainId = mate.equip[job][0]
@@ -2920,7 +2925,7 @@ function squadAutoEquip(player, mate)
             if mainId then used[mainId] = true end
         end
     else
-        mainId, mainInfo = best(0)
+        mainId, mainInfo = best(0, mainFits)
         pick[0] = mainId
     end
 
@@ -2963,7 +2968,14 @@ function squadAutoEquip(player, mate)
         rangeInfo = infoOf(rangeId)
         rangeId = rangeInfo and rangeId or nil
     else
-        rangeId, rangeInfo = best(2)
+        -- (2026-11-27) locked arrows or bolts: only a bow or crossbow of the same kind (nothing that fits: Ranged stays as it is)
+        local ammoLock = locked(3) and infoOf(mate.equip[job][3]) or nil
+        local ammoSkill = ammoLock and (ammoLock.skill or 0) or 0
+        if ammoSkill == 25 or ammoSkill == 26 then
+            rangeId, rangeInfo = best(2, function(i) return (i.skill or 0) == ammoSkill end)
+        else
+            rangeId, rangeInfo = best(2)
+        end
         pick[2] = rangeId
     end
 
@@ -4815,7 +4827,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         -- (2026-11-27) restfight = !squad restfight and the rf| lines (needs the map server that keeps a resting mate out of
         -- the fight: SquadFoesOn); camprange = campst carries the pull range (F23)
         local capRf = rawget(_G, 'SquadFoesOn') ~= nil and ',restfight' or ''
-        -- (2026-11-27) gearlock = !squad gearlock and the squadsheet:lock line (servermenu 1.36: a lock on each gear slot)
+        -- (2026-11-27) gearlock = !squad gearlock and the squadsheet:lock line (servermenu 1.38: a lock on each gear slot);
+        -- weapontype = !squad weapon and the squadsheet:wtype line (servermenu 1.39: the Gear view's Weapon type)
         say(player, 'squadpanel:cap|' .. (SquadDismissMate ~= nil and 'reapply1,campmove' or 'campmove') .. capPos .. capRf .. ',camprange,gearlock,weapontype')
 
         -- (servermenu 1.8) what the puller goes for, and the kinds of monster around the camp
@@ -6238,6 +6251,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         player:setCharVar('SQUAD_RANGE_' .. mate.id, 0)
         player:setCharVar('SQUAD_POS_' .. mate.id, 0)
         player:setCharVar('SQUAD_DELAY_' .. mate.id, 0)
+        -- (2026-11-27) and the rest of what is kept per mate: rest in fights, role and mode, the switches, the call timer
+        player:setCharVar('SQUAD_RESTFIGHT_' .. mate.id, 0)
+        player:setCharVar('SQUAD_AI_' .. mate.id, 0)
+        player:setCharVar('SQUAD_SW_' .. mate.id, 0)
+        player:setCharVar('SQUAD_CALLED_' .. mate.id, 0)
         squadBlueSetPut(player, mate.id, nil)
         chatSend('DELETE', mate.name)
         DeleteSquadMate(charId, mate.slot)
