@@ -1,0 +1,13 @@
+# XI: Forever Offline wedding module: shows the 2009 wedding NPCs (core tags them as a later expansion; RESTRICT_CONTENT is on).
+# "content: null" removes the tag (merge patch). Turn weddings off: put # before the 'wedding' line in modules/init.txt.
+
+npcs:
+
+  17748170:
+    content: null
+
+  17748171:
+    content: null
+
+  17748172:
+    content: null

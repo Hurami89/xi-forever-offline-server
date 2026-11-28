@@ -203,5 +203,8 @@ custom/lua/addon_owner.lua
 # Dev only: edit a Squads Lua file while the server runs and !squad reload (GM) / the file watcher reloads it in order. Does nothing unless a Squads file is saved or the command is used. Keep this line last.
 custom/lua/squad_reload.lua
 
+# Weddings (2009 wedding service, out of era on purpose; ported from KiplingFFXI). Dev launcher: Era > Out-of-era content
+wedding
+
 # Loaded LAST: overrides here win over the era/phoenix folders above (fast travel, always on)
 custom/late
