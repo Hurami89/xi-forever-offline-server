@@ -50,6 +50,7 @@ S.SUMMON_MP = { CARBUNCLE = 5, IFRIT = 7, TITAN = 7, LEVIATHAN = 7, GARUDA = 7, 
 
 S.WARD_SECONDS    = 60  -- the base Blood Pact recast when the ability cannot be read
 S.SWAP_SECONDS    = 45  -- no automatic switch within this long of the last one (Auto, rules)
+S.FIXED_HOLD      = 10  -- (2026-11-28) a fixed avatar: after it is called (or back), a buff may borrow another this soon
 S.RELEASE_SECONDS = 60
 S.MANUAL_SECONDS  = 300
 S.AF_SECONDS      = 7200
@@ -1075,8 +1076,16 @@ end
 local function chooseRule(mob, master, target, rules, settings, level, has, now, fighting)
     local mateId = mob:getLocalVar('SQUAD_ID')
     local current = currentAvatar(mob)
+    -- (2026-11-28, Discord "Summoner Gambits", Ruri: Garuda came first and stayed although Shiva was chosen; the owner) with a fixed choice only a buff (a ward) may use another avatar: at the start of a fight a
+    -- missing buff calls that avatar first, and the fixed one comes as soon as the buff is done (no extra Shiva summon in
+    -- between); a Rage or Astral Flow pact of another avatar is not used (the fixed avatar fights with its own)
+    local fixed = S.AVATARS[master:getCharVar(S.choiceVar(mateId))]
+    local fixedOk = fixed ~= nil and S.allowed(fixed, level, has)
     for i, r in ipairs(rules) do
         local entry = S.PACTS[r.pact]
+        if fixedOk and entry and entry[1] ~= fixed and entry[2] ~= 'ward' then
+            entry = nil
+        end
         local whenOk = (fighting and (r.when == 'COMBAT' or r.when == 'ANY'))
             or (not fighting and settings.idle and (r.when == 'IDLE' or r.when == 'ANY'))
         local kindOff = entry and ((entry[2] == 'rage' and settings.rage == 1) or (entry[2] == 'ward' and settings.ward == 1))
@@ -1129,6 +1138,10 @@ local function progressIntent(mob, master, target, rules, has, now)
             return false
         end
 
+        -- (2026-11-28) borrowed from a fixed choice for this buff: it goes back as soon as the buff is done (restoreChoice)
+        local fixedNow = S.AVATARS[master:getCharVar(S.choiceVar(mob:getLocalVar('SQUAD_ID')))]
+        mob:setLocalVar('SMN_BORROWED', (fixedNow ~= nil and fixedNow ~= intent.avatar) and 1 or 0)
+
         current, pet = currentAvatar(mob)
     end
 
@@ -1148,7 +1161,10 @@ function S.restoreChoice(mob, master, rules, settings, level, has, now, fighting
     local mateId = mob:getLocalVar('SQUAD_ID')
     local fixed = S.AVATARS[master:getCharVar(S.choiceVar(mateId))]
     local current = currentAvatar(mob)
-    if fixed == nil or current == nil or current == fixed or manualHold(mob, now) or now < mob:getLocalVar('SMN_SWAP_NEXT') then
+    -- (2026-11-28) borrowed for a buff (SMN_BORROWED): back as soon as that is done, without the switch hold
+    local borrowed = mob:getLocalVar('SMN_BORROWED') == 1
+    if fixed == nil or current == nil or current == fixed or manualHold(mob, now)
+        or (not borrowed and now < mob:getLocalVar('SMN_SWAP_NEXT')) then
         return false
     end
 
@@ -1161,13 +1177,19 @@ function S.restoreChoice(mob, master, rules, settings, level, has, now, fighting
         local whenOk = (fighting and (r.when == 'COMBAT' or r.when == 'ANY'))
             or (not fighting and settings.idle and (r.when == 'IDLE' or r.when == 'ANY'))
         local kindOff = e and ((e[2] == 'rage' and settings.rage == 1) or (e[2] == 'ward' and settings.ward == 1))
-        if r.on and e and e[1] == current and whenOk and not kindOff and level >= e[3] and (e[2] ~= 'rage' or fighting)
+        -- (2026-11-28) only another buff of the borrowed avatar keeps it (its Rage pacts are not used with a fixed choice)
+        if r.on and e and e[1] == current and e[2] == 'ward' and whenOk and not kindOff and level >= e[3]
             and S.ruleAim(r, mob, master, target) ~= nil then
-            return false -- (a rule for the avatar that is out still fits: it stays)
+            return false -- (another buff of the avatar that is out still fits: it stays for it)
         end
     end
 
     local ok = S.switchTo(mob, fixed, now, has, 'back to your choice', 2 * math.max(0, S.netUpkeep(mob, fixed)))
+    if ok == true then
+        mob:setLocalVar('SMN_BORROWED', 0)
+        mob:setLocalVar('SMN_SWAP_NEXT', now + S.FIXED_HOLD) -- (the next buff may borrow again soon)
+    end
+
     return ok == true
 end
 
@@ -1215,6 +1237,11 @@ local function plan(mob, master, target, now, has, defaultPick, fighting)
 
         local ok = name ~= nil and S.summon(mob, name, now, has, 2 * math.max(0, S.netUpkeep(mob, name)))
         mob:setLocalVar('SQUAD_PET_NEXT', now + (ok and 120 or 10))
+        if ok and S.AVATARS[master:getCharVar(S.choiceVar(mateId))] == name then
+            -- (2026-11-28) the fixed choice came out first: a buff for another avatar waits FIXED_HOLD seconds
+            mob:setLocalVar('SMN_SWAP_NEXT', now + S.FIXED_HOLD)
+            mob:setLocalVar('SMN_BORROWED', 0)
+        end
         current, pet = currentAvatar(mob)
     end
 

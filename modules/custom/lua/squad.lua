@@ -3855,8 +3855,13 @@ SQUAD_F18.EVERY_SEC = 10
 SQUAD_F18.BAND      = 20
 SQUAD_F18.COOLDOWN  = 15
 SQUAD_F18.RESIT_SEC = 3    -- after a Wake to act action: down again this long after it started, once the action is over
-SQUAD_F18.NEAR     = 8    -- yalms from its camp, or from you, it may sit down at
-SQUAD_F18.AWAY      = 12   -- following you: you this far away = it gets up and follows
+-- (2026-11-28, Discord "Rest in Fights": mages keep their Range spot, 15-20 yalms out, so an 8-yalm rule almost never let
+-- them sit) it sits where it stands, within the fight's reach: the camp's fight reach (20 yalms, as the trust controller's
+-- CampFightReach) or this far from you when it follows you; it gets up when YOU move AWAY yalms from where you stood as it
+-- sat down. Only a hit interrupts: a monster that only turns to it does not (a player must be hit too).
+SQUAD_F18.CAMP_REACH   = 20
+SQUAD_F18.FOLLOW_REACH = 25
+SQUAD_F18.AWAY         = 10
 
 function SQUAD_F18.partyFighting(master)
     if master:isEngaged() then
@@ -3908,12 +3913,12 @@ function SQUAD_F18.tick(mob, master, campHere)
     local mpp = maxMp > 0 and math.floor(mob:getMP() * 100 / maxMp) or 100
     local p, mp = mob:getPos(), master:getPos()
     local c = campHere(master)
-    local function nearSpot()
+    local function inReach()
         if c then
-            return math.sqrt((p.x - c.x) ^ 2 + (p.z - c.z) ^ 2) <= SQUAD_F18.NEAR
+            return math.sqrt((p.x - c.x) ^ 2 + (p.z - c.z) ^ 2) <= SQUAD_F18.CAMP_REACH
         end
 
-        return math.sqrt((p.x - mp.x) ^ 2 + (p.z - mp.z) ^ 2) <= SQUAD_F18.NEAR
+        return math.sqrt((p.x - mp.x) ^ 2 + (p.z - mp.z) ^ 2) <= SQUAD_F18.FOLLOW_REACH
     end
 
     if on then
@@ -3924,9 +3929,8 @@ function SQUAD_F18.tick(mob, master, campHere)
             why = 'it was hit'
         elseif math.sqrt((p.x - (mob:getLocalVar('SQUAD_RF_X') / 100 - 1000)) ^ 2 + (p.z - (mob:getLocalVar('SQUAD_RF_Z') / 100 - 1000)) ^ 2) > 1.5 then
             why = 'it was moved'
-        elseif SquadFoesOn(mob) > 0 then
-            why = 'a monster is on it'
-        elseif not c and math.sqrt((p.x - mp.x) ^ 2 + (p.z - mp.z) ^ 2) > SQUAD_F18.AWAY then
+        elseif not c and math.sqrt((mp.x - (mob:getLocalVar('SQUAD_RF_MX') / 100 - 1000)) ^ 2
+            + (mp.z - (mob:getLocalVar('SQUAD_RF_MZ') / 100 - 1000)) ^ 2) > SQUAD_F18.AWAY then
             why = 'you went away'
         elseif mpp >= math.min(100, threshold + SQUAD_F18.BAND) then
             why = 'its MP is back'
@@ -3980,7 +3984,7 @@ function SQUAD_F18.tick(mob, master, campHere)
     end
 
     if not fighting or mpp >= threshold or now < mob:getLocalVar('SQUAD_RF_NEXT') or mob:getLocalVar('SQUAD_PULL_PHASE') ~= 0
-        or not nearSpot() or SquadFoesOn(mob) > 0 then
+        or not inReach() then
         return false
     end
 
@@ -3999,10 +4003,79 @@ function SQUAD_F18.tick(mob, master, campHere)
     mob:setLocalVar('SQUAD_RF_HP', mob:getHP())
     mob:setLocalVar('SQUAD_RF_X', math.floor((p.x + 1000) * 100))
     mob:setLocalVar('SQUAD_RF_Z', math.floor((p.z + 1000) * 100))
+    mob:setLocalVar('SQUAD_RF_MX', math.floor((mp.x + 1000) * 100)) -- (where you stood: you moving away gets it up)
+    mob:setLocalVar('SQUAD_RF_MZ', math.floor((mp.z + 1000) * 100))
     mob:setAnimation(xi.animation.HEALING)
     -- (no percent sign: the server's print reads the text as a format and drops a line with one)
     print(string.format('[squad] %s rests in the fight (MP %d of 100, setting %d)', mob:getPacketName(), mpp, threshold))
     return true
+end
+
+-----------------------------------
+-- (2026-11-28, Discord "Rest in Fights": TheGreatCacnea, Tetsu) Rest when idle: out of a fight, once you have stood still
+-- STILL_SEC seconds, a mate below full HP or MP that is standing still too sits down and rests to full, with the same
+-- amounts as resting with you. It gets up when you move MOVE yalms, when a fight starts, when it is engaged, or when it is
+-- full. Not the puller on its way, not a mate sent to attack, not a Summoner with its avatar out (its "between pulls"
+-- setting decides about the avatar). On by default; !squad idlerest off turns it off (SQUAD_IDLEREST_OFF).
+-- Global table: this file is at Lua's limit for locals.
+-----------------------------------
+SQUAD_IDLEREST = SQUAD_IDLEREST or {}
+SQUAD_IDLEREST.STILL_SEC = 5
+SQUAD_IDLEREST.MOVE      = 2
+SQUAD_IDLEREST.MATE_MOVE = 0.3 -- (the mate itself, from one tick to the next: still walking up to you)
+
+function SQUAD_IDLEREST.enc(v) return math.floor((v + 1000) * 100) end
+function SQUAD_IDLEREST.dec(v) return v / 100 - 1000 end
+
+-- true once the player has been still STILL_SEC seconds (the spot is kept on the player; every mate's tick updates it)
+function SQUAD_IDLEREST.playerStill(master, now)
+    local idleEnc, idleDec = SQUAD_IDLEREST.enc, SQUAD_IDLEREST.dec
+    local p = master:getPos()
+    local at = master:getLocalVar('SQUAD_STILL_AT')
+    local dx = p.x - idleDec(master:getLocalVar('SQUAD_STILL_X'))
+    local dz = p.z - idleDec(master:getLocalVar('SQUAD_STILL_Z'))
+    if at == 0 or math.sqrt(dx * dx + dz * dz) > SQUAD_IDLEREST.MOVE then
+        master:setLocalVar('SQUAD_STILL_X', idleEnc(p.x))
+        master:setLocalVar('SQUAD_STILL_Z', idleEnc(p.z))
+        master:setLocalVar('SQUAD_STILL_AT', now)
+        return false
+    end
+
+    return now - at >= SQUAD_IDLEREST.STILL_SEC
+end
+
+function SQUAD_IDLEREST.wants(mob, master, now)
+    if master:getCharVar('SQUAD_IDLEREST_OFF') == 1 or not master:isAlive() then
+        return false
+    end
+
+    local idleEnc, idleDec = SQUAD_IDLEREST.enc, SQUAD_IDLEREST.dec
+    local still = SQUAD_IDLEREST.playerStill(master, now)
+    local p = mob:getPos()
+    local mateStill = math.sqrt((p.x - idleDec(mob:getLocalVar('SQUAD_IR_X'))) ^ 2 + (p.z - idleDec(mob:getLocalVar('SQUAD_IR_Z'))) ^ 2)
+        <= SQUAD_IDLEREST.MATE_MOVE
+    mob:setLocalVar('SQUAD_IR_X', idleEnc(p.x))
+    mob:setLocalVar('SQUAD_IR_Z', idleEnc(p.z))
+    if not still or master:isEngaged() or mob:isEngaged() or SQUAD_F18.partyFighting(master) then
+        return false
+    end
+
+    if mob:getLocalVar('SQUAD_PULL_PHASE') ~= 0 or master:getLocalVar('SQUAD_ATTACK_TARGET') ~= 0 or SquadHasPet(mob) then
+        return false
+    end
+
+    local hurt = mob:getHP() < mob:getMaxHP() or (mob:getMaxMP() > 0 and mob:getMP() < mob:getMaxMP())
+    if not hurt then
+        return false
+    end
+
+    -- already sitting: it stays down while you stay still; else only once it stands still and does nothing
+    if mob:getAnimation() == xi.animation.HEALING then
+        return true
+    end
+
+    local okA, action = pcall(function() return mob:getCurrentAction() end)
+    return mateStill and (not okA or action == 16 or action == 0)
 end
 
 restTick = function(mob)
@@ -4030,6 +4103,12 @@ restTick = function(mob)
         local p = mob:getPos()
         local hurt = mob:getHP() < mob:getMaxHP() or (mob:getMaxMP() > 0 and mob:getMP() < mob:getMaxMP())
         resting = hurt and math.sqrt((p.x - c.x) ^ 2 + (p.z - c.z) ^ 2) <= 8
+    end
+
+    -- (2026-11-28) Rest when idle: out of a fight while you stand still (SQUAD_IDLEREST above)
+    if not resting then
+        local okIdle, idle = pcall(SQUAD_IDLEREST.wants, mob, master, os.time())
+        resting = okIdle and idle == true
     end
 
     if not resting then
@@ -5343,6 +5422,22 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         say(player, string.format('%s pulls. Monsters %s within %d yalms of camp, one at a time when everyone is ready.',
             mate.name, squadCampWindowText(player), campRange(player)))
         SQUAD_CAMPX.push(player, true)
+        return
+    end
+
+    if action == 'idlerest' then
+        -- (2026-11-28, Discord "Rest in Fights": rest to full out of a fight when you stand still) on by default
+        local word = arg1 and string.lower(arg1) or ''
+        if word == 'off' then
+            player:setCharVar('SQUAD_IDLEREST_OFF', 1)
+        elseif word == 'on' then
+            player:setCharVar('SQUAD_IDLEREST_OFF', 0)
+        end
+
+        say(player, player:getCharVar('SQUAD_IDLEREST_OFF') == 0
+            and string.format('Idle rest: out of a fight, once you stand still %d s, your mates sit and rest to full; they get up when you move (!squad idlerest off).',
+                SQUAD_IDLEREST.STILL_SEC)
+            or 'Idle rest: off. Your mates rest out of a fight only when you rest, or at a camp (!squad idlerest on).')
         return
     end
 
