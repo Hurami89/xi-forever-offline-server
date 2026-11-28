@@ -78,6 +78,8 @@ phoenix/dynamis/lua/
 custom/cpp/squad.cpp
 # Hardcore modes (Iron / Steel / Silver): auction house, trade, delivery and party rules (rules and rates: custom/late/hardcore.lua)
 custom/cpp/hardcore.cpp
+# Hardcore cosmetic wardrobe: Mog Wardrobe 8 for costumes only, open from the start with classic bags (Lua half: custom/late/hardcore_wardrobe.lua)
+custom/cpp/hardcore_wardrobe.cpp
 # !deliverybox: the whole delivery box into the inventory at once (Quaiton, 2026-11-26)
 custom/cpp/delivery_take.cpp
 custom/lua/delivery_take.lua
