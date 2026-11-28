@@ -248,11 +248,16 @@ do
     blm.mp = 45
     check(SQUAD_F18.tick(blm, p, campOf) == false, 'at 45% it does not sit again (only below 40)')
 
-    -- not while something attacks it, not while casting, not when the party is not fighting
+    -- (2026-11-28) a monster that only turns to it does not stop it: only a hit does (a player must be hit too)
     p, blm, war = setup()
     blm.foes = 1
-    check(SQUAD_F18.tick(blm, p, campOf) == false, 'a monster on it: it does not sit')
-    blm.foes, blm.action = 0, 30
+    check(SQUAD_F18.tick(blm, p, campOf) == true, 'a monster has it as its target but has not hit it: it still sits')
+    check(SQUAD_F18.tick(blm, p, campOf) == true, '... and stays down while it is not hit')
+    blm.hp = blm.hp - 5
+    check(SQUAD_F18.tick(blm, p, campOf) == false, '... a hit gets it up')
+    -- not while casting, not when the party is not fighting
+    p, blm, war = setup()
+    blm.action = 30
     check(SQUAD_F18.tick(blm, p, campOf) == false, 'casting: it does not sit')
     blm.action, war.engaged = 16, false
     check(SQUAD_F18.tick(blm, p, campOf) == false, 'the party is not fighting: not this rest (the usual resting with you applies)')
@@ -289,6 +294,24 @@ do
     function p:getPos() return { x = 20, y = 0, z = 0 } end
     check(SQUAD_F18.tick(blm, p, campOf) == false, 'you went 20 yalms away: it gets up and follows')
 
+    -- (2026-11-28, Discord "Rest in Fights") it sits where it stands: a mage at its Range spot, 18 yalms from you
+    p, blm, war = setup({ camp = false })
+    blm.pos = { x = 18, y = 0, z = 0 }
+    check(SQUAD_F18.tick(blm, p, campOf) == true, 'following you, 18 yalms away (its Range spot): it sits (was 8 yalms at most)')
+    function p:getPos() return { x = 6, y = 0, z = 0 } end
+    check(SQUAD_F18.tick(blm, p, campOf) == true, 'you step 6 yalms (fighting around the monster): it stays down')
+    function p:getPos() return { x = 11, y = 0, z = 0 } end
+    check(SQUAD_F18.tick(blm, p, campOf) == false, 'you move 11 yalms from where you stood: it gets up')
+    p, blm, war = setup({ camp = false })
+    blm.pos = { x = 30, y = 0, z = 0 }
+    check(SQUAD_F18.tick(blm, p, campOf) == false, '30 yalms from you: too far, it does not sit')
+    p, blm, war = setup()
+    blm.pos = { x = 15, y = 0, z = 0 }
+    check(SQUAD_F18.tick(blm, p, campOf) == true, 'at a camp, 15 yalms from the centre (inside the 20-yalm fight reach): it sits')
+    p, blm, war = setup()
+    blm.pos = { x = 24, y = 0, z = 0 }
+    check(SQUAD_F18.tick(blm, p, campOf) == false, 'at a camp, 24 yalms from the centre: outside the fight reach, it does not sit')
+
     -- off (the default): nothing changes
     p, blm, war = setup({ threshold = 0 })
     local offResult = SQUAD_F18.tick(blm, p, campOf)
@@ -320,6 +343,56 @@ do
     p.party = { p }
     said = run(p, 'panel')
     check(has(said, 'squadpanel:rf|1|30|-1'), 'not out: rf|1|30|-1 (the menu shows no warning)')
+end
+
+-- ================================================================= Rest when idle (2026-11-28, Discord)
+section('Rest when idle: out of a fight, while you stand still')
+do
+    local savedPet = rawget(_G, 'SquadHasPet')
+    SquadHasPet = function(m) return rawget(m, 'hasPet') == true end
+    local mira = mate(7, 'Mira', 4, 50) -- (MP 50 of 100)
+    local p = world({ mira }, { camp = false })
+    local t0 = 5000
+    check(SQUAD_IDLEREST.wants(mira, p, t0) == false, 'you just stopped: not yet')
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 3) == false, '3 s still: not yet')
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 5) == true, '5 s still, the mate below full and standing still: it rests')
+    mira.anim = xi.animation.HEALING
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 20) == true, 'sitting: it stays down while you stay still')
+    function p:getPos() return { x = 3, y = 0, z = 0 } end
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 21) == false, 'you move 3 yalms: it gets up')
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 24) == false, '... and waits until you have stood still again')
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 27) == true, '... 5 s still at the new spot: down again')
+
+    mira.anim = 0
+    mira.mp = 100
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 40) == false, 'full HP and MP: no rest')
+    mira.mp = 50
+    mira.pos = { x = 1, y = 0, z = 0 }
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 41) == false, 'the mate is still walking up to you: not while it moves')
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 42) == true, '... and once it stands still too: it rests')
+
+    mira.hasPet = true
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 43) == false, 'a Summoner with its avatar out: no idle rest (its between-pulls setting decides)')
+    mira.hasPet = nil
+    mira.vars.SQUAD_PULL_PHASE = 1
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 44) == false, 'the puller on its way: no rest')
+    mira.vars.SQUAD_PULL_PHASE = 0
+    mira.engaged = true
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 45) == false, 'engaged (a monster aggroed): no rest')
+    mira.engaged = false
+    p.engaged = true
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 46) == false, 'you fight: no rest')
+    p.engaged = false
+    p.vars.SQUAD_IDLEREST_OFF = 1
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 47) == false, '!squad idlerest off: never')
+    p.vars.SQUAD_IDLEREST_OFF = 0
+    check(SQUAD_IDLEREST.wants(mira, p, t0 + 48) == true, 'on again (the default): it rests')
+
+    local said = run(p, 'idlerest', 'off')
+    check(p.vars.SQUAD_IDLEREST_OFF == 1 and has(said, 'off'), 'idlerest off: ' .. said)
+    said = run(p, 'idlerest', 'on')
+    check(p.vars.SQUAD_IDLEREST_OFF == 0 and has(said, 'stand still 5 s'), 'idlerest on: ' .. said)
+    SquadHasPet = savedPet
 end
 end
 ]==]
