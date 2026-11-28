@@ -64,6 +64,26 @@ local function byName(name)
     return ok and found or nil
 end
 
+-- the partner of a ceremony: a real character or a bot (by name), or the engaged squad mate out with the player
+local function partnerEntity(st, a)
+    if st.bKind ~= 'mate' then
+        return byName(st.b)
+    end
+
+    a = a or byName(st.a)
+    if not a then
+        return nil
+    end
+
+    for _, member in ipairs(a:getPartyWithTrusts()) do
+        if member:getLocalVar('SQUAD_ID') == st.bMateId then
+            return member
+        end
+    end
+
+    return nil
+end
+
 local function wearsRing(player)
     return RINGS[player:getEquipID(xi.slot.RING1)] == true or RINGS[player:getEquipID(xi.slot.RING2)] == true
 end
@@ -106,7 +126,7 @@ end
 
 -- The Master speaks: shown as the Master's own words to everyone in the palace room (sent through the couple).
 local function masterSays(st, text)
-    local speaker = byName(st.a) or byName(st.b)
+    local speaker = byName(st.a) or (st.bKind == 'pc' and byName(st.b)) or nil
     if speaker and speaker:getZoneID() == st.zone then
         speaker:printToArea(text, xi.msg.channel.SAY, xi.msg.area.SHOUT, PLACES[st.zone].master)
     end
@@ -153,7 +173,7 @@ end
 
 -- A line for the whole world, and (online sharing on) for the Hub and Stinkshell through the hardcore announcer.
 local function announce(st, text, kind)
-    local speaker = byName(st.a) or byName(st.b)
+    local speaker = byName(st.a) or (st.bKind == 'pc' and byName(st.b)) or nil
     if speaker then
         pcall(function()
             speaker:printToArea(string.format('\129\154 %s \129\154', text), xi.msg.channel.SYSTEM_3, xi.msg.area.SYSTEM, '', false)
@@ -240,7 +260,7 @@ end
 
 -- the next step after ms, only while this ceremony is still the one going on and both are still here
 local function after(st, ms, func)
-    local speaker = byName(st.a) or byName(st.b)
+    local speaker = byName(st.a) or (st.bKind == 'pc' and byName(st.b)) or nil
     if not speaker then
         callOff(st)
         return
@@ -251,7 +271,8 @@ local function after(st, ms, func)
             return
         end
 
-        local a, b = byName(st.a), byName(st.b)
+        local a = byName(st.a)
+        local b = partnerEntity(st, a)
         if not a or not b or a:getZoneID() ~= st.zone or b:getZoneID() ~= st.zone then
             callOff(st, 'One of the two has left us... We will wait for another day.')
             return
@@ -263,7 +284,11 @@ end
 
 local function bow(who, to)
     pcall(function()
-        who:sendEmote(to, xi.emote.BOW, xi.emoteMode.MOTION, false)
+        if isBot(who) and BotEmote then
+            BotEmote(who:getID(), to, xi.emote.BOW, (xi.emoteMode and xi.emoteMode.MOTION) or 2)
+        else
+            who:sendEmote(to, xi.emote.BOW, xi.emoteMode.MOTION, false)
+        end
     end)
 end
 
@@ -326,11 +351,22 @@ end
 
 local function vow(st, who, other, nextStep)
     local answered = false
+    local whoName = who == 'B' and st.b or st.a
+    local otherName = who == 'B' and st.a or st.b
     masterSays(st, string.format('%s, will you walk beside %s in all the days to come, through every land and every storm?',
-                                 who:getName(), other:getName()))
+                                 whoName, otherName))
+    if who == 'B' and st.bKind ~= 'pc' then
+        -- the squad mate or bot answers for itself
+        after(st, 3500, function(a, b)
+            a:printToArea('I do.', xi.msg.channel.SAY, xi.msg.area.SHOUT, st.b)
+            nextStep()
+        end)
+        return
+    end
+
     after(st, 2500, function(a, b)
-        local me = a:getName() == who:getName() and a or b
-        menu(me, string.format('Your vow to %s', other:getName()), {
+        local me = who == 'A' and a or b
+        menu(me, string.format('Your vow to %s', otherName), {
             { 'I do.', function(p)
                 if answered or st.done then
                     return
@@ -358,13 +394,28 @@ local function vow(st, who, other, nextStep)
     end)
 end
 
+local CERTIFICATES = { SAN = 'SAN_DORIAN_MARRIAGE_CERTIFICATE', BAS = 'BASTOKAN_MARRIAGE_CERTIFICATE', WIN = 'WINDURSTIAN_MARRIAGE_CERTIFICATE' }
+
 local function finish(st, a, b)
     st.done = true
-    a:setCharVar(SPOUSE_VAR, b:getID())
-    b:setCharVar(SPOUSE_VAR, a:getID())
     local place = PLACES[st.zone].place
-    announce(st, string.format('%s and %s were married in %s! Congratulations!', st.a, st.b, place), 'wedding')
-    masterSays(st, string.format('Come and speak with me together, and I will prepare your marriage certificates.'))
+    if st.bKind == 'pc' then
+        a:setCharVar(SPOUSE_VAR, b:getID())
+        b:setCharVar(SPOUSE_VAR, a:getID())
+        announce(st, string.format('%s and %s were married in %s! Congratulations!', st.a, st.b, place), 'wedding')
+        masterSays(st, string.format('Come and speak with me together, and I will prepare your marriage certificates.'))
+    else
+        st.romance.entity = b
+        xi.romance.marry(a, st.romance)
+        announce(st, string.format('%s and %s were married in %s! Congratulations!', st.a, st.b, place), 'wedding')
+        local cert = xi.item[CERTIFICATES[PLACES[st.zone].code]]
+        if cert and not a:hasItem(cert) and a:getFreeSlotsCount() > 0 then
+            a:addItem(cert)
+            a:messageSpecial(zones[st.zone].text.ITEM_OBTAINED, cert)
+        end
+
+        masterSays(st, 'Here is your marriage certificate. May the Crystals light your way, together.')
+    end
     release(st)
     a:timer(MUSIC_BACK_S * 1000, function()
         if not W.state[st.zone] then
@@ -375,7 +426,8 @@ end
 
 local function run(st)
     st.started = true
-    local a, b = byName(st.a), byName(st.b)
+    local a = byName(st.a)
+    local b = partnerEntity(st, a)
     if not a or not b then
         callOff(st)
         return
@@ -390,16 +442,16 @@ local function run(st)
     after(st, 9000, function()
         masterSays(st, 'Their journey across Vana\'diel has brought them here, side by side, before the Crystals.')
     end)
-    after(st, 15000, function(first, second)
-        vow(st, first, second, function()
-            after(st, 2000, function(x, y)
-                vow(st, y, x, function()
+    after(st, 15000, function()
+        vow(st, 'A', 'B', function()
+            after(st, 2000, function()
+                vow(st, 'B', 'A', function()
                     after(st, 2500, function(p, q)
                         masterSays(st, 'Then let these rings be the sign of your vows.')
                         faceEachOther(p, q)
                         bow(p, q)
                         p:timer(1500, function()
-                            local other = byName(st.b)
+                            local other = partnerEntity(st)
                             if other then
                                 bow(other, p)
                             end
@@ -423,11 +475,13 @@ end
 -----------------------------------
 -- booking: the partner says yes, then now or in 10 minutes
 -----------------------------------
-local function book(player, partner, npc, delay)
+local function book(player, partner, npc, delay, romance)
     local zoneId = player:getZoneID()
     serial = serial + 1
-    local st = { id = serial, zone = zoneId, a = player:getName(), b = partner:getName(), npcId = npc:getID(),
-                 startAt = os.time() + delay, done = false, started = false }
+    local st = { id = serial, zone = zoneId, a = player:getName(), b = romance and romance.name or partner:getName(), npcId = npc:getID(),
+                 startAt = os.time() + delay, done = false, started = false,
+                 bKind = romance and romance.kind or 'pc', bMateId = romance and romance.kind == 'mate' and romance.id or nil,
+                 romance = romance }
     W.state[zoneId] = st
 
     if delay <= 0 then
@@ -460,14 +514,17 @@ local function book(player, partner, npc, delay)
             return
         end
 
-        local a, b = byName(st.a), byName(st.b)
+        local a = byName(st.a)
+        local b = partnerEntity(st, a)
         local reason = nil
         if not a or not b or a:getZoneID() ~= zoneId or b:getZoneID() ~= zoneId then
             reason = 'The couple is not here... the ceremony will have to wait for another day.'
         elseif a:checkDistance(n) > NEAR_MASTER or b:checkDistance(n) > NEAR_MASTER then
             reason = 'The couple should stand before me. Speak to me again when you are both here.'
-        elseif why(a, b) then
+        elseif st.bKind == 'pc' and why(a, b) then
             reason = why(a, b)
+        elseif st.bKind ~= 'pc' and not wearsRing(a) then
+            reason = 'Wear your ring for the ceremony.'
         end
 
         if reason then
@@ -549,7 +606,8 @@ m:addOverride('xi.wedding.onTrigger', function(player, npc)
 
         menu(player, string.format('Your ceremony: %s', clock(st.startAt)), {
             { 'Begin now (we are both here)', function(p)
-                local a, b = byName(st.a), byName(st.b)
+                local a = byName(st.a)
+                local b = partnerEntity(st, a)
                 local n = GetNPCByID(st.npcId)
                 if not a or not b or not n or a:getZoneID() ~= zoneId or b:getZoneID() ~= zoneId or
                     a:checkDistance(n) > NEAR_MASTER or b:checkDistance(n) > NEAR_MASTER then
@@ -574,6 +632,39 @@ m:addOverride('xi.wedding.onTrigger', function(player, npc)
     local partner, problem = nil, nil
     if here then
         partner, problem = partnerFor(player, npc)
+    end
+
+    local engaged = here and not partner and xi.romance and xi.romance.engagedPartner and xi.romance.engagedPartner(player) or nil
+    if engaged and engaged.entity and engaged.entity:checkDistance(npc) <= NEAR_MASTER then
+        local function start(p, delay)
+            if not wearsRing(p) then
+                tell(p, 'Wear your own Matrimony Ring or Band (or a Wedding Ring) for the ceremony.')
+                return
+            end
+
+            if W.state[p:getZoneID()] then
+                tell(p, 'The Master is busy just now.')
+                return
+            end
+
+            xi.romance.say(p, engaged, delay > 0 and 'In ten minutes? I\'ll be counting every one of them.' or 'Now? Yes... yes, let\'s!')
+            book(p, engaged.entity, npc, delay, engaged)
+        end
+
+        menu(player, string.format('%s, Wedding Master', here.master), {
+            { string.format('Hold our wedding ceremony now (with %s)', engaged.name), function(p)
+                start(p, 0)
+            end },
+            { 'Hold it in 10 minutes (friends can come)', function(p)
+                start(p, WAIT_S)
+            end },
+            { 'Marriage certificates', function(p)
+                p:timer(250, function(e)
+                    super(e, npc)
+                end)
+            end },
+        })
+        return
     end
 
     if not here or not partner then

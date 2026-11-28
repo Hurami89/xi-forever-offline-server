@@ -174,8 +174,26 @@ struct GiftTrade
     uint32            player;
     timer::time_point at;
     bool              done; // false: open the window at `at`; true: the player pressed OK, thank them once it closed
+    std::map<uint16, uint32> before{}; // (2026-11-27, romance) the player's inventory when OK was pressed: what left it was the gift
 };
 auto& g_gifts = *new std::vector<GiftTrade>();
+
+// (2026-11-27) item id -> count in a character's inventory (gil not counted)
+auto inventoryCounts(CCharEntity* PChar) -> std::map<uint16, uint32>
+{
+    std::map<uint16, uint32> counts;
+    CItemContainer*          inv = PChar->getStorage(LOC_INVENTORY);
+    for (uint8 slot = 1; slot <= inv->GetSize(); ++slot)
+    {
+        CItem* PItem = inv->GetItem(slot);
+        if (PItem && PItem->getID() != 0 && PItem->getID() != 0xFFFF)
+        {
+            counts[PItem->getID()] += PItem->getQuantity();
+        }
+    }
+
+    return counts;
+}
 
 auto botOf(uint32 charId) -> Bot*
 {
@@ -2667,7 +2685,7 @@ class BotsModule : public CPPModule
                     if (auto* transaction = PChar->activePlayerTradeTransaction())
                     {
                         transaction->accept(PBot); // (the stock handler then accepts for the player and completes it)
-                        g_gifts.push_back({ PBot->id, PChar->id, timer::now() + std::chrono::milliseconds(1000), true });
+                        g_gifts.push_back({ PBot->id, PChar->id, timer::now() + std::chrono::milliseconds(1000), true, inventoryCounts(PChar) });
                     }
                 }
             }
@@ -2868,6 +2886,21 @@ class BotsModule : public CPPModule
                 {
                     auto info    = ::lua.create_table();
                     info["from"] = std::string(PChar->getName());
+                    // (2026-11-27) what the player gave: everything that left their inventory with this trade
+                    auto       given = ::lua.create_table();
+                    const auto after = inventoryCounts(PChar);
+                    for (const auto& [itemId, qty] : it->before)
+                    {
+                        const auto left = after.contains(itemId) ? after.at(itemId) : 0u;
+                        if (left < qty)
+                        {
+                            auto row   = ::lua.create_table();
+                            row["id"]  = itemId;
+                            row["qty"] = qty - left;
+                            given.add(row);
+                        }
+                    }
+                    info["items"] = given;
                     callLua("onGift", PBot, info);
                 }
                 // (still open: the player changed the items after OK; their next OK queues a new entry)
