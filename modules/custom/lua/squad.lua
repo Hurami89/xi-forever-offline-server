@@ -280,6 +280,8 @@ local function usage(player)
     say(player, '!squad sync <name> | off   - Level Sync to a player, bot or squad mate in your party (party menu works too)')
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call); with "Squad gets all gear" on, the best their jobs can wear')
     say(player, '!squad autoequip now [slot]   - put the best gear on once, right now, and keep choosing by hand')
+    say(player, '!squad gearlock <slot> [<equip slot> | all] [on | off]   - slots auto-equip leaves alone (per job); a piece chosen by hand there keeps auto-equip on')
+    say(player, '!squad weapon <slot> main <type> | sub <type>   - the kind of weapon auto-equip uses (per job): it picks the best of that kind')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad juice   - the juices each mate carries (trade juices to a mate: it drinks one when its MP runs low)')
     say(player, '!squad meds    - the medicines each mate carries (trade Echo Drops, Antidotes, Eye Drops, Holy Water, Remedies: used when the healers cannot cure it in time)')
@@ -2631,6 +2633,44 @@ function squadLockstyleClear(player, mateId)
     end
 end
 
+-- (2026-11-27) Gear lock: the slots auto-equip leaves alone, per mate and per job (gear is saved per job). Char var
+-- SQUAD_GLOCK_<mate id>_<job> = a mask, bit n = equip slot n. A locked slot keeps what it has, also when that is
+-- nothing. Choosing (or taking off) a piece by hand never switches Auto-equip off: with it on, that slot is locked. Globals: squad.lua is at Lua's local limit.
+function squadGearLocks(player, mateId, job)
+    return player:getCharVar(string.format('SQUAD_GLOCK_%d_%d', mateId, job))
+end
+function squadGearLocked(player, mateId, job, slot)
+    return hasBit(squadGearLocks(player, mateId, job), slot)
+end
+function squadGearLockSet(player, mateId, job, slot, on)
+    local mask = squadGearLocks(player, mateId, job)
+    if hasBit(mask, slot) ~= (on == true) then
+        mask = mask + (on and 1 or -1) * 2 ^ slot
+        player:setCharVar(string.format('SQUAD_GLOCK_%d_%d', mateId, job), mask)
+    end
+end
+
+-- (2026-11-27) Weapon type: the kind of weapon auto-equip puts in Main and what it puts in Sub, per mate and job. Auto-equip
+-- still picks the best piece, but only of that kind (a softer lock than the gear lock, which keeps one piece). Char vars
+-- SQUAD_WMAIN_<mate id>_<job> = weapon skill (0 any) and SQUAD_WSUB_<mate id>_<job> = 0 any, 1 shield, 2 grip, 3 empty,
+-- 10 + weapon skill = a second weapon (Dual Wield). A choice that cannot go with the Main weapon (a shield beside a
+-- two-handed weapon, a second weapon without Dual Wield) gives way to the usual choice for that Main.
+SQUAD_WTYPE_MAIN = { any = 0, h2h = 1, handtohand = 1, dagger = 2, sword = 3, greatsword = 4, axe = 5, greataxe = 6, scythe = 7,
+    polearm = 8, katana = 9, greatkatana = 10, club = 11, staff = 12 }
+SQUAD_WTYPE_SUB = { any = 0, shield = 1, grip = 2, empty = 3, none = 3, dagger = 12, sword = 13, axe = 15, katana = 19, club = 21 }
+SQUAD_WTYPE_NAME = { [0] = 'any weapon', 'hand-to-hand', 'dagger', 'sword', 'great sword', 'axe', 'great axe', 'scythe', 'polearm',
+    'katana', 'great katana', 'club', 'staff' }
+function squadWeaponType(player, mateId, job)
+    return player:getCharVar(string.format('SQUAD_WMAIN_%d_%d', mateId, job)),
+        player:getCharVar(string.format('SQUAD_WSUB_%d_%d', mateId, job))
+end
+function squadWeaponTypeSet(player, mateId, job, which, code)
+    player:setCharVar(string.format(which == 'main' and 'SQUAD_WMAIN_%d_%d' or 'SQUAD_WSUB_%d_%d', mateId, job), code or 0)
+end
+function squadSubTypeName(code)
+    return ({ [0] = 'any', 'a shield', 'a grip', 'nothing' })[code] or ('a second ' .. (SQUAD_WTYPE_NAME[code - 10] or 'weapon'))
+end
+
 SQUAD_TWO_HANDED = { [4] = true, [6] = true, [7] = true, [8] = true, [10] = true, [12] = true }
 
 -- (2026-11-22, Ricc: the same Rare earring in both ears; Meli: a Great Katana with a shield; wildthing's investigation)
@@ -2821,7 +2861,32 @@ function squadAutoEquip(player, mate)
         return a.id < b.id
     end)
 
+    -- (2026-11-27) gear lock: a locked slot keeps its piece, that piece is not put on anywhere else, and the hands and
+    -- ammunition are chosen to go with a locked weapon
+    mate.equip[job] = mate.equip[job] or {}
+    local locks = squadGearLocks(player, mate.id, job)
+    local function locked(slot) return hasBit(locks, slot) end
+    local function infoOf(itemId)
+        if itemId == nil or itemId == 0 then
+            return nil
+        end
+
+        local info = SQUAD_ITEM_INFO[itemId]
+        if info == nil then
+            info = GetSquadItemInfo(itemId)
+            SQUAD_ITEM_INFO[itemId] = info
+        end
+
+        return info and info.valid and info or nil
+    end
+
     local used, pick = {}, {}
+    for slot = 0, 15 do
+        if locked(slot) and mate.equip[job][slot] then
+            used[mate.equip[job][slot]] = true
+        end
+    end
+
     local function best(slot, ok)
         for _, c in ipairs(cand) do
             if scored and c.score < 0 then
@@ -2837,9 +2902,48 @@ function squadAutoEquip(player, mate)
         return nil
     end
 
-    local mainId, mainInfo = best(0)
-    if mainId then
+    -- (2026-11-27) weapon type: Main only of the chosen kind (none of it to wear: Main stays as it is), Sub as chosen
+    -- when that goes with Main
+    local wantMain, wantSub = squadWeaponType(player, mate.id, job)
+    local mainId, mainInfo
+    if locked(0) then
+        mainId = mate.equip[job][0]
+        mainInfo = infoOf(mainId)
+        mainId = mainInfo and mainId or nil
+    elseif wantMain > 0 then
+        mainId, mainInfo = best(0, function(i) return (i.skill or 0) == wantMain end)
         pick[0] = mainId
+        if mainId == nil then
+            mainId = mate.equip[job][0]
+            mainInfo = infoOf(mainId)
+            mainId = mainInfo and mainId or nil
+            if mainId then used[mainId] = true end
+        end
+    else
+        mainId, mainInfo = best(0)
+        pick[0] = mainId
+    end
+
+    local typedSub = false
+    if mainId and not locked(1) and wantSub > 0 then
+        local skill = mainInfo.skill or 0
+        local isShield = function(i) return (i.shield or 0) > 0 end
+        local isGrip = function(i) return (i.shield or 0) == 0 and (i.skill or 0) == 0 end
+        if skill == 1 then
+            -- (hand-to-hand takes both hands: the usual choice below)
+        elseif wantSub == 3 then
+            pick[1], typedSub = 0, true
+        elseif SQUAD_TWO_HANDED[skill] then
+            if wantSub == 2 then pick[1], typedSub = best(1, isGrip) or 0, true end
+        elseif wantSub == 1 then
+            pick[1], typedSub = best(1, isShield) or 0, true
+        elseif wantSub > 10 and squadCanDualWield(job, levelsFor(mate, nil, player)) then
+            local ws = wantSub - 10
+            pick[1], typedSub = best(1, function(i) return (i.skill or 0) == ws end) or 0, true
+        end
+    end
+
+    if mainId and not locked(1) and not typedSub then
         local skill = mainInfo.skill or 0
         if SQUAD_TWO_HANDED[skill] then
             pick[1] = best(1, function(i) return (i.shield or 0) == 0 and (i.skill or 0) == 0 end) or 0 -- (a grip)
@@ -2853,9 +2957,17 @@ function squadAutoEquip(player, mate)
         end
     end
 
-    local rangeId, rangeInfo = best(2)
-    if rangeId then
+    local rangeId, rangeInfo
+    if locked(2) then
+        rangeId = mate.equip[job][2]
+        rangeInfo = infoOf(rangeId)
+        rangeId = rangeInfo and rangeId or nil
+    else
+        rangeId, rangeInfo = best(2)
         pick[2] = rangeId
+    end
+
+    if rangeId and not locked(3) then
         local rs = rangeInfo.skill or 0
         if rs == 25 or rs == 26 then
             pick[3] = best(3, function(i) return (i.skill or 0) == rs end) or 0
@@ -2863,14 +2975,15 @@ function squadAutoEquip(player, mate)
     end
 
     for _, slot in ipairs({ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }) do
-        pick[slot] = best(slot)
+        if not locked(slot) then
+            pick[slot] = best(slot)
+        end
     end
 
-    mate.equip[job] = mate.equip[job] or {}
     local worn, changed = mate.equip[job], 0
     for slot = 0, 15 do
         local want = pick[slot]
-        if want ~= nil and want ~= (worn[slot] or 0) then
+        if want ~= nil and not locked(slot) and want ~= (worn[slot] or 0) then
             SetSquadEquip(mate.id, job, slot, want)
             worn[slot] = want ~= 0 and want or nil
             changed = changed + 1
@@ -4702,7 +4815,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         -- (2026-11-27) restfight = !squad restfight and the rf| lines (needs the map server that keeps a resting mate out of
         -- the fight: SquadFoesOn); camprange = campst carries the pull range (F23)
         local capRf = rawget(_G, 'SquadFoesOn') ~= nil and ',restfight' or ''
-        say(player, 'squadpanel:cap|' .. (SquadDismissMate ~= nil and 'reapply1,campmove' or 'campmove') .. capPos .. capRf .. ',camprange')
+        -- (2026-11-27) gearlock = !squad gearlock and the squadsheet:lock line (servermenu 1.36: a lock on each gear slot)
+        say(player, 'squadpanel:cap|' .. (SquadDismissMate ~= nil and 'reapply1,campmove' or 'campmove') .. capPos .. capRf .. ',camprange,gearlock,weapontype')
 
         -- (servermenu 1.8) what the puller goes for, and the kinds of monster around the camp
         if c then
@@ -4732,6 +4846,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         --   squadsheet:combat|<Attack|Accuracy|Defense|Evasion|Ranged attack|Ranged accuracy>|<value>
         --   squadsheet:haste|<gear|magic|ability>|<hundredths of a percent>
         --   squadsheet:eq|<slot index>|<slot name>|<item name>|<item id>
+        --   squadsheet:lock|<mask>   the slots auto-equip leaves alone for the main job (bit n = slot n; 2026-11-27)
+        --   squadsheet:wtype|<main weapon skill, 0 any>|<sub: 0 any, 1 shield, 2 grip, 3 empty, 10 + skill>   (2026-11-27)
         --   squadsheet:note|<text>
         --   squadsheet:spell|<name>|<MP>   squadsheet:ability|<name>|<level>   (a called mate's; 2026-11-23)
         --   squadsheet:end
@@ -4830,6 +4946,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 say(player, string.format('squadsheet:eq|%d|%s|%s|%d', slot, equipSlotNames[slot], clean(info.valid and info.name or itemId), itemId))
             end
         end
+
+        say(player, string.format('squadsheet:lock|%d', squadGearLocks(player, mate.id, mate.mjob)))
+        say(player, string.format('squadsheet:wtype|%d|%d', squadWeaponType(player, mate.id, mate.mjob)))
 
         for slot, itemId in pairs((squadLockstyleGet(player, mate.id))) do
             local info = GetSquadItemInfo(itemId)
@@ -5902,9 +6021,91 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 say(player, string.format('%s took off the Sub piece (%s).', mate.name, why))
             end
         end
+        -- (2026-11-27) Auto-equip stays on: the slot chosen by hand is locked, so auto-equip keeps this piece there
+        if player:getCharVar('SQUAD_AUTOEQUIP') == 1 and not squadGearLocked(player, mate.id, mate.mjob, slotIndex) then
+            squadGearLockSet(player, mate.id, mate.mjob, slotIndex, true)
+            say(player, string.format('Auto-equip stays on; %s is now locked, so it keeps this piece (!squad gearlock %d %s off to let auto-equip choose it again).',
+                equipSlotNames[slotIndex], mate.slot, equipSlotNames[slotIndex]))
+        end
+        return
+    elseif action == 'gearlock' or action == 'glock' then
+        -- (2026-11-27) !squad gearlock <slot> [<equip slot> | all] [on | off]: the slots auto-equip leaves alone, for the
+        -- mate's main job. With no equip slot: which are locked. With no on / off: switches it.
+        local which, onOff = string.lower(arg2 or ''), string.lower(arg3 or '')
+        local job = mate.mjob
+        if which == '' then
+            local names = {}
+            for s = 0, 15 do
+                if squadGearLocked(player, mate.id, job, s) then names[#names + 1] = equipSlotNames[s] end
+            end
+
+            say(player, string.format('%s (%s) - gear locked: %s. !squad gearlock <slot> <equip slot | all> [on | off]', mate.name,
+                jobNames[job] or '???', #names > 0 and table.concat(names, ' ') or 'none'))
+            return
+        end
+
+        local slots = {}
+        if which == 'all' then
+            for s = 0, 15 do slots[#slots + 1] = s end
+        elseif equipSlots[which] ~= nil then
+            slots[1] = equipSlots[which]
+        else
+            say(player, 'Which slot? head body hands legs feet main sub range ammo neck waist ear1 ear2 ring1 ring2 back, or all')
+            return
+        end
+
+        local on
+        if onOff == 'on' or onOff == '1' then
+            on = true
+        elseif onOff == 'off' or onOff == '0' then
+            on = false
+        else
+            on = not squadGearLocked(player, mate.id, job, slots[1])
+        end
+
+        for _, s in ipairs(slots) do
+            squadGearLockSet(player, mate.id, job, s, on)
+        end
+
+        say(player, string.format('%s (%s): %s %s. %s', mate.name, jobNames[job] or '???', which == 'all' and 'every slot' or equipSlotNames[slots[1]],
+            on and 'locked' or 'unlocked', on and 'Auto-equip leaves it as it is.' or 'Auto-equip chooses it again.'))
+        return
+    elseif action == 'weapon' or action == 'wtype' then
+        -- (2026-11-27) !squad weapon <slot> main <type> | sub <type>: the kind of weapon auto-equip uses (for the main job).
+        -- Choosing one unlocks that slot (a gear lock would keep one piece), and with Auto-equip on it is put on now.
+        local which, word = string.lower(arg2 or ''), string.lower(arg3 or ''):gsub('[%s_%-]', '')
+        local job = mate.mjob
+        local wm, wsub = squadWeaponType(player, mate.id, job)
+        if which ~= 'main' and which ~= 'sub' then
+            say(player, string.format('%s (%s) - Main: %s, Sub: %s. !squad weapon <slot> main any|h2h|dagger|sword|greatsword|axe|greataxe|scythe|polearm|katana|greatkatana|club|staff   |   sub any|shield|grip|empty|dagger|sword|axe|katana|club',
+                mate.name, jobNames[job] or '???', SQUAD_WTYPE_NAME[wm] or 'any weapon', squadSubTypeName(wsub)))
+            return
+        end
+
+        local code = (which == 'main' and SQUAD_WTYPE_MAIN or SQUAD_WTYPE_SUB)[word]
+        if code == nil then
+            say(player, which == 'main' and 'Main: any h2h dagger sword greatsword axe greataxe scythe polearm katana greatkatana club staff'
+                or 'Sub: any shield grip empty dagger sword axe katana club (a second weapon needs Dual Wield)')
+            return
+        end
+
+        local slotIndex = which == 'main' and 0 or 1
+        squadWeaponTypeSet(player, mate.id, job, which, code)
+        squadGearLockSet(player, mate.id, job, slotIndex, false)
+        local what = which == 'main' and (code == 0 and 'any weapon' or ('the best ' .. SQUAD_WTYPE_NAME[code])) or (code == 0 and 'the usual choice' or squadSubTypeName(code))
         if player:getCharVar('SQUAD_AUTOEQUIP') == 1 then
-            player:setCharVar('SQUAD_AUTOEQUIP', 0)
-            say(player, 'Auto-equip is now off (you chose gear by hand).')
+            pcall(squadAutoEquip, player, mate)
+            local worn = mate.equip[job] or {}
+            local id = worn[slotIndex]
+            local info = id and GetSquadItemInfo(id) or nil
+            say(player, string.format('%s (%s) %s: %s. Now: %s. Apply now (or dismiss and call) to see it.', mate.name, jobNames[job] or '???',
+                which == 'main' and 'Main' or 'Sub', what, (info and info.valid) and info.name or 'nothing'))
+            if which == 'main' and code > 0 and (info == nil or not info.valid or (info.skill or 0) ~= code) then
+                say(player, string.format('(No %s that %s can wear has been given to the squad yet: Main stays as it is.)', SQUAD_WTYPE_NAME[code], mate.name))
+            end
+        else
+            say(player, string.format('%s (%s) %s: %s. It is used when Auto-equip is on (or with !squad autoequip now %d).', mate.name,
+                jobNames[job] or '???', which == 'main' and 'Main' or 'Sub', what, mate.slot))
         end
         return
     elseif action == 'lockstyle' or action == 'ls' then
@@ -5975,18 +6176,19 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         say(player, string.format('%s now looks like it wears %s (%s). Dismiss and call them again to apply.', mate.name, info.name, equipSlotNames[slotIndex]))
         return
     elseif action == 'unequip' then
-        if player:getCharVar('SQUAD_AUTOEQUIP') == 1 then
-            player:setCharVar('SQUAD_AUTOEQUIP', 0)
-            say(player, 'Auto-equip is now off (you chose gear by hand).')
-        end
-
         local which = string.lower(arg2 or '')
+        -- (2026-11-27) Auto-equip stays on: a slot emptied by hand is locked, so auto-equip leaves it empty
+        local autoOn = player:getCharVar('SQUAD_AUTOEQUIP') == 1
         if which == 'all' then
             for s = 0, 15 do
                 SetSquadEquip(mate.id, mate.mjob, s, 0)
+                if autoOn then
+                    squadGearLockSet(player, mate.id, mate.mjob, s, true)
+                end
             end
 
-            say(player, string.format('%s took off everything (%s gear).', mate.name, jobNames[mate.mjob]))
+            say(player, string.format('%s took off everything (%s gear).%s', mate.name, jobNames[mate.mjob],
+                autoOn and string.format(' Auto-equip stays on, and every slot is locked empty (!squad gearlock %d all off to let it choose again).', mate.slot) or ''))
             return
         end
 
@@ -5994,6 +6196,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         if slotIndex == nil then
             say(player, 'Which slot? head body hands legs feet main sub range ammo neck waist ear1 ear2 ring1 ring2 back, or all')
             return
+        end
+
+        if autoOn and not squadGearLocked(player, mate.id, mate.mjob, slotIndex) then
+            squadGearLockSet(player, mate.id, mate.mjob, slotIndex, true)
+            say(player, string.format('Auto-equip stays on; %s is now locked, so it stays empty.', equipSlotNames[slotIndex]))
         end
 
         SetSquadEquip(mate.id, mate.mjob, slotIndex, 0)
@@ -6020,6 +6227,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
     elseif action == 'delete' then
         player:setCharVar('SQUAD_LOOK_' .. mate.id, 0)
         squadLockstyleClear(player, mate.id)
+        for job = 1, 22 do
+            player:setCharVar(string.format('SQUAD_GLOCK_%d_%d', mate.id, job), 0)
+            player:setCharVar(string.format('SQUAD_WMAIN_%d_%d', mate.id, job), 0)
+            player:setCharVar(string.format('SQUAD_WSUB_%d_%d', mate.id, job), 0)
+        end
         player:setCharVar('SQUAD_SIZE_' .. mate.id, 0)
         player:setCharVar('SQUAD_WSTP_' .. mate.id, 0)
         player:setCharVar('SQUAD_WS_' .. mate.id, 0)
