@@ -64,7 +64,10 @@ local GROW_PER_DAY = 25     -- new adventurers a day while it is under SETTLE_FR
 local SETTLE_FROM  = 1000   -- from here: fewer join, and people start to quit
 local HARD_CAP     = 1250   -- never more than this
 local RETIRE_SHARE = 0.0065 -- of the active bots, once a day, from SETTLE_FROM on (about 7 a day at 1100)
-local ONLINE_SHARE = 0.6    -- online at a time: this share of the population, at most the launcher's "Bots online"
+-- (2026-11-27, Meli: never more than ~690 online with 2000 in the roster and 1500 online set) online at a time: the
+-- launcher's "Bots online", as long as at least a tenth of the population stays offline (so log ins and outs go on).
+-- It was 60% of the population, and the population stopped at HARD_CAP, so the launcher's higher numbers did nothing.
+local ONLINE_SHARE = 0.9
 local POP_CAP      = SETTLE_FROM -- (older name, kept for the tests)
 local retired = nil
 
@@ -101,7 +104,8 @@ local function saveRetired()
     f:close()
 end
 
--- the population it is heading for: the launcher roster, grown by GROW_PER_DAY each real day, at most POP_CAP
+-- the population it is heading for: the launcher roster (up to MAX_ROSTER), or more once the server has grown by
+-- GROW_PER_DAY each real day (that growth stops at HARD_CAP; a bigger roster set in the launcher is kept)
 function L.target()
     if cfg.roster <= 0 then
         return 0
@@ -111,7 +115,7 @@ function L.target()
     pcall(function()
         pop = GetServerVariable('[Bots]Population')
     end)
-    return math.min(HARD_CAP, math.max(cfg.roster, pop or 0))
+    return math.min(MAX_ROSTER, math.max(cfg.roster, math.min(HARD_CAP, pop or 0)))
 end
 
 -- new adventurers in one day for a population of pop: 25 while it is small, fewer and fewer above SETTLE_FROM
